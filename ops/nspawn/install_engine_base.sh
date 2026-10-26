@@ -1618,7 +1618,13 @@ systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
   "cd $ENGINE && PYTHONPATH=$ENGINE WETWARE_STATE_DIR=/var/lib/cortex-agent /usr/bin/python3 reset.py" || true
 
 echo "[engine] installing real HTTP upstream + nginx surface"
-install -m 0755 "$ROOT/usr/local/lib/cortex-agent/pod_http.py" "$ROOT/opt/cortex/bin/synapse_http.py" 2>/dev/null || true
+for _upstream_src in ops/pod_http.py "$(dirname "$0")/pod_http.py" \
+                    "$ROOT/usr/local/lib/cortex-agent/pod_http.py"; do
+  if [ -f "$_upstream_src" ]; then
+    install -m 0755 "$_upstream_src" "$ROOT/opt/cortex/bin/synapse_http.py"
+    break
+  fi
+done
 cat > "$ROOT/etc/systemd/system/wetware-upstream.service" <<'EOF'
 [Unit]
 Description=wetware inference upstream
