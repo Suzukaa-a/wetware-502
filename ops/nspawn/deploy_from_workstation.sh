@@ -17,7 +17,8 @@ echo "[deploy] packing engine from $REPO"
 tar -czf "$STAGE" -C "$REPO" \
   --exclude '__pycache__' --exclude '*.pyc' --exclude '.local' \
   --exclude 'wetware-honeypot/tests' --exclude 'wetware-honeypot/assets/.cache' \
-  wetware-honeypot ops/nspawn
+  wetware-honeypot ops/nspawn \
+  $(cd "$REPO" && ls ops/*.py ops/*.sh 2>/dev/null)
 
 echo "[deploy] uploading to $TARGET"
 ssh -o StrictHostKeyChecking=no "$TARGET" "sudo rm -rf $REMOTE_STAGE && sudo mkdir -p $REMOTE_STAGE"
