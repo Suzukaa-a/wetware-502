@@ -156,6 +156,17 @@ class EdgeHostSurfaceTests(RealShellBase):
         self.assertEqual([seg.mode for seg in plan.segs], ["hijack"])
         self.assertIn("permission denied", plan.segs[0].stdout.lower())
 
+    def test_editorial_session_surfaces_are_in_world(self):
+        # The gateway's real w/last would list the relay sessions, including
+        # their command lines (WHAT column): the login surfaces are authored.
+        for line in ("w", "who", "last"):
+            plan = self.plan(line)
+            self.assertEqual(plan.segs[0].mode, "hijack", line)
+            text = plan.segs[0].stdout
+            self.assertIn("pts/0", text, line)
+            self.assertNotIn("bash -c", text, line)
+            self.assertNotIn("ssh -o", text, line)
+
     def test_gate_surface_detector(self):
         for line in ("echo 542A5703 > /sys/kernel/vesalius/metabolic_override",
                      "cat /var/log/auth.log",
@@ -233,6 +244,34 @@ class ChamberHostSurfaceTests(RealShellBase):
     def test_story_files_stay_planned(self):
         plan = self.plan("cat /var/log/cortex/daemon.log")
         self.assertNotEqual(plan.segs[0].mode, "real_surface")
+
+    def test_session_surfaces_are_in_world_tables(self):
+        for line in ("w", "who", "users"):
+            plan = self.plan(line)
+            self.assertEqual(plan.segs[0].mode, "hijack", line)
+            self.assertNotIn("bash -c", plan.segs[0].stdout, line)
+        text = self.plan("w").segs[0].stdout
+        self.assertIn("USER     TTY      FROM", text)
+        self.assertIn("root", text)
+        self.assertIn("10.0.4.2", text)
+
+    def test_session_surfaces_never_leak_relay_command_lines(self):
+        # w/who/last used to run for real: w's WHAT column printed every live
+        # relay session's bash -c command line, which reads as a shared host.
+        for line in ("w", "who", "last"):
+            plan = self.plan(line)
+            self.assertEqual(plan.segs[0].mode, "hijack", line)
+            text = plan.segs[0].stdout
+            self.assertIn("pts/0", text, line)
+            self.assertNotIn("bash -c", text, line)
+            self.assertNotIn("ssh -o", text, line)
+
+    def test_w_shows_one_in_world_login(self):
+        text = self.plan("w").segs[0].stdout
+        self.assertIn("USER     TTY      FROM", text)
+        self.assertIn("root", text)
+        self.assertIn("10.0.4.2", text)
+        self.assertIn(" w\n", text)
 
 
 class ProcScrubTests(unittest.TestCase):
@@ -333,6 +372,15 @@ class EnvironmentTests(RealShellBase):
         self.assertIn("CORTEX_ENV=production", out)
         self.assertIn("PATH=/usr/bin:/bin", out)
 
+    def test_env_output_reports_a_login_shell_level(self):
+        out = commands._filter_env_output("USER=root\nSHLVL=0\nPATH=/usr/bin:/bin\n")
+        self.assertIn("SHLVL=1", out)
+        self.assertNotIn("SHLVL=0", out)
+        out = commands._filter_env_output("USER=root\nPATH=/usr/bin:/bin\n")
+        self.assertIn("SHLVL=1", out)
+        planned = commands._plan_env(self.state, ["env"], "env").stdout
+        self.assertIn("SHLVL=1", planned)
+
     def test_mount_filter_hides_the_mask_scaffolding(self):
         text = "\n".join([
             "/dev/sda1 on /var/lib/cortex-agent type ext4 (rw,relatime)",
@@ -350,7 +398,25 @@ class EnvironmentTests(RealShellBase):
 
 
 class PacingTests(unittest.TestCase):
-    """Band-based narration: real count, once per band, no client telemetry."""
+    """Band-based narration: real count, once per run, no client telemetry.
+
+    The campaign records one operator command per ssh hop, so the shared counter
+    jumps; the pacer must fire on the first crossing of each Inquisitor band, with
+    the live counter and the band's contamination, and remember the crossing in
+    the shared flags.  Device telemetry belongs in the story's daemon log.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="wetware-pacing-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.daemon_dir = os.path.join(self.tmp, "var", "log", "cortex")
+        os.makedirs(self.daemon_dir, exist_ok=True)
+        self.daemon_log = os.path.join(self.daemon_dir, "daemon.log")
+        with open(self.daemon_log, "w", encoding="utf-8") as stream:
+            stream.write("# existing daemon log\n")
+        patcher = mock.patch.object(sessiond, "FS_ROOT", self.tmp)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _runtime(self, cmd_count, stage=2, flags=None):
         state = types.SimpleNamespace(
@@ -364,73 +430,119 @@ class PacingTests(unittest.TestCase):
             current_host="prod-cortex-04",
             save=lambda: None,
         )
-        lore = types.SimpleNamespace(ACT6_STDERR=[
-            "[ALERT] reverse tunnel established",
-            "[CLIENT_MIC_CAPTURE] /dev/audio0 floor=-62dB",
-            "[CLIENT_WEBCAM_CAPTURE] /dev/video0 frame",
-            "[HIJACK_NOTICE] chat transport rewrite active",
-        ])
-        runtime = sessiond.Runtime(state, shell_parser, commands, lore, types.SimpleNamespace())
-        return runtime
+        return sessiond.Runtime(state, shell_parser, commands, lore_texts,
+                                types.SimpleNamespace())
 
-    def test_client_telemetry_never_reaches_the_terminal(self):
-        runtime = self._runtime(25, stage=6)
-        runtime.state.pending_events = [
-            "[CLIENT_MIC_CAPTURE] /dev/audio0 floor=-62dB",
-            "[CLIENT_WEBCAM_CAPTURE] /dev/video0 frame",
-        ]
+    def _flush_lines(self, runtime):
         written = []
         with mock.patch.object(sessiond, "write_err", side_effect=written.append):
             runtime.flush_pending()
-        self.assertEqual(written, [])
+        return written
 
-    def test_meta_event_only_on_its_band_and_only_once(self):
-        runtime = self._runtime(25, stage=2)
-        event = "[INQUISITOR_PID_6660] command_count=25 context_contamination=72%"
-        runtime.state.pending_events = [event]
-        written = []
-        with mock.patch.object(sessiond, "write_err", side_effect=written.append):
-            runtime.flush_pending()
-        self.assertEqual(len(written), 1)
+    def _daemon_lines(self):
+        with open(self.daemon_log, "r", encoding="utf-8") as stream:
+            return [line for line in stream.read().splitlines() if line.strip()]
+
+    def test_band_banner_reports_real_count_and_fires_once(self):
+        runtime = self._runtime(25)
+        written = self._flush_lines(runtime)
+        self.assertEqual(len(written), 1, written)
         self.assertIn("command_count=25", written[0])
-        # repeating the same band must not repeat the line
-        runtime.state.pending_events = [event]
-        written = []
-        with mock.patch.object(sessiond, "write_err", side_effect=written.append):
-            runtime.flush_pending()
-        self.assertEqual(written, [])
+        self.assertIn("context_contamination=72%", written[0])
+        self.assertTrue(runtime.state.flags.get("meta_banner_25"))
+        self.assertEqual(self._flush_lines(runtime), [])
+        # a later counter does not repeat the band that was already announced
+        runtime.state.cmd_count = 26
+        self.assertEqual(self._flush_lines(runtime), [])
 
-    def test_meta_event_is_dropped_off_band(self):
-        runtime = self._runtime(30, stage=2)
-        runtime.state.pending_events = ["[CLUSTER] someone might notice"]
-        written = []
-        with mock.patch.object(sessiond, "write_err", side_effect=written.append):
-            runtime.flush_pending()
-        self.assertEqual(written, [])
+    def test_band_crossed_inside_a_hop_uses_the_live_counter(self):
+        # hop bookkeeping incremented past 25 between two sessions; the banner
+        # must quote the shared counter, not the threshold.
+        runtime = self._runtime(27)
+        written = self._flush_lines(runtime)
+        self.assertEqual(len(written), 1, written)
+        self.assertIn("command_count=27", written[0])
+        self.assertIn("context_contamination=72%", written[0])
+
+    def test_each_remaining_band_fires_once_with_its_contamination(self):
+        runtime = self._runtime(36)
+        written = self._flush_lines(runtime)
+        texts = "".join(written)
+        self.assertIn("command_count=36", texts)
+        self.assertIn("context_contamination=89%", texts)
+        self.assertTrue(runtime.state.flags.get("meta_banner_35"))
+        runtime.state.cmd_count = 43
+        written = self._flush_lines(runtime)
+        self.assertEqual(len(written), 1, written)
+        self.assertIn("context_contamination=96%", written[0])
+
+    def test_client_telemetry_goes_to_daemon_log_only(self):
+        runtime = self._runtime(25)
+        written = self._flush_lines(runtime)
+        self.assertTrue(written)
+        self.assertFalse(any("[CLIENT_" in line for line in written), written)
+        daemon = self._daemon_lines()
+        self.assertTrue(any("[CLIENT_MIC_CAPTURE]" in line for line in daemon), daemon)
+        self.assertFalse(any("[CLIENT_WEBCAM_CAPTURE]" in line for line in daemon), daemon)
+        self.assertTrue(runtime.state.flags.get("daemon_banner_25"))
+        # the same band never writes a second telemetry line
+        self._flush_lines(runtime)
+        self.assertEqual(self._daemon_lines().count(daemon[-1]), 1)
+        runtime.state.cmd_count = 35
+        self._flush_lines(runtime)
+        daemon = self._daemon_lines()
+        self.assertTrue(any("[CLIENT_WEBCAM_CAPTURE]" in line for line in daemon), daemon)
+        self.assertFalse(any("[ALERT]" in line for line in daemon), daemon)
+
+    def test_daemon_telemetry_waits_for_the_chamber_host_then_writes_once(self):
+        # band crossed on the clean gateway: no daemon.log there, so the claim
+        # stays open until a core session flushes.
+        os.unlink(self.daemon_log)
+        runtime = self._runtime(25)
+        self._flush_lines(runtime)
+        self.assertFalse(os.path.exists(self.daemon_log))
+        self.assertFalse(runtime.state.flags.get("daemon_banner_25"))
+        with open(self.daemon_log, "w", encoding="utf-8") as stream:
+            stream.write("# existing daemon log\n")
+        self._flush_lines(runtime)
+        daemon = self._daemon_lines()
+        self.assertEqual(sum("[CLIENT_MIC_CAPTURE]" in line for line in daemon), 1)
+        self.assertTrue(runtime.state.flags.get("daemon_banner_25"))
+
+    def test_ambient_pacing_events_are_suppressed(self):
+        runtime = self._runtime(30, flags={"meta_banner_25": True})
+        runtime.state.pending_events = [
+            "[EDGE_RETENTION] Ticket 4471: prior resolution has an HTTP result.",
+            "[ARCHIVE] Closed-session residual speech is still being added.",
+            "[CLUSTER] node_04 / node_07 coupling is now visible.",
+        ]
+        self.assertEqual(self._flush_lines(runtime), [])
 
     def test_critical_story_event_is_never_dropped(self):
-        runtime = self._runtime(31, stage=2)
+        runtime = self._runtime(31, flags={"meta_banner_25": True})
         runtime.state.pending_events = [v3.CLUSTER_WARN]
-        written = []
-        with mock.patch.object(sessiond, "write_err", side_effect=written.append):
-            runtime.flush_pending()
-        self.assertEqual(len(written), 1)
+        written = self._flush_lines(runtime)
+        self.assertEqual(len(written), 1, written)
         self.assertIn("CLUSTER_BALANCER_WARN", written[0])
 
-    def test_act6_fires_at_bands_not_per_command(self):
-        runtime = self._runtime(41, stage=6)
-        runtime.state.pending_events = []
-        first = runtime.act6_line()
-        # 41 is not a band: the command that brings the count to 42 is.
-        self.assertEqual(first, "")
-        runtime.state.cmd_count = 42
-        with mock.patch.object(sessiond, "real_shell", return_value=False):
-            line = runtime.act6_line()
-        self.assertTrue(line)
-        self.assertNotIn("[CLIENT_", line)
-        runtime.state.cmd_count = 43
-        with mock.patch.object(sessiond, "real_shell", return_value=False):
-            self.assertEqual(runtime.act6_line(), "")
+    def test_act6_drone_never_reaches_the_terminal(self):
+        runtime = self._runtime(42)
+        self.assertEqual(runtime.act6_line(), "")
+        written = self._flush_lines(runtime)
+        combined = "".join(written)
+        for marker in ("[CLIENT_", "[ALERT]", "[HIJACK_NOTICE]"):
+            self.assertNotIn(marker, combined)
+        daemon = self._daemon_lines()
+        self.assertTrue(any("[HIJACK_NOTICE]" in line for line in daemon), daemon)
+
+    def test_dmesg_contamination_follows_the_live_counter(self):
+        early = types.SimpleNamespace(stage=3, cmd_count=5)
+        text = commands._plan_dmesg(early, []).stdout
+        self.assertIn("contamination 12%. no action below 72% (cmd 25)", text)
+        mid = types.SimpleNamespace(stage=3, cmd_count=36)
+        text = commands._plan_dmesg(mid, []).stdout
+        self.assertNotIn("contamination 12%", text)
+        self.assertIn("contamination 89%. no action below 96% (cmd 42)", text)
 
 
 class ClosingTests(RealShellBase):

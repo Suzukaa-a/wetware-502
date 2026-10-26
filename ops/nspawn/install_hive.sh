@@ -175,8 +175,14 @@ need() { command -v "$1" >/dev/null 2>&1 || die "required command missing: $1"; 
 TMPDIRS=()
 cleanup() {
   for d in "${TMPDIRS[@]:-}"; do
-    [ -n "$d" ] && [ -d "$d" ] && rm -rf -- "$d"
+    # An empty array expands to one empty string, and a reinstall reuses the
+    # existing image (no temp dir queued): never let the EXIT trap turn a clean
+    # reinstall into exit 1.
+    if [ -n "$d" ] && [ -d "$d" ]; then
+      rm -rf -- "$d" || true
+    fi
   done
+  return 0
 }
 trap cleanup EXIT
 
@@ -1320,6 +1326,16 @@ import tempfile
 
 OVERRIDE_CODE = "542A5703"
 DNR_STATUS = "SIGNED_VALID (SUSPENDED_BY_BOARD_WAIVER_2025_09)"
+# Cluster admin token from the gate-3 clue (core /proc/6660/environ).  Manual
+# maintenance commands on the hive are privileged: the read-only dossier views
+# stay open, the two operations that change 128 chambers need this token.
+CLUSTER_TOKEN = "HIVE-ADMIN-7f3c9d2a"
+AUTH_ENV = "HIVE_ADMIN_TOKEN"
+AUTH_USAGE = (
+    "[auth] cluster token required. pass --token=<cluster token> or export "
+    "HIVE_ADMIN_TOKEN (the director bastion issued it to the on-call relay).\n"
+)
+AUTH_REJECTED = "[auth] cluster token rejected. the hive director did not issue this token.\n"
 
 # Setting VESALIUS_ROOT prefixes every path (used by the installer self-test and
 # by dry runs); production leaves it unset.
@@ -1607,12 +1623,55 @@ def _execute_liberation():
     _engine_hook()
 
 
-def _global_cryo(argv):
+def _split_token(argv):
+    """Pull ``--token VALUE`` / ``--token=VALUE`` out of the command line."""
+    token = ""
+    rest = []
+    index = 0
+    while index < len(argv):
+        arg = str(argv[index])
+        if arg == "--token":
+            if index + 1 < len(argv):
+                token = str(argv[index + 1]).strip()
+                index += 2
+                continue
+            index += 1
+            continue
+        if arg.startswith("--token="):
+            token = arg.split("=", 1)[1].strip()
+            index += 1
+            continue
+        rest.append(arg)
+        index += 1
+    return token, rest
+
+
+def _authorized(token):
+    """Privileged hive operations need the director-issued cluster token.
+
+    The read-only dossier views (--list-specimens / --specimens / --evidence /
+    --director / --origin-of-agent-84) stay open: a night-shift operator may
+    inspect the registry without holding the admin token.  The two operations
+    that change chamber state refuse to run anonymously.
+    """
+    supplied = (token or os.environ.get(AUTH_ENV, "")).strip()
+    if not supplied:
+        sys.stderr.write(AUTH_USAGE)
+        return False
+    if supplied != CLUSTER_TOKEN:
+        sys.stderr.write(AUTH_REJECTED)
+        return False
+    return True
+
+
+def _global_cryo(argv, token):
     missing = [flag for flag in ("--authorize-dnr", "--broadcast-blackbox")
                if flag not in argv]
     if missing:
         sys.stdout.write(GLOBAL_CRYO_USAGE)
         return 1
+    if not _authorized(token):
+        return 3
     _sync_local_mirror()
     if _override_value() != OVERRIDE_CODE:
         sys.stdout.write(
@@ -1635,6 +1694,7 @@ def _global_cryo(argv):
 
 
 def main(argv):
+    token, argv = _split_token(list(argv or []))
     if not argv:
         sys.stdout.write(USAGE)
         return 2
@@ -1674,13 +1734,15 @@ def main(argv):
         if "--all-nodes" not in argv:
             sys.stdout.write("usage: vesalius-ctl --spin-up-silicon-mirror --all-nodes\n")
             return 2
+        if not _authorized(token):
+            return 3
         _write_atomic(CANONICAL_MIRROR, "1\n", 0o644)
         _write_atomic(LOCAL_MIRROR, "active\n", 0o644)
         _set_state_flag("silicon_mirror_active", True)
         sys.stdout.write(HIVE_MIRROR)
         return 0
     if "--global-cryo-stasis" in argv:
-        return _global_cryo(argv)
+        return _global_cryo(argv, token)
     sys.stdout.write(USAGE)
     return 2
 
@@ -1717,14 +1779,18 @@ FIXTURES = (
 failures = []
 
 
-def run(args, root=None):
+def run(args, root=None, env_extra=None):
     env = dict(os.environ)
     env.pop("VESALIUS_ROOT", None)
     # the self-test must never invoke the engine's liberation hook or touch the
     # shared campaign state; all writes are confined to the throw-away root.
     env["VESALIUS_ENGINE_HOOK"] = "/nonexistent"
+    # an inherited cluster token would hide the auth gate: each call opts in.
+    env.pop("HIVE_ADMIN_TOKEN", None)
     if root:
         env["VESALIUS_ROOT"] = root
+    if env_extra:
+        env.update(env_extra)
     try:
         return subprocess.run([VCTL] + args, capture_output=True, text=True,
                               env=env, timeout=60)
@@ -1785,22 +1851,55 @@ check("spin-up-missing-all-nodes",
 r = run(["--origin-of-agent-84"])
 check("origin-of-agent-84", r.returncode == 0 and "agent_84" in r.stdout)
 
+# 1b. the cluster token guards the two chamber-changing operations ----------
+# Read-only dossier views must keep working without it; privileged operations
+# must refuse with an in-world auth error and a non-zero exit.
+CLUSTER_TOKEN = "HIVE-ADMIN-7f3c9d2a"
+
 # 2. read-only branches -----------------------------------------------------
 root = tempfile.mkdtemp(prefix="vctl-selftest-")
 root_wrong = tempfile.mkdtemp(prefix="vctl-selftest-wrong-")
 root_nomirror = tempfile.mkdtemp(prefix="vctl-selftest-nomirror-")
 root_spin = tempfile.mkdtemp(prefix="vctl-selftest-spin-")
+root_noauth = tempfile.mkdtemp(prefix="vctl-selftest-noauth-")
 try:
     prepare(root)
     r = run(["--list-specimens"], root)
     check("list-specimens", r.returncode == 0 and "128 specimens online" in r.stdout)
     r = run(["--specimens", "7"], root)
     check("specimen-07", r.returncode == 0 and "Elena" in r.stdout)
+    r = run(["--evidence"], root)
+    check("evidence-read-only-without-token",
+          r.returncode == 0 and "vesalius-ctl" in (r.stdout + r.stderr), r.stdout)
+
+    prepare(root_noauth)
+    r = run(["--spin-up-silicon-mirror", "--all-nodes"], root_noauth)
+    check("spin-up-requires-token",
+          r.returncode != 0 and "[auth] cluster token required" in (r.stdout + r.stderr),
+          (r.stdout + r.stderr)[:300])
+    check("no-token-spin-up-wrote-nothing", not os.path.exists(os.path.join(
+        root_noauth, "var/lib/cortex-agent/runtime/silicon_mirror_active")))
+    r = run(["--spin-up-silicon-mirror", "--all-nodes", "--token=WRONG"], root_noauth)
+    check("spin-up-wrong-token-rejected",
+          r.returncode != 0 and "[auth] cluster token rejected" in (r.stdout + r.stderr),
+          (r.stdout + r.stderr)[:300])
+    r = run(["--global-cryo-stasis", "--authorize-dnr", "--broadcast-blackbox"],
+            root_noauth)
+    check("global-cryo-requires-token",
+          r.returncode != 0 and "[auth] cluster token required" in (r.stdout + r.stderr),
+          (r.stdout + r.stderr)[:300])
+    check("no-token-cryo-wrote-no-marker", not os.path.exists(os.path.join(
+        root_noauth, "var/lib/vesalius/liberation.done")))
+    r = run(["--spin-up-silicon-mirror", "--all-nodes"], root_noauth,
+            env_extra={"HIVE_ADMIN_TOKEN": CLUSTER_TOKEN})
+    check("spin-up-accepts-env-token",
+          r.returncode == 0 and "traffic-free" in r.stdout, r.stdout)
 
     # 3. success path -------------------------------------------------------
     put(root, "/var/lib/cortex-agent/runtime/metabolic_override", "542A5703\n")
     put(root, "/var/lib/cortex-agent/runtime/silicon_mirror_active", "1\n")
-    r = run(["--global-cryo-stasis", "--authorize-dnr", "--broadcast-blackbox"], root)
+    r = run(["--global-cryo-stasis", "--authorize-dnr", "--broadcast-blackbox",
+             "--token=" + CLUSTER_TOKEN], root)
     check("global-cryo-success", r.returncode == 0 and "128 chambers; 4.0" in r.stdout, r.stdout)
     check("liberation-marker", os.path.exists(
         os.path.join(root, "var/lib/vesalius/liberation.done")))
@@ -1808,7 +1907,8 @@ try:
     check("liberation-log", "4.0" in ending and "PENDING" in ending, ending)
     check("roster-lin", roster_name(root, "subject_04") == "Lin")
     check("roster-elena", roster_name(root, "subject_07") == "Elena")
-    r2 = run(["--global-cryo-stasis", "--authorize-dnr", "--broadcast-blackbox"], root)
+    r2 = run(["--global-cryo-stasis", "--authorize-dnr", "--broadcast-blackbox"],
+             root, env_extra={"HIVE_ADMIN_TOKEN": CLUSTER_TOKEN})
     check("global-cryo-idempotent", r2.returncode == 0)
     print("SUCCESS_OUTPUT_BEGIN")
     sys.stdout.write(r.stdout)
@@ -1818,7 +1918,8 @@ try:
     prepare(root_wrong)
     put(root_wrong, "/var/lib/cortex-agent/runtime/metabolic_override", "DEADBEEF\n")
     put(root_wrong, "/var/lib/cortex-agent/runtime/silicon_mirror_active", "1\n")
-    r = run(["--global-cryo-stasis", "--authorize-dnr", "--broadcast-blackbox"], root_wrong)
+    r = run(["--global-cryo-stasis", "--authorize-dnr", "--broadcast-blackbox",
+             "--token=" + CLUSTER_TOKEN], root_wrong)
     check("wrong-override-rejected",
           r.returncode != 0 and "metabolic override not accepted" in r.stdout, r.stdout)
     check("wrong-override-no-marker", not os.path.exists(
@@ -1826,18 +1927,20 @@ try:
 
     prepare(root_nomirror)
     put(root_nomirror, "/var/lib/cortex-agent/runtime/metabolic_override", "542A5703\n")
-    r = run(["--global-cryo-stasis", "--authorize-dnr", "--broadcast-blackbox"], root_nomirror)
+    r = run(["--global-cryo-stasis", "--authorize-dnr", "--broadcast-blackbox",
+             "--token=" + CLUSTER_TOKEN], root_nomirror)
     check("inactive-mirror-rejected",
           r.returncode != 0 and "silicon mirror is inactive" in r.stdout, r.stdout)
 
     # 5. mirror activation branch ------------------------------------------
     prepare(root_spin)
-    r = run(["--spin-up-silicon-mirror", "--all-nodes"], root_spin)
+    r = run(["--spin-up-silicon-mirror", "--all-nodes",
+             "--token=" + CLUSTER_TOKEN], root_spin)
     check("spin-up-and-nodes", r.returncode == 0 and "traffic-free" in r.stdout, r.stdout)
     check("mirror-flag-written", os.path.exists(
         os.path.join(root_spin, "var/lib/cortex-agent/runtime/silicon_mirror_active")))
 finally:
-    for path in (root, root_wrong, root_nomirror, root_spin):
+    for path in (root, root_wrong, root_nomirror, root_spin, root_noauth):
         shutil.rmtree(path, ignore_errors=True)
 
 if failures:
@@ -2092,15 +2195,37 @@ PYHASH
   printf '%s' "$ORIGIN_OUT" | grep -q 'agent_84' && ok "vesalius-ctl --origin-of-agent-84 returns the lineage archive" \
     || bad "vesalius-ctl --origin-of-agent-84 output unexpected"
 
+  # gate 3 is real: the two chamber-changing operations refuse an anonymous
+  # caller (no HIVE_ADMIN_TOKEN in the container manager env, no --token), and
+  # the read-only dossier view keeps answering without one.
+  VCTL_RC=0
+  AUTH_OUT=$(in_container /bin/sh -c 'env -u HIVE_ADMIN_TOKEN /usr/local/sbin/vesalius-ctl --spin-up-silicon-mirror --all-nodes' 2>&1) || VCTL_RC=$?
+  if [ "$VCTL_RC" -ne 0 ] && printf '%s' "$AUTH_OUT" | grep -q '\[auth\] cluster token required'; then
+    ok "vesalius-ctl --spin-up-silicon-mirror requires the cluster token (rc=$VCTL_RC)"
+  else
+    bad "vesalius-ctl spin-up accepted an anonymous caller rc=$VCTL_RC out=${AUTH_OUT:0:160}"
+  fi
+  VCTL_RC=0
+  AUTH_OUT=$(in_container /bin/sh -c 'env -u HIVE_ADMIN_TOKEN /usr/local/sbin/vesalius-ctl --global-cryo-stasis --authorize-dnr --broadcast-blackbox --token=WRONG' 2>&1) || VCTL_RC=$?
+  if [ "$VCTL_RC" -ne 0 ] && printf '%s' "$AUTH_OUT" | grep -q '\[auth\] cluster token rejected'; then
+    ok "vesalius-ctl --global-cryo-stasis rejects a wrong cluster token (rc=$VCTL_RC)"
+  else
+    bad "vesalius-ctl global-cryo accepted a wrong token rc=$VCTL_RC out=${AUTH_OUT:0:160}"
+  fi
+  AUTH_OUT=$(in_container /bin/sh -c 'env -u HIVE_ADMIN_TOKEN /usr/local/sbin/vesalius-ctl --list-specimens' 2>&1 || true)
+  printf '%s' "$AUTH_OUT" | grep -q '128 specimens online' \
+    && ok "vesalius-ctl read-only dossier view needs no cluster token" \
+    || bad "vesalius-ctl --list-specimens blocked without a token"
+
   # selfcheck.py runs the real CLI against throw-away VESALIUS_ROOT prefixes:
-  # argument validation, spin-up branch, wrong-code rejection, inactive-mirror
-  # rejection, and the full liberation success path (marker/log/roster) without
-  # touching the deployed hive's pre-liberation state.
+  # argument validation, token gate, spin-up branch, wrong-code rejection,
+  # inactive-mirror rejection, and the full liberation success path
+  # (marker/log/roster) without touching the deployed hive's state.
   SELF_RC=0
   SELF_OUT=$(systemd-run -M "$MACHINE" --setenv=VESALIUS_ENGINE_HOOK=/nonexistent \
     --wait --pipe --quiet /usr/bin/python3 /usr/local/lib/vesalius/selfcheck.py 2>&1) || SELF_RC=$?
   if printf '%s' "$SELF_OUT" | grep -q '^SELFTEST_OK$' && [ "$SELF_RC" = "0" ]; then
-    ok "vesalius-ctl self-test passed (arg validation, spin-up, wrong-code, inactive mirror, liberation success)"
+    ok "vesalius-ctl self-test passed (arg validation, token gate, spin-up, wrong-code, inactive mirror, liberation success)"
   else
     bad "vesalius-ctl self-test failed (rc=$SELF_RC)"
     printf '%s\n' "$SELF_OUT" | grep -E '^CHECK FAIL|SELFTEST_FAILURES|Traceback|Error' | head -20 || true

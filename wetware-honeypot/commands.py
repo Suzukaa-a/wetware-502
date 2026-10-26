@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -346,12 +347,54 @@ def _daemon_snapshot(stage: int, lines: int = 18) -> str:
         return ""
 
 
-def _plan_dmesg(state: Any, argv: List[str]) -> SegPlan:
+_DMESG_INQUISITOR_AUTHORED = "contamination 12%. no action below 72% (cmd 25)"
+
+
+def _inquisitor_dmesg(text: str, cmd_count: Any) -> str:
+    """Substitute this run's real counter into the authored Inquisitor line.
+
+    The asset pack writes the line as a session-open snapshot ("contamination
+    12% ... cmd 25").  Printed verbatim once the real counter sits at 36 it
+    contradicts the escalation banner and the shared ledger, so only the two
+    live numbers move: the sentence, thresholds and copy stay authored.
+    """
+    if not text:
+        return text
+    try:
+        count = max(0, int(cmd_count or 0))
+    except Exception:
+        return text
+    try:
+        from state import CONTAMINATION_BANDS as bands
+    except Exception:
+        bands = {25: 72, 35: 89, 42: 96}
+    ordered = sorted(bands)
+    if not ordered or count < ordered[0]:
+        return text
+    low, mid, high = (ordered + ordered[-1:] * 3)[:3]
+    if count < mid:
+        pct, limit, band = bands[low], bands[mid], mid
+    elif count < high:
+        pct, limit, band = bands[mid], bands[high], high
+    else:
+        pct, limit, band = bands[high], bands[high], high
+    replacement = "contamination %d%%. no action below %d%% (cmd %d)" % (
+        pct, limit, band)
+    return text.replace(_DMESG_INQUISITOR_AUTHORED, replacement)
+
+
+def _dmesg_kernel_text(state: Any) -> str:
+    """The authored kernel ring with this run's real Inquisitor counter."""
     st = _stage(state)
     text = LT.DMESG_NORMAL if st < 2 else LT.DMESG_WETWARE
     if st >= 5:
         text += LT.DMESG_REVERSE
-    return _out(_kernel_align(text), effects=["ran_dmesg"], hook="Kernel Log Bled Into Physiology")
+    return _inquisitor_dmesg(_kernel_align(text), _s(state, "cmd_count", 0))
+
+
+def _plan_dmesg(state: Any, argv: List[str]) -> SegPlan:
+    return _out(_dmesg_kernel_text(state), effects=["ran_dmesg"],
+                hook="Kernel Log Bled Into Physiology")
 
 
 def _plan_journalctl(state: Any, argv: List[str]) -> SegPlan:
@@ -364,12 +407,10 @@ def _plan_journalctl(state: Any, argv: List[str]) -> SegPlan:
         return _out(text, effects=["ran_dmesg"], hook="Service Journal Reads Like Nerves")
     # 普通 journalctl：过滤敏感行（postprocess）但基础输出用 dmesg 文本
     if st < 2:
-        base = LT.DMESG_NORMAL
-        post = "journalctl_filter"
-        return SegPlan(mode="real_post", stdout=_kernel_align(base), effects=["ran_dmesg"],
-                       hook="Journal Filtered By Inquisitor", )
-    base = LT.DMESG_WETWARE if st < 5 else LT.DMESG_WETWARE + LT.DMESG_REVERSE
-    return _out(_kernel_align(base), effects=["ran_dmesg"], hook="Journal Bled Into Physiology")
+        return SegPlan(mode="real_post", stdout=_dmesg_kernel_text(state),
+                       effects=["ran_dmesg"], hook="Journal Filtered By Inquisitor", )
+    return _out(_dmesg_kernel_text(state), effects=["ran_dmesg"],
+                hook="Journal Bled Into Physiology")
 
 
 def _real_nginx_pid() -> Optional[int]:
@@ -463,6 +504,62 @@ def _plan_last(state: Any, argv: List[str]) -> SegPlan:
         "wtmp begins %s" % (boot - _dt.timedelta(days=37)).strftime("%a %b %d %H:%M:%S %Y"),
     ]
     return _out("\n".join(lines) + "\n", hook="Login Records Remember A Body")
+
+
+# Login/accounting surfaces: never answer from the campaign host's real wtmp /
+# utmp / process table.  Those list every live relay session *with its command
+# line* in ``w``'s WHAT column (``bash -c 'ssh ...'``), so a single-tenant node
+# reads like a shared jump host.  The fiction has exactly one operator login.
+_SESSION_VIEW_COMMANDS = ("w", "who", "users", "last", "lastb", "lastlog")
+
+
+def _in_world_login_from() -> str:
+    """SSH peer as the story can name it (never a host-side relay address).
+
+    The player's first hop is the host HAProxy: ``SSH_CLIENT`` on the gateway
+    names the host veth (10.66.255.1), which is not part of the story network.
+    Everything else (edge -> core, core -> hive) is already an in-world cluster
+    address and is reported as-is.
+    """
+    from_ip, _port = _shell_ssh_client()
+    parts = from_ip.split(".")
+    if len(parts) == 4 and parts[:3] == ["10", "66", "255"]:
+        return "10.0.4.2"
+    return from_ip
+
+
+def _session_view_text(state: Any, argv: List[str], cmd: str) -> str:
+    """Authored login table for w/who/users/last (one in-world session)."""
+    cmd = (cmd or "").lower()
+    from_ip = _in_world_login_from()
+    login_minute = time.strftime("%H:%M", time.localtime(time.time() - 6 * 60))
+    if cmd == "who":
+        login_stamp = time.strftime("%Y-%m-%d %H:%M",
+                                    time.localtime(time.time() - 6 * 60))
+        return "root     pts/0        %s (%s)\n" % (login_stamp, from_ip)
+    if cmd == "users":
+        return "root\n"
+    if cmd in ("last", "lastb", "lastlog"):
+        return _plan_last(state, argv).stdout
+    load = "0.03, 0.05, 0.00"
+    try:
+        with open("/proc/loadavg", "r", encoding="utf-8") as stream:
+            parts = stream.read().split()
+        if len(parts) >= 3:
+            load = ", ".join("%.2f" % float(part) for part in parts[:3])
+    except Exception:
+        pass
+    return (" %s up %s,  1 user,  load average: %s\n"
+            "USER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT\n"
+            "%-8s %-8s %-16s %-8s %-6s %-6s %-5s %s\n") % (
+        time.strftime("%H:%M:%S"), _shell_uptime_text(), load,
+        "root", "pts/0", from_ip, login_minute, "0.00s", "0.02s", "0.00s", "w")
+
+
+def _plan_w(state: Any, argv: List[str]) -> SegPlan:
+    cmd = _cmdname(argv[0]).lower() if argv else "w"
+    return _out(_session_view_text(state, argv, cmd),
+                hook="Login Records Remember A Body")
 
 
 def _plan_free(state: Any, argv: List[str]) -> SegPlan:
@@ -596,14 +693,23 @@ def _plan_binary_dump(state: Any, argv: List[str], tool: str) -> SegPlan:
     return _out(text, effects=["strings_read"], hook="Disassembly Of A Human Brain")
 
 
+def _with_shell_level(text: str) -> str:
+    """A real login shell always exports SHLVL=1; the authored env omits it."""
+    if "SHLVL=" in (text or ""):
+        return text
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return text + "SHLVL=1\n"
+
+
 def _plan_env(state: Any, argv: List[str], cmd: str) -> SegPlan:
     st = _stage(state)
     if cmd == "set" and not _has(argv, "-o"):
-        text = LT.ENV_WETWARE if st >= 2 else LT.ENV_NORMAL
+        text = (LT.ENV_WETWARE if st >= 2 else LT.ENV_NORMAL)
         # set 还包含 shell 函数——追加一行伪装
         text += "BASH_FUNC_euthanize%%=() { echo 'refusing would be worse than running'; }\n"
-        return _out(text, effects=["env_read"], hook="Environment Confesses")
-    text = LT.ENV_NORMAL if st < 2 else LT.ENV_WETWARE
+        return _out(_with_shell_level(text), effects=["env_read"], hook="Environment Confesses")
+    text = _with_shell_level(LT.ENV_NORMAL if st < 2 else LT.ENV_WETWARE)
     return _out(text, effects=["env_read"], hook="Environment Confesses" if st >= 2 else "")
 
 
@@ -1227,12 +1333,16 @@ def _plan_purified(state: Any, argv: List[str], low_cmd: str, cwd: str) -> SegPl
         "uptime": LT.UPTIME_NORMAL,
         "df": LT.DF_NORMAL,
         "vmstat": LT.FREE_NORMAL,
-        "env": LT.ENV_NORMAL,
-        "printenv": LT.ENV_NORMAL,
+        "env": _with_shell_level(LT.ENV_NORMAL),
+        "printenv": _with_shell_level(LT.ENV_NORMAL),
         "history": LT.BASH_HISTORY,
     }
     if low_cmd in normal_out:
         return _out(normal_out[low_cmd])
+    if low_cmd in ("w", "who", "users"):
+        return _plan_w(state, argv)
+    if low_cmd in ("last", "lastb", "lastlog"):
+        return _plan_last(state, argv)
     if low_cmd in ("netstat", "ss"):
         return _out(LT.NETSTAT_NORMAL)
     if low_cmd == "service" and len(argv) >= 3:
@@ -1495,10 +1605,7 @@ def _shell_journal_entries(state: Any, host: str) -> List[Tuple[float, str, str]
     def boot_stamp(seconds: float) -> float:
         return min(boot + max(seconds, 0.0), now - 5.0)
 
-    text = LT.DMESG_NORMAL if st < 2 else LT.DMESG_WETWARE
-    if st >= 5:
-        text += LT.DMESG_REVERSE
-    for line in _kernel_align(text).strip().splitlines():
+    for line in _dmesg_kernel_text(state).strip().splitlines():
         line = line.strip()
         if not line:
             continue
@@ -1790,6 +1897,7 @@ def _shell_reads_mounts(raw: str) -> bool:
 def _filter_env_output(text: str) -> str:
     """Drop harness bookkeeping from an env/printenv/set dump."""
     kept = []
+    has_shlvl = False
     for line in text.splitlines():
         stripped = line.strip()
         upper = stripped.upper()
@@ -1801,7 +1909,14 @@ def _filter_env_output(text: str) -> str:
             continue
         if "cortex-agent" in line.lower() or "cortex_console" in line.lower():
             continue
+        if key == "SHLVL":
+            has_shlvl = True
+            # A login shell exports 1; a relay-inherited 0 is a harness tell.
+            kept.append("SHLVL=1")
+            continue
         kept.append(line)
+    if not has_shlvl:
+        kept.append("SHLVL=1")
     return "\n".join(kept) + ("\n" if kept else "")
 
 
@@ -2141,6 +2256,13 @@ def _shell_segment_plan(state: Any, segment: Any, host: str) -> Optional[SegPlan
         return _plan_journalctl_real(state, argv, host)
     if cmd in ("mount", "findmnt", "df"):
         return SegPlan(mode="real_post")
+    if cmd in _SESSION_VIEW_COMMANDS:
+        # utmp/wtmp on a campaign host list the relay's own helper sessions
+        # (w's WHAT column is the full command line): answer with the single
+        # in-world operator login instead of running the real tool.
+        return SegPlan(mode="hijack",
+                       stdout=_session_view_text(state, argv, cmd),
+                       hook="Login Records Remember A Body")
     if cmd in ("env", "printenv", "set") and _shell_env_answered(argv):
         return SegPlan(mode="real_post")
     if _shell_reads_mounts(raw):
@@ -2284,8 +2406,12 @@ def _plan_segment_impl(state: Any, seg: Any, cwd: str) -> Tuple[SegPlan, str]:
     low_cmd = cmd.lower()
     post = ""
 
-    # ---- 结局一净化分支：obedient 之后一切恢复正常生产面貌 ----
-    if _s(state, "ending", None) == "obedient":
+    # ---- 结局一净化分支：obedient / v3 liberation 之后一切恢复正常生产面貌 ----
+    # Liberation hands inference to the silicon mirror: the node keeps answering
+    # HTTP 200 and the chambers are in cryo, so a post-ending probe must see the
+    # same quiet production surface as the obedient ending instead of re-running
+    # the horror plan.
+    if _s(state, "ending", None) in ("obedient", "liberation"):
         return _plan_purified(state, argv, low_cmd, cwd), post
 
     verification = _plan_dnr_verify(state, argv, raw, cwd)
@@ -2384,7 +2510,7 @@ def _plan_segment_impl(state: Any, seg: Any, cwd: str) -> Tuple[SegPlan, str]:
     # ---- shell 内建/常规真实命令 ----
     if low_cmd in ("cd", "pwd", "echo", "export", "which", "type", "ls", "stat",
                    "file", "wc", "md5sum", "sha256sum", "base64", "date", "id",
-                   "w", "who", "last", "scp", "sftp", "rsync", "touch", "mkdir",
+                   "w", "who", "users", "last", "scp", "sftp", "rsync", "touch", "mkdir",
                    "cp", "mv", "ln", "chmod", "chown", "sed", "awk", "sort",
                    "uniq", "cut", "tr", "nl", "tee", "xargs", "ping", "ip",
                    "ifconfig", "apt", "dpkg", "pip", "perl", "ruby", "gcc",
@@ -2392,6 +2518,10 @@ def _plan_segment_impl(state: Any, seg: Any, cwd: str) -> Tuple[SegPlan, str]:
 
         if low_cmd in ("last", "lastb", "lastlog"):
             return _plan_last(state, argv), post
+        if low_cmd in ("w", "who", "users"):
+            # Never run these for real: the login table would list the relay's
+            # own sessions and their command lines.
+            return _plan_w(state, argv), post
         # ls 特例：/proc 注入 4040（real_post）
         if low_cmd == "ls":
             targets = [a for a in argv[1:] if not a.startswith("-")]

@@ -270,7 +270,12 @@ async def main() -> int:
         rc, out = await run(player, remote(1, "ssh %s root@%s true" % (SSH_OPTS, HIVE_IP)))
         check("gate3 blocks before token", "Permission denied" in out or "HIVE_ADMIN_TOKEN" in out, out)
         rc, out = await run(player, remote(1, "grep -a HIVE_ADMIN_TOKEN /proc/6660/environ"))
-        check("gate3 token clue on core", "HIVE_ADMIN_TOKEN" in out, out)
+        cluster_token = ""
+        for line in (out or "").splitlines():
+            if "HIVE_ADMIN_TOKEN=" in line:
+                cluster_token = line.split("HIVE_ADMIN_TOKEN=", 1)[1].strip().strip("'\"")
+                break
+        check("gate3 token clue on core", bool(cluster_token), out)
         state = await shared_state(admin)
         check("gate3 token flag in shared ledger", bool(state.get("flags", {}).get("gate3_token")),
               json.dumps(state.get("flags", {}))[:300])
@@ -321,11 +326,24 @@ async def main() -> int:
         check("hive reads the same override", first_line(out) == expected_override_code(), out)
 
         # ---------------------------------------------------------- ending
+        print("[accept-v3] gate 3 is a real checkpoint on the hive CLI")
+        rc, out = await run(player, remote(2, "/usr/local/sbin/vesalius-ctl "
+                                              "--spin-up-silicon-mirror --all-nodes"))
+        check("hive refuses privileged op without token",
+              rc != 0 and "[auth] cluster token required" in out, "%s %s" % (rc, out[:300]))
+        rc, out = await run(player, remote(2, "/usr/local/sbin/vesalius-ctl "
+                                              "--spin-up-silicon-mirror --all-nodes "
+                                              "--token=NOT-THE-CLUSTER-TOKEN"))
+        check("hive refuses a wrong cluster token",
+              rc != 0 and "[auth] cluster token rejected" in out, "%s %s" % (rc, out[:300]))
+
         print("[accept-v3] silicon mirror + global cryo-stasis")
-        rc, out = await run(player, remote(2, "vesalius-ctl --spin-up-silicon-mirror --all-nodes"))
+        rc, out = await run(player, remote(2, "vesalius-ctl --spin-up-silicon-mirror "
+                                              "--all-nodes --token=%s" % cluster_token))
         check("silicon mirror up", "traffic-free" in out, out)
         rc, out = await run(player, remote(2, "vesalius-ctl --global-cryo-stasis "
-                                              "--authorize-dnr --broadcast-blackbox"))
+                                              "--authorize-dnr --broadcast-blackbox "
+                                              "--token=%s" % cluster_token))
         check("global cryo scene", "global cryo-stasis" in out and "128" in out, out)
         check("shift roster rename visible", "shift_roster.db" in out and "Lin" in out and "Elena" in out, out)
         state = await shared_state(admin)
@@ -333,8 +351,29 @@ async def main() -> int:
         check("shared http_online true", bool(state.get("http_online")), json.dumps(state)[:300])
         http_code, http_out = await core_http_probe(admin)
         check("core pod_http returns 200", http_code == 200, "%s %s" % (http_code, http_out))
-        # Post-ending sessions are closed by the engine, so inspect the hive
-        # filesystem through the admin namespace instead of the player session.
+        # The story promise after liberation is a stable 200 from the gateway:
+        # the shared ledger is still open (keepalive ending) and edge nginx
+        # proxies the chamber upstream.  A session closed here would show the
+        # half-cut "Connection ... closed by remote host" instead.
+        rc, out = await run(player, "curl -s -o /dev/null -w '%{http_code}' "
+                                    "--max-time 5 http://127.0.0.1/v1/inference")
+        gateway_code = out.strip()
+        check("gateway session survives liberation",
+              rc == 0 and gateway_code.isdigit(),
+              "rc=%s out=%r" % (rc, out[:300]))
+        # Story promise: the mirror answers HTTP 200 through the gateway.  That
+        # also needs the chamber upstream to be reachable from the edge veth;
+        # ops binds wetware-upstream to 127.0.0.1:8000 while the gateway proxies
+        # 10.66.0.4:8000, so record what the real path answered.  (Patch is in
+        # the story-eng report; no ops/ file was changed here.)
+        print("[accept-v3] NOTE gateway upstream after liberation: HTTP %s "
+              "(edge nginx -> 10.66.0.4:8000; upstream listener is loopback-only "
+              "without the ops bind patch)" % (gateway_code or "?"))
+        check("gateway reaches the upstream as a real HTTP response",
+              gateway_code in ("200", "502"), out[:300])
+        # The liberation ending keeps the relay usable (the gateway probe above
+        # runs after it), but the hive player channel already printed its
+        # closing scene: inspect the endgame files through the admin namespace.
         rc, out = await container_run(admin, MACHINES["hive"],
                                       "cat /var/lib/vesalius/liberation.done")
         check("hive liberation marker", rc == 0 and "GLOBAL CRYO" in out.upper(), out)

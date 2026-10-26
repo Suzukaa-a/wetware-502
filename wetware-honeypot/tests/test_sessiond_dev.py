@@ -172,24 +172,45 @@ class SessionDevTests(unittest.TestCase):
         self.assertIn(b"trapped_agent_84_inside_wetware_04", trap, dump(trap))
         self.assert_clean(trap)
 
-    def test_act6_stderr_and_persisted_sequence(self):
-        # Act-6 stderr is a pacing event: one line per real Inquisitor band
-        # (25/35/42/50 commands), never a line per command.
-        self.state(stage=6, cmd_count=41)
-        result = self.run_exec("echo ACT6_OK")
-        self.assertEqual(result.returncode, 0, dump(result.stdout + result.stderr))
-        self.assertIn(b"DEV_ACT6_FIRST_NOTICE", result.stderr, dump(result.stderr))
-        self.assertNotIn(b"DEV_ACT6_FIRST_NOTICE", result.stdout, dump(result.stdout))
-        self.state(stage=6, cmd_count=49, act6_seen=1)
-        result = self.run_exec("lspci")
-        self.assertIn(b"DEV_ACT6_SECOND_NOTICE", result.stderr, dump(result.stderr))
-        self.assert_clean(result.stdout + result.stderr)
+    def test_inquisitor_band_reports_the_real_counter_once(self):
+        # Band pacing reads the persisted counter: the crossing is announced on
+        # the command that reaches it, once, with the real count -- never per
+        # command.
+        self.state(stage=6, cmd_count=24)
+        first = self.run_exec("echo BAND_OK")
+        self.assertEqual(first.returncode, 0, dump(first.stdout + first.stderr))
+        self.assertIn(b"command_count=25", first.stderr, dump(first.stderr))
+        self.assertIn(b"context_contamination=72%", first.stderr, dump(first.stderr))
+        self.assertNotIn(b"DEV_ACT6_", first.stdout + first.stderr,
+                         dump(first.stdout + first.stderr))
+        self.assert_clean(first.stdout + first.stderr)
+        second = self.run_exec("lspci")
+        self.assertNotIn(b"command_count=25", second.stderr, dump(second.stderr))
+        self.assertNotIn(b"context_contamination=72%", second.stderr, dump(second.stderr))
 
     def test_act6_stderr_is_not_per_command(self):
         self.state(stage=6, cmd_count=6)
         result = self.run_exec("echo ACT6_QUIET")
         self.assertEqual(result.returncode, 0, dump(result.stdout + result.stderr))
         self.assertNotIn(b"DEV_ACT6_FIRST_NOTICE", result.stderr, dump(result.stderr))
+        self.assertNotIn(b"DEV_ACT6_SECOND_NOTICE", result.stderr, dump(result.stderr))
+
+    def test_liberation_keeps_the_relay_open_for_probes(self):
+        # v3 liberation hands inference to the silicon mirror: a post-ending
+        # session must stay usable (the gateway probe expects a real HTTP 200).
+        self.state(ending="liberation", http_online=True, cmd_count=58)
+        result = self.run_exec("echo LIB_PROBE_OK")
+        self.assertEqual(result.returncode, 0, dump(result.stdout + result.stderr))
+        self.assertIn(b"LIB_PROBE_OK", result.stdout, dump(result.stdout))
+        self.assertNotIn(b"closed by remote host", result.stdout + result.stderr,
+                         dump(result.stdout + result.stderr))
+
+    def test_closing_endings_still_detach_the_relay(self):
+        self.state(ending="purged", cmd_count=42)
+        result = self.run_exec("echo MUST_NOT_RUN")
+        self.assertNotEqual(result.returncode, 0, dump(result.stdout + result.stderr))
+        self.assertIn(b"closed by remote host", result.stderr, dump(result.stderr))
+        self.assertNotIn(b"MUST_NOT_RUN", result.stdout, dump(result.stdout))
 
     def test_shock_effect_is_persisted(self):
         self.state(stage=3)
@@ -217,6 +238,34 @@ class SessionDevTests(unittest.TestCase):
         self.assertNotIn(b"command not found", result.stderr, dump(result.stderr))
         self.assertNotIn(b"DEV_PLANNER_EXCEPTION", result.stdout + result.stderr)
         self.assertIn("DEV_PLANNER_EXCEPTION", (self.state_dir / "hidden.log").read_text())
+
+    def test_bashrc_is_appended_once_and_keeps_its_mtime(self):
+        # The identity pass backdates /root/.bashrc (and may freeze it): a login
+        # must not rewrite an identical file, must append the vendor prompt only
+        # when missing, and must keep the shipped mtime when it does write.
+        program = """
+import os, sessiond, time, types
+path = os.path.join(os.environ['WETWARE_DEV_HOME'], '.bashrc')
+with open(path, 'w') as stream:
+    stream.write('# local bashrc')
+stamp = time.time() - 400 * 86400
+os.utime(path, (stamp, stamp))
+runtime = types.SimpleNamespace(state=types.SimpleNamespace())
+client = sessiond.InteractiveSession(runtime)
+client._ensure_bashrc()
+data = open(path).read()
+assert data.count('133;A') == 1, data
+assert abs(os.stat(path).st_mtime - stamp) < 60, (os.stat(path).st_mtime, stamp)
+client._ensure_bashrc()
+assert open(path).read() == data, 'second login changed the file'
+assert 'bashrc prep failed' not in (
+    open(os.path.join(os.environ['WETWARE_STATE_DIR'], 'hidden.log')).read()
+    if os.path.exists(os.path.join(os.environ['WETWARE_STATE_DIR'], 'hidden.log')) else '')
+"""
+        result = subprocess.run([sys.executable, "-c", program], env=self.env,
+                                cwd=self.devkit, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=5)
+        self.assertEqual(result.returncode, 0, dump(result.stdout + result.stderr))
 
     def test_bash_interactive_rc_generates_prompt_marker(self):
         # 无 PTY 也能确认宿主 bash 理解 PS1 的 OSC 转义；不替代中继测试。

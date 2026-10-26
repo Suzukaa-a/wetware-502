@@ -33,6 +33,7 @@ sandbox.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import tempfile
@@ -277,6 +278,62 @@ def reload_state(state) -> bool:
         return True
     except Exception:
         return False
+
+
+def claim_shared_flag(name: str) -> bool:
+    """Atomically claim a one-shot flag in the shared campaign ledger.
+
+    Banner pacing is decided by whichever session first reaches an Inquisitor
+    band, but the decision has to be visible to every other ssh session at once
+    (a sibling hop, a new login, a later session on another host).  The
+    read-modify-write therefore runs under the same lock file ``State.save``
+    uses and replaces the ledger atomically.
+
+    Returns True only for the first caller; a missing/unreadable ledger reads as
+    "not claimed" for the caller but still writes the flag best-effort.
+    """
+    if not name:
+        return False
+    path = state_file()
+    lock_path = path + ".lock"
+    lock = None
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        lock = open(lock_path, "a", encoding="utf-8")
+        try:
+            os.chmod(lock_path, 0o600)
+        except OSError:
+            pass
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            with open(path, "r", encoding="utf-8") as stream:
+                data = json.load(stream)
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        flags = data.get("flags")
+        if not isinstance(flags, dict):
+            flags = {}
+            data["flags"] = flags
+        if flags.get(name):
+            return False
+        flags[name] = True
+        data["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        return bool(_atomic_write(path, json.dumps(data, ensure_ascii=False) + "\n",
+                                  0o600))
+    except Exception:
+        return False
+    finally:
+        if lock is not None:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                lock.close()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------

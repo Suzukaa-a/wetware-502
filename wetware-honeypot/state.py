@@ -12,6 +12,31 @@ STAGE_TITLES = {0:"Act 0 · 日常表象：深夜的 502 排障", 1:"Act 1 · �
 # a persisted ledger beyond it belongs to a previous run (stale state.json).
 PURGE_CMD_LIMIT = 50
 
+# The Inquisitor escalation bands, shared by the engine (state counter), the
+# banner pacer (sessiond) and the kernel-log renderer (commands.dmesg): a
+# threshold is crossed exactly once per run, on the real ``cmd_count``.
+INQUISITOR_BANDS = (25, 35, 42, 50)
+# threshold command count -> context contamination percentage
+CONTAMINATION_BANDS = {25: 72, 35: 89, 42: 96}
+
+
+def contamination_at(cmd_count) -> int:
+    """Real contamination percentage for a command counter (band semantics).
+
+    Below the first band the authored session-open value (12%) applies; the
+    helper is the single source of truth so dmesg, banners and the ledger can
+    never disagree about which band the run is in.
+    """
+    try:
+        count = max(0, int(cmd_count or 0))
+    except Exception:
+        return 12
+    level = 12
+    for band in sorted(CONTAMINATION_BANDS):
+        if count >= band:
+            level = CONTAMINATION_BANDS[band]
+    return level
+
 
 
 def _now():
@@ -123,11 +148,9 @@ class State:
         if cwd == "/opt/cortex" or cwd.startswith("/opt/cortex/"):
             self.flags["entered_opt_cortex"] = True
         transition = self.advance()
-        contamination = {25: 72, 35: 89, 42: 96}.get(self.cmd_count)
-        if contamination is not None and not self.ending:
-            self.pending_events.append(
-                f"[INQUISITOR_PID_6660] command_count={self.cmd_count} "
-                f"context_contamination={contamination}% status=MONITORING")
+        # Escalation banners are not queued here: the pacer in sessiond renders
+        # them from the *shared* counter when a band is first crossed, so a
+        # sibling ssh hop or a new login can neither repeat nor stale them.
         self.save()
         return {"n": self.cmd_count, "stage": self.stage, "transition": transition, "act": self.stage}
 
@@ -212,7 +235,7 @@ class State:
             return "err_4024_stop_probing_lobe0"
         return names.get(self.last_cmd_type, [
             "warn_4024_motor_cortex_write_pending", "fault_he_is_already_in_rack_b7",
-            "diag_4024_inspect_lsusb_and_lspci"][self.cmd_count % 3])
+            "fault_4024_spinal_bus_irq7_storm"][self.cmd_count % 3])
 
     def mirror(self, n=6):
         return [entry["cmd"] for entry in self.history[-n:]] if n > 0 else []
