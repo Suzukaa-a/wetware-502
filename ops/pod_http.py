@@ -17,37 +17,18 @@ STATE = "/var/lib/cortex-agent/state.json"
 
 #: comm is capped at 15 bytes by the kernel
 COMM = b"synapse_http"
-TITLE = b"/opt/cortex/bin/synapse_http.py --mode=production"
-
-
-def _argv_region():
-    """(start, end) of the argv block from /proc/self/stat, or (0, 0)."""
-    try:
-        with open("/proc/self/stat", "rb") as fh:
-            raw = fh.read()
-        close = raw.rfind(b")")
-        fields = raw[close + 2:].split()
-        # fields[0] is state (field 3); arg_start/arg_end are fields 48/49
-        return int(fields[45]), int(fields[46])
-    except Exception:
-        return 0, 0
 
 
 def _rename_process() -> None:
+    """Set the comm shown by ps/top and /proc/<pid>/comm.
+
+    The argv image is left alone: the unit already starts the vendor-named
+    script (/opt/cortex/bin/synapse_http.py), so cmdline reads like a normal
+    Python service on a production node instead of an engine helper.
+    """
     try:
         libc = ctypes.CDLL(None, use_errno=True)
         libc.prctl(15, ctypes.c_char_p(COMM), 0, 0, 0)  # PR_SET_NAME
-    except Exception:
-        pass
-    start, end = _argv_region()
-    if not start or end <= start:
-        return
-    room = end - start
-    payload = (TITLE + b"\0" * room)[:room]
-    try:
-        with open("/proc/self/mem", "r+b", buffering=0) as mem:
-            mem.seek(start)
-            mem.write(payload)
     except Exception:
         pass
 
