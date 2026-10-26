@@ -280,7 +280,22 @@ class World:
                     stream.truncate(spec["size"])
                     stream.flush()
                     os.fsync(stream.fileno())
+                # The deployed worker carries the immutable bit (tamper
+                # evidence); clear it for the swap and restore it afterwards.
+                was_immutable = False
+                try:
+                    out = subprocess.run(["/usr/bin/chattr", "-l", path],
+                                         capture_output=True, timeout=5)
+                    was_immutable = b"i" in out.stdout.split(b" ")
+                except Exception:
+                    pass
+                if was_immutable:
+                    subprocess.run(["/usr/bin/chattr", "-i", path],
+                                   capture_output=True, timeout=5)
                 os.replace(tmp, path)
+                if was_immutable:
+                    subprocess.run(["/usr/bin/chattr", "+i", path],
+                                   capture_output=True, timeout=5)
             finally:
                 if os.path.exists(tmp):
                     os.unlink(tmp)
