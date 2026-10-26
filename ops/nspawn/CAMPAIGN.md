@@ -85,6 +85,35 @@ does not fit and gets hash-renamed by nspawn). Guest hostname and unit name
 stay `hive-director-00`.
 
 
+
+## Host identity pass (installed automatically)
+
+Every `install_*` run ends with the shared identity pass from
+`install_engine_base.sh` (sourced as a library):
+
+- root's login shell is the vendor console `/usr/local/sbin/cortex-node-console`
+  (exec sessions and interactive logins both land in the story shell);
+  `/usr/local/bin/cortex-shell` is gone
+- one service account `subject04` (1005:1004), neutral GECOS, no `subject_04`
+- months of backdated history: apt/dpkg, auth/kern/syslog, wtmp/btmp/lastlog,
+  root bash history; `syslog:adm` log ownership; kernel boot blocks + OOM hash
+- `/etc/machine-info` (CHASSIS=vm, DEPLOYMENT=production) and the guest NIC
+  renamed to `ens192` via `--network-veth-extra` (host veth names unchanged)
+
+Pinned in-story daemons (`cortex-inquisitor.service`, `cortex-agent84.service`)
+run through `/opt/cortex/bin/cortex-daemon-pin` so `/proc/6660` and `/proc/8484`
+are real and carry the cluster token in the factual environment. The core
+upstream is installed as `/opt/cortex/bin/synapse_http.py` with a vendor comm.
+
+## New deployment order
+
+    WETWARE_VM=ubuntu@<vm> ./ops/nspawn/deploy_from_workstation.sh
+    WETWARE_VM=ubuntu@<vm> ./ops/nspawn/install_edge.sh up
+    ssh ubuntu@<vm> 'sudo bash -c "cd /root/wetware-deploy && bash ops/nspawn/install_hive.sh"'
+
+(The hive installer is run from the VM's staging copy; a workstation `scp` of the
+staging tarball can be dropped by the firewall.)
+
 ## Acceptance runbook
 
 Campaign (three real hosts, entry :2222 -> edge):
