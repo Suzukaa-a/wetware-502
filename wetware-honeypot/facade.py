@@ -2459,7 +2459,7 @@ def sha256_text(host: Any, path: Any, *, cwd: Any = DEFAULT_CWD,
 _GENERIC_PROFILE: Tuple[Tuple[str, str, Optional[str]], ...] = (
     ("dir", "conf.d", None),
     ("file", "README", "# retained by the node image; see the platform repo\n"),
-    ("file", "state.json", '{\n  "state": "managed",\n  "updated": "2026-10-26T03:12:00Z"\n}\n'),
+    ("file", "state.json", '{\n  "state": "managed",\n  "updated": "2026-10-26 03:12:00"\n}\n'),
 )
 
 
@@ -3091,7 +3091,7 @@ def _edge_entries() -> List[Tuple[str, Dict[str, Any]]]:
         mode=0o640, owner="ops", group="ops", mtime=_T_WAKE))
     add("/var/lib/ops/sla_countdown.txt", _file(
         _body(HOST_EDGE, "/var/lib/ops/sla_countdown.txt",
-              "SERVICE CREDIT BOARD / RETAINED SNAPSHOT 2026-10-26T03:12:00Z\n"),
+              "SERVICE CREDIT BOARD / RETAINED SNAPSHOT 2026-10-26 03:12:00\n"),
         mode=0o640, owner="ops", group="ops", mtime=_T_WAKE))
     add("/var/local", _dir(mtime=inst))
     add("/var/mail", _dir(mode=0o2775, group="mail", mtime=inst))

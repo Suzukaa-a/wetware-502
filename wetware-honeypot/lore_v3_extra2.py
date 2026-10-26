@@ -30,8 +30,8 @@ Attached facilities correlation, same UTC clock:
 The closure record contains the probe result. Facilities retained the dip.
 """,
     "/var/lib/ops/facilities/night_desk_badges.csv": """export_id,exported_at,badge_ref,holder,desk,chair,assignment_basis,last_physical_entry
-B-4471,2026-10-26T03:00:00Z,STAFF-016,night_attendant,night_desk_B,chair_B_01,shift_rota,2026-10-25T22:54:10Z
-B-4471,2026-10-26T03:00:00Z,STAFF-004,Lin,night_desk_B,chair_B_01,retained_access,2025-08-29T18:09:02Z
+B-4471,2026-10-26 03:00:00,STAFF-016,night_attendant,night_desk_B,chair_B_01,shift_rota,2026-10-25 22:54:10
+B-4471,2026-10-26 03:00:00,STAFF-004,Lin,night_desk_B,chair_B_01,retained_access,2025-08-29T18:09:02Z
 # Two entries for chair_B_01. Physical chair inventory: 1.
 # The second row is an access assignment, copied forward without a badge scan.
 # Occupancy sensor: one load. Reconciliation status: both assignments current.
