@@ -1645,7 +1645,7 @@ server {
 }
 EOF
 systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
-  "systemctl daemon-reload; systemctl enable --now wetware-upstream.service cortex-inquisitor.service cortex-agent84.service; nginx -t && systemctl restart nginx" || true
+  "systemctl daemon-reload; systemctl enable wetware-upstream.service cortex-inquisitor.service cortex-agent84.service; systemctl restart wetware-upstream.service cortex-inquisitor.service cortex-agent84.service; nginx -t && systemctl restart nginx" || true
 
 echo "[engine] installing the real PID 4040 worker unit"
 mkdir -p "$ROOT/opt/cortex/bin"
