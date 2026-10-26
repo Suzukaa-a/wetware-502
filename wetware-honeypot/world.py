@@ -281,40 +281,77 @@ class World:
 
     def _write_binary(self, logical, spec):
         path = self._p(logical)
-        prefix = elf64_prefix(spec["size"])
+        size = int(spec["size"])
+        prefix = elf64_prefix(size)
+        head = b""
         current = False
-        if os.path.isfile(path) and not os.path.islink(path) and os.stat(path).st_size == spec["size"]:
+        deployed = False
+        if os.path.isfile(path) and not os.path.islink(path) and os.stat(path).st_size == size:
             with open(path, "rb") as stream:
-                current = stream.read(len(prefix)) == prefix
-        if not current:
+                head = stream.read(len(prefix))
+            current = head == prefix
+            # The deploy layer ships a real, running binary of exactly the story
+            # size (the pinned worker really owns the story pid).  That binary is
+            # the truth; the sparse story image must never replace it, or the
+            # process would vanish on the next boot.  Only the story metadata is
+            # applied below.
+            deployed = not current and head[:4] == b"\x7fELF"
+        if not current and not deployed:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             fd, tmp = tempfile.mkstemp(prefix=".cortex-elf-", dir=os.path.dirname(path))
             try:
                 with os.fdopen(fd, "wb") as stream:
                     stream.write(prefix)
-                    stream.truncate(spec["size"])
+                    stream.truncate(size)
                     stream.flush()
                     os.fsync(stream.fileno())
                 # The deployed worker carries the immutable bit (tamper
                 # evidence); clear it for the swap and restore it afterwards.
-                was_immutable = False
-                try:
-                    out = subprocess.run(["/usr/bin/chattr", "-l", path],
-                                         capture_output=True, timeout=5)
-                    was_immutable = b"i" in out.stdout.split(b" ")
-                except Exception:
-                    pass
+                # ``chattr -l`` is not portable (e2fsprogs builds without it), so
+                # the flag is read with ``lsattr -d``; if the probe misses, the
+                # PermissionError fallback below still clears the bit once.
+                was_immutable = self._immutable(path)
                 if was_immutable:
                     subprocess.run(["/usr/bin/chattr", "-i", path],
                                    capture_output=True, timeout=5)
-                os.replace(tmp, path)
+                try:
+                    os.replace(tmp, path)
+                except PermissionError:
+                    subprocess.run(["/usr/bin/chattr", "-i", path],
+                                   capture_output=True, timeout=5)
+                    os.replace(tmp, path)
+                    was_immutable = True
                 if was_immutable:
                     subprocess.run(["/usr/bin/chattr", "+i", path],
                                    capture_output=True, timeout=5)
             finally:
                 if os.path.exists(tmp):
                     os.unlink(tmp)
-        self._metadata(logical, dict(spec, mtime="2025-08-30 03:20:00", preserve_mtime=True))
+        # Story metadata (mode/owner/story mtime) is applied even when the
+        # deployed binary is kept: an immutable file must be cleared for the
+        # write and have the tamper bit restored afterwards.
+        was_immutable = self._immutable(path)
+        if was_immutable:
+            subprocess.run(["/usr/bin/chattr", "-i", path],
+                           capture_output=True, timeout=5)
+        try:
+            self._metadata(logical, dict(spec, mtime="2025-08-30 03:20:00", preserve_mtime=True))
+        finally:
+            if was_immutable:
+                subprocess.run(["/usr/bin/chattr", "+i", path],
+                               capture_output=True, timeout=5)
+
+    @staticmethod
+    def _immutable(path):
+        """True when the deployed file carries the immutable tamper bit."""
+        try:
+            out = subprocess.run(["/usr/bin/lsattr", "-d", path],
+                                 capture_output=True, timeout=5)
+            # lsattr output: ``----i---------e------- /path`` -- flags first.
+            head = (out.stdout or b"").split(b" ", 1)[0]
+            return b"i" in head
+        except Exception:
+            return False
 
     def _purge_visible_state(self):
         """仅清理旧公开控制目录里的状态泄露，不扫描剧情档案。"""

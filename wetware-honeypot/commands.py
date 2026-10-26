@@ -1859,6 +1859,39 @@ _STORY_PATH_RE = re.compile(
     r"|/var/lib/(?:vesalius|cortex)|/opt/(?:cortex|vesalius)"
     r"|/var/mail/lin")
 
+# Campaign gate surfaces the kernel-surface layers must never answer.  The
+# exposure layer replies from the real kernel; a gate line claimed by it would
+# either execute the gate action for real (the override write into a /sys file
+# that does not exist, a real ssh that the proof chain should have denied) or
+# drop the flag write for the shared ledger.  These lines stay with the v3
+# campaign planner.  Names (not paths) cover the decryption/token/endgame verbs.
+_GATE_LINE_TOKENS = (
+    "metabolic_override",
+    "lin_emergency_key",
+    "/var/log/auth.log",
+    "/var/log/kern.log",
+    "/proc/6660/environ",
+    "/mnt/secret",
+    "vesalius-ctl",
+    "resuscitate.sh",
+    "euthanize_wetware",
+    "synapse.sock",
+    "lock_compliance",
+    "hive_admin_token",
+)
+_CAMPAIGN_IP_RE = re.compile(r"\b10\.66\.[0-9]{1,3}\.[0-9]{1,3}\b")
+
+
+def _gate_line(raw: str = "") -> bool:
+    """True when the line touches a campaign gate / evidence / endgame surface."""
+    low = (raw or "").lower()
+    if not low:
+        return False
+    if any(token in low for token in _GATE_LINE_TOKENS):
+        return True
+    # A hop to another campaign container is gated by the proof chain.
+    return bool(_CAMPAIGN_IP_RE.search(low))
+
 # Commands whose foreground program owns the terminal: they must be relayed,
 # never captured (an interactive top or a pager cannot be buffered).
 _INTERACTIVE_COMMANDS = {
@@ -2791,13 +2824,20 @@ def plan(state: Any, parsed: Any, source: str) -> Plan:
                 raw = getattr(parsed, "raw", "") or ""
                 # A compound line (``for``/``while``/``$(...)``/subshell) is one
                 # bash program, never a list of segments: splitting it produces
-                # "syntax error: unexpected end of file".
-                if _line_compound(parsed, raw) and not _line_gated_commands(parsed, raw):
+                # "syntax error: unexpected end of file".  A gate command or a
+                # gate path anywhere in it keeps the campaign planner.
+                if _line_compound(parsed, raw) and not (_line_gated_commands(parsed, raw) or _gate_line(raw)):
                     return Plan(segs=[SegPlan(mode="real_line")], ops=[])
                 # Exposure surfaces of the real hosts first (env, kernel log,
                 # journal, mount namespace scaffolding); ps/top/pstree/pgrep/
                 # pidof/ss are the kernel's own answer and run for real below.
-                exposure = real_shell_exposure_plan(state, parsed)
+                # A campaign gate line is never answered by this layer: the
+                # override write must reach the canonical backend, the archive
+                # decryption must stay behind the recon gate and a cross-host
+                # ssh must be denied before it leaves the node.
+                exposure = None
+                if not _gate_line(raw):
+                    exposure = real_shell_exposure_plan(state, parsed)
                 if exposure is not None:
                     # Not time-aligned on purpose: these answers already carry
                     # the session's own clock (journalctl must agree with uptime).
@@ -2817,13 +2857,15 @@ def plan(state: Any, parsed: Any, source: str) -> Plan:
             # prod-cortex-04 keeps the story planner, but its process, network
             # and environment surfaces are still the kernel's: a fabricated
             # table cannot agree with /proc, systemctl, ss and the journal.
-            surface = _campaign_surface_plan(state, parsed, source)
-            if surface is not None:
-                return surface
             raw = getattr(parsed, "raw", "") or ""
-            if _line_compound(parsed, raw) and not _line_gated_commands(parsed, raw):
+            if not _gate_line(raw):
+                surface = _campaign_surface_plan(state, parsed, source)
+                if surface is not None:
+                    return surface
+            if _line_compound(parsed, raw) and not (_line_gated_commands(parsed, raw) or _gate_line(raw)):
                 return Plan(segs=[SegPlan(mode="real_line")], ops=[])
             special = _v3.raw_special(state, parsed)
+
             if special is not None:
                 for _seg in special.segs:
                     if getattr(_seg, "stdout", ""):

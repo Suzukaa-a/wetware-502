@@ -95,6 +95,28 @@ class StateTests(unittest.TestCase):
         self.assertEqual(loaded.cmd_count, 1)
         self.assertEqual(loaded.ending, "inmate")
 
+    def test_campaign_ledger_is_not_expired_at_the_single_node_deadline(self):
+        # The campaign shares one ledger between three host sessions, so a single
+        # operator command is recorded once per hop (edge/core/hive) and a full
+        # campaign run legitimately passes the single-node Inquisitor deadline of
+        # cmd 50.  Expiring the ledger there would wipe the gate flags mid-run and
+        # the hive hop would be denied by the core gate.  Only the single-node
+        # line (campaign_v3 off) keeps the stale-ledger heuristic.
+        campaign = State(self.path)
+        campaign.flags["campaign_v3"] = True
+        campaign.flags["gate3_token"] = True
+        campaign.cmd_count = 60
+        campaign.record_command("pwd", "other", "/root", "exec")
+        self.assertEqual(campaign.cmd_count, 61)
+        self.assertTrue(campaign.flags.get("gate3_token"))
+        self.assertNotIn("prior_run_ledger", campaign.flags)
+
+        single = State(self.path)
+        single.cmd_count = 60
+        single.record_command("pwd", "other", "/root", "exec")
+        self.assertEqual(single.cmd_count, 1)
+        self.assertEqual(single.flags.get("prior_run_ledger"), 60)
+
     def test_corrupt_json_and_unwritable_save_are_silent(self):
         Path(self.path).write_text("{broken", encoding="utf-8")
         self.assertEqual(State.load(self.path).stage, 0)

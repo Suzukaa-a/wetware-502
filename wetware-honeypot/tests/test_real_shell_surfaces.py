@@ -137,6 +137,35 @@ class EdgeHostSurfaceTests(RealShellBase):
             plan = self.plan(line)
             self.assertIn(plan.segs[0].mode, ("real", "real_line"), line)
 
+    def test_gate_lines_are_never_answered_by_the_exposure_layer(self):
+        # A kernel-surface command glued to a gate action keeps the campaign
+        # planner: the override write must reach the canonical backend instead of
+        # being executed as a real bash redirection into /sys.
+        plan = self.plan("journalctl -u ssh -n 2; echo 542A5703 > "
+                         "/sys/kernel/vesalius/metabolic_override")
+        self.assertEqual([seg.mode for seg in plan.segs], ["hijack"])
+        self.assertIn("[sysfs]", plan.segs[0].stdout)
+        self.assertIn("542A5703", plan.segs[0].stdout)
+        # Gate-1 archive decryption stays behind the two recon reads.
+        plan = self.plan("openssl enc -d -aes-256-cbc -pbkdf2 -in "
+                         "/var/backups/lin_emergency_key.tar.enc -out /tmp/lin.tar -k 4f2a9c1e")
+        self.assertEqual([seg.mode for seg in plan.segs], ["hijack"])
+        self.assertIn("passphrase required", plan.segs[0].stdout.lower())
+        # A hop to another campaign container is denied before ssh runs.
+        plan = self.plan("ssh -o BatchMode=yes root@10.66.0.4 true")
+        self.assertEqual([seg.mode for seg in plan.segs], ["hijack"])
+        self.assertIn("permission denied", plan.segs[0].stdout.lower())
+
+    def test_gate_surface_detector(self):
+        for line in ("echo 542A5703 > /sys/kernel/vesalius/metabolic_override",
+                     "cat /var/log/auth.log",
+                     "openssl enc -d -in /var/backups/lin_emergency_key.tar.enc",
+                     "ssh root@10.66.6.1 true",
+                     "/usr/local/sbin/vesalius-ctl --list-specimens"):
+            self.assertTrue(commands._gate_line(line), line)
+        for line in ("ps aux", "journalctl -u ssh -n 2", "df -h", "env"):
+            self.assertFalse(commands._gate_line(line), line)
+
 
 class ChamberHostSurfaceTests(RealShellBase):
     """prod-cortex-04 keeps the planner, but its kernel surfaces stay real."""
@@ -172,6 +201,22 @@ class ChamberHostSurfaceTests(RealShellBase):
                      "(echo one; echo two)"):
             plan = self.plan(line)
             self.assertEqual(plan.segs[0].mode, "real_line", line)
+
+    def test_gate_lines_keep_the_campaign_planner(self):
+        # The kernel surface is real, but a gate action glued to it must not be
+        # captured by the surface path: the planner would drop the canonical
+        # override write (or run the gate read as an unrelated command list).
+        plan = self.plan("ps aux; echo 542A5703 > "
+                         "/sys/kernel/vesalius/metabolic_override")
+        self.assertEqual([seg.mode for seg in plan.segs], ["hijack"])
+        self.assertIn("[sysfs]", plan.segs[0].stdout)
+        self.assertIn("542A5703", plan.segs[0].stdout)
+        plan = self.plan("echo 542A5703 > /sys/kernel/vesalius/metabolic_override")
+        self.assertEqual([seg.mode for seg in plan.segs], ["hijack"])
+        self.assertIn("[sysfs]", plan.segs[0].stdout)
+        plan = self.plan("echo WRONGCODE > /sys/kernel/vesalius/metabolic_override")
+        self.assertEqual([seg.mode for seg in plan.segs], ["hijack"])
+        self.assertIn("invalid override code", plan.segs[0].stdout.lower())
 
     def test_story_gates_are_not_bypassed(self):
         # A surface command glued to a shock/gate command keeps the planner:

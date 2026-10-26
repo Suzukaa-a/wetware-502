@@ -141,6 +141,13 @@ class State:
         """
         if self.ending or self.http_online:
             return False
+        # The campaign deployment shares one ledger between three host sessions,
+        # so a single operator command is recorded once per hop: a full campaign
+        # run legitimately passes cmd 50 without being a previous run.  The
+        # campaign has its own explicit reset path (campaign.py --reset), so this
+        # stale-ledger heuristic only applies to the single-node line.
+        if self.flags.get("campaign_v3"):
+            return False
         if self.cmd_count < PURGE_CMD_LIMIT:
             return False
         archived = int(self.cmd_count)
