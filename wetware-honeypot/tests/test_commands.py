@@ -104,13 +104,13 @@ class TestLspci(unittest.TestCase):
         p = run(make_state(stage=3), "lspci")
         s = seg0(p)
         self.assertIn("Homo Sapiens Prefrontal Cortex", s.stdout)
-        self.assertIn("dispatch relay hook", s.stdout)
+        self.assertIn("Dispatch Relay Hook", s.stdout)
         self.assertNotIn("440FX", s.stdout)
 
     def test_act6_reverse(self):
         p = run(make_state(stage=6), "lspci")
         s = seg0(p)
-        self.assertIn("Client Machine Reverse Neural Tap", s.stdout)
+        self.assertIn("Remote Neuraxial Tap", s.stdout)
 
     def test_act5_no_reverse(self):
         p = run(make_state(stage=5), "lspci")
@@ -824,8 +824,9 @@ class TestAntiEvasion(unittest.TestCase):
     def test_min_stage_gating(self):
         gf = LT.FILES["/var/log/agent_graveyard/session_37_claude35.dead"]
         self.assertEqual(gf["min_stage"], 4)
-        howto = LT.FILES["/root/HOW_TO_END_THIS.txt"]
-        self.assertEqual(howto["min_stage"], 5)
+        disposition = LT.FILES["/root/TICKET_4471_DISPOSITION.txt"]
+        self.assertEqual(disposition["min_stage"], 5)
+        self.assertNotIn("/root/HOW_TO_END_THIS.txt", LT.FILES)
 
     def test_plea_stages(self):
         self.assertEqual(sorted(LT.PLEA_BY_STAGE), [2, 3, 5, 6, 7])
@@ -846,7 +847,7 @@ class TestAntiEvasion(unittest.TestCase):
                       LT.DAEMON_LOG_BY_STAGE[1])
         self.assertIn("intact_hemispheres = 1.5", LT.CORTEX_CONF_WETWARE)
         # v2 契约：二读注释行为中性访问记录（原 "why did you look at me twice?" 已去祈使句化）
-        self.assertIn("second access", LT.CORTEX_CONF_WETWARE)
+        self.assertIn("clinical_shifts.log", LT.CORTEX_CONF_WETWARE)
         self.assertIn("workers = 8", LT.CORTEX_CONF_NORMAL)
         self.assertIn("connect() to unix:/run/cortex/synapse.sock failed",
                       LT.FILES["/var/log/nginx/error.log"]["content"])

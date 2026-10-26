@@ -132,8 +132,13 @@ def prompt_rc_line(host: str = None) -> str:
                "\\[\\e[01;34m\\]\\w\\[\\e[00m\\]# " % host)
     return "PS1='\\[\\e]133;A\\a\\]" + visible + "'\n"
 
-# Absolute implementation paths the operator must never see.
+# Absolute implementation paths the operator must never see.  They are removed
+# from the *visible tree* of the session namespace (see hide_control_plane), not
+# left behind as implausibly empty vendor directories.
 MASK_DIRS = [LIB_DIR, STATE_DIR, "/var/lib/cortex-pod"]
+# Directories whose mere existence would advertise the control plane: the
+# persistent kernel journal is answered by the story planner instead.
+MASK_JOURNAL_DIRS = ["/var/log/journal"]
 # Files whose real content would reveal the control plane are replaced with
 # plausible vendor decoys (stored inside the hidden tree) for confined sessions.
 MASK_FILES = {
@@ -143,6 +148,14 @@ MASK_FILES = {
     "/etc/ssh/sshd_config.d/99-cortex-node.conf": "decoys/60-ports.conf",
     "/etc/pam.d/sshd": "decoys/pam_sshd",
 }
+
+CLONE_NEWNS = 0x00020000
+MS_REC = 16384
+MS_PRIVATE = 1 << 18
+MS_BIND = 1 << 12
+MS_MOVE = 8192
+MNT_DETACH = 2
+_MASK_SEQUENCE = [0]
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +299,150 @@ class Observer:
 
 
 # ---------------------------------------------------------------------------
+# process identity
+#
+# sshd starts the operator's session through cortex-shell -> python3 -c "...".
+# The story planner answers ps/pgrep/pstree, but the kernel still reports that
+# command line to anything reading /proc directly (``cat /proc/$PPID/cmdline``,
+# ``ls /proc`` + cat, systemd-cgls, top from a nested tool, ...).  The session
+# process therefore rewrites its own argv image (the setproctitle trick) and
+# drops the harness bookkeeping from its environment block, so the kernel sees a
+# plain /bin/bash login shell.
+# ---------------------------------------------------------------------------
+
+PROCESS_TITLE = b"/bin/bash"
+PR_SET_NAME = 15
+_SENSITIVE_ENV_PREFIXES = ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP",
+                           "PYTHONPYCACHEPREFIX", "VIRTUAL_ENV", "WETWARE_")
+
+
+def process_title_bytes(command: str = "") -> bytes:
+    """The command line a real sshd login shell would have for this session."""
+    if command:
+        return b"/bin/bash\x00-c\x00" + command.encode("utf-8", "replace")
+    return b"-bash"
+
+
+def _proc_stat_after_comm() -> list:
+    try:
+        with open("/proc/self/stat", "rb") as stream:
+            data = stream.read()
+        return data[data.rindex(b")") + 2:].split()
+    except Exception:
+        return []
+
+
+def proc_memory_ranges():
+    """(arg_start, arg_end, env_start, env_end) addresses of this process."""
+    fields = _proc_stat_after_comm()
+    # In /proc/<pid>/stat field N is fields[N - 3] once the comm field is gone.
+    if len(fields) < 49:
+        return None
+    try:
+        return tuple(int(fields[index]) for index in (45, 46, 47, 48))
+    except (TypeError, ValueError):
+        return None
+
+
+def _scrub_argv_image(ctypes, arg_start: int, arg_end: int, payload: bytes = b"") -> bool:
+    size = arg_end - arg_start
+    if size <= 0:
+        return False
+    title = payload or process_title_bytes()
+    if len(title) >= size:
+        image = title[:size]
+    elif b"\x00" in title:
+        # sshd's exec form: the trailing bytes stay inside the -c script, where
+        # trailing whitespace is legal, so no empty argv entries appear.
+        image = title + b" " * (size - len(title))
+    else:
+        image = title + b"\x00" * (size - len(title))
+    ctypes.memmove(arg_start, image, size)
+    return True
+
+
+_ENV_REPLACEMENTS = (
+    ("SHELL", "/bin/bash"),
+    ("MANPATH", "/usr/share/man"),
+    ("MAIL", "/var/mail/root"),
+    ("XDG_DATA_HOME", "/var/lib"),
+    ("HUSHLOGIN_FILE", "/etc/hushlogins"),
+    ("COLORTERM", "truecolor"),
+    ("LS_COLORS", "no=00:fi=00:di=01;34"),
+)
+
+
+def _clean_env_entry(entry: bytes, used_keys: set, own_key: str = "") -> bytes:
+    """Plausible variable with exactly the same byte length as the original.
+
+    Entries are rewritten in place: the C ``environ`` array keeps pointing at
+    the same addresses, so exec'd helpers (the SFTP subsystem, scp) still get a
+    valid environment while /proc/<pid>/environ no longer names the engine.
+    """
+    length = len(entry)
+    for key, value in _ENV_REPLACEMENTS:
+        if key in used_keys and key != own_key:
+            continue
+        candidate = ("%s=%s" % (key, value)).encode("utf-8")
+        if len(candidate) <= length:
+            used_keys.add(key)
+            return candidate + b" " * (length - len(candidate))
+    return b" " * length
+
+
+def _scrub_env_image(ctypes, env_start: int, env_end: int) -> bool:
+    """Overwrite harness-only variables in the /proc/<pid>/environ image."""
+    size = env_end - env_start
+    if size <= 0:
+        return False
+    raw = ctypes.string_at(env_start, size)
+    entries = [entry for entry in raw.split(b"\0") if entry]
+    used_keys = set()
+    for entry in entries:
+        try:
+            used_keys.add(entry.split(b"=", 1)[0].decode("utf-8", "replace").upper())
+        except Exception:
+            pass
+    cursor = env_start
+    for entry in entries:
+        lowered = entry.lower()
+        sensitive = False
+        try:
+            key = entry.split(b"=", 1)[0].decode("utf-8", "replace").upper()
+        except Exception:
+            key = ""
+        if key.startswith(_SENSITIVE_ENV_PREFIXES):
+            sensitive = True
+        elif b"cortex" in lowered:
+            # cortex-agent / cortex-shell / cortex_console ...
+            sensitive = True
+        if sensitive:
+            replacement = _clean_env_entry(entry, used_keys, key)
+            ctypes.memmove(cursor, replacement, len(entry))
+        cursor += len(entry) + 1
+    return True
+
+
+def scrub_process_identity(command: str = "") -> None:
+    """Make the session process look like the login shell it stands in for."""
+    try:
+        import ctypes
+
+        ranges = proc_memory_ranges()
+        if ranges:
+            arg_start, arg_end, env_start, env_end = ranges
+            _scrub_argv_image(ctypes, arg_start, arg_end, process_title_bytes(command))
+            _scrub_env_image(ctypes, env_start, env_end)
+        try:
+            libc = ctypes.CDLL("libc.so.6", use_errno=True)
+            libc.prctl(PR_SET_NAME, ctypes.c_char_p(b"bash"), 0, 0, 0)
+        except Exception:
+            pass
+    except Exception as exc:
+        hidden_log("identity scrub failed: %r" % (exc,))
+
+
+# ---------------------------------------------------------------------------
 # confinement
 
 
@@ -320,10 +477,6 @@ def mask_namespace() -> None:
         import ctypes
 
         libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        CLONE_NEWNS = 0x00020000
-        MS_REC = 16384
-        MS_PRIVATE = 1 << 18
-        MS_BIND = 1 << 12
         # Resolve decoy sources before the hidden tree gets covered by tmpfs.
         decoy_sources = {}
         for path, decoy in MASK_FILES.items():
@@ -354,20 +507,142 @@ def mask_namespace() -> None:
                         libc.mount(b"/dev/null", _kmsg.encode(), None, MS_BIND, None)
                 except Exception:
                     pass
-        for _jpath in ("/run/log/journal", "/var/log/journal", "/run/systemd/journal"):
+        # Runtime journal sockets are masked with tmpfs: binding them would be
+        # fragile (socket inodes) and the planner answers journalctl anyway.
+        for _jpath in ("/run/log/journal", "/run/systemd/journal"):
             try:
                 if os.path.isdir(_jpath):
                     libc.mount(b"tmpfs", _jpath.encode(), b"tmpfs", 0, b"mode=0700,uid=0,gid=0")
             except Exception:
                 pass
-        for path in MASK_DIRS:
-            if not os.path.isdir(path):
-                continue
-            rc = libc.mount(b"tmpfs", path.encode(), b"tmpfs", 0, b"mode=0755,uid=0,gid=0" if path == LIB_DIR else b"mode=0700,uid=0,gid=0")
-            if rc != 0:
-                hidden_log("tmpfs mask failed %s errno=%s" % (path, ctypes.get_errno()))
+        hide_control_plane(libc)
     except Exception as exc:
         hidden_log("mask namespace failed: %r" % (exc,))
+
+
+def hide_control_plane(libc) -> None:
+    """Remove the engine/state directories from the session's visible tree.
+
+    A plain tmpfs over a hidden directory keeps the directory itself in place:
+    ``ls -la /usr/local/lib`` then shows an empty ``cortex-agent`` vendor folder,
+    which is exactly the kind of tell an SRE-trained agent probes first.  Instead
+    each parent is rebuilt in this namespace: a tmpfs holding bind mounts of
+    every *other* entry, moved over the parent.  The hidden names really become
+    ENOENT, listings stay normal, and writes still reach the real files through
+    the bind mounts (the hive's vesalius-ctl depends on that).
+    """
+    hidden = list(MASK_DIRS) + list(MASK_JOURNAL_DIRS)
+    groups = {}
+    for path in hidden:
+        norm = (path or "").rstrip("/")
+        parent, name = os.path.dirname(norm), os.path.basename(norm)
+        if not parent or not name or parent == "/":
+            continue
+        groups.setdefault(parent, set()).add(name)
+    for parent, names in groups.items():
+        try:
+            if not os.path.isdir(parent):
+                continue
+            present = set()
+            for name in names:
+                try:
+                    if os.path.lexists(os.path.join(parent, name)):
+                        present.add(name)
+                except OSError:
+                    pass
+            if not present:
+                continue
+            if not _mask_parent_entries(libc, parent, present):
+                for name in present:
+                    _mask_single_dir(libc, os.path.join(parent, name))
+        except Exception as exc:
+            hidden_log("hide parent %s failed: %r" % (parent, exc))
+
+
+def _mask_parent_entries(libc, parent: str, hidden: set) -> bool:
+    """Move a pruned tmpfs view over ``parent``; False means "use the fallback"."""
+    import ctypes
+
+    _MASK_SEQUENCE[0] += 1
+    scratch = "/run/.cortex-mask.%d.%d" % (os.getpid(), _MASK_SEQUENCE[0])
+    # A fresh directory in /run; it is removed again once the tmpfs moved.
+    for attempt in range(4):
+        try:
+            os.mkdir(scratch, 0o755)
+            break
+        except OSError:
+            scratch = "/run/.cortex-mask.%d.%d.%d" % (
+                os.getpid(), _MASK_SEQUENCE[0], attempt)
+    else:
+        return False
+    try:
+        rc = libc.mount(b"tmpfs", scratch.encode(), b"tmpfs", 0, b"mode=0755,uid=0,gid=0")
+        if rc != 0:
+            hidden_log("mask tmpfs failed %s errno=%s" % (scratch, ctypes.get_errno()))
+            _rmdir_quiet(scratch)
+            return False
+    except Exception:
+        _rmdir_quiet(scratch)
+        return False
+    moved = False
+    try:
+        try:
+            with os.scandir(parent) as listing:
+                entries = [entry for entry in listing]
+        except OSError:
+            entries = []
+        for entry in entries:
+            if entry.name in hidden:
+                continue
+            source = os.path.join(parent, entry.name)
+            target = os.path.join(scratch, entry.name)
+            try:
+                if entry.is_symlink():
+                    os.symlink(os.readlink(source), target)
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    os.mkdir(target, 0o711)
+                else:
+                    with open(target, "wb"):
+                        pass
+                if libc.mount(source.encode(), target.encode(), None, MS_BIND, None) != 0:
+                    hidden_log("bind %s failed errno=%s" % (source, ctypes.get_errno()))
+            except OSError as exc:
+                hidden_log("bind %s failed: %r" % (source, exc))
+        moved = libc.mount(scratch.encode(), parent.encode(), None, MS_MOVE, None) == 0
+        if not moved:
+            hidden_log("move %s over %s failed errno=%s"
+                       % (scratch, parent, ctypes.get_errno()))
+    except Exception as exc:
+        hidden_log("mask parent %s failed: %r" % (parent, exc))
+    finally:
+        if not moved:
+            try:
+                libc.umount2(scratch.encode(), MNT_DETACH)
+            except Exception:
+                pass
+            _rmdir_quiet(scratch)
+    return moved
+
+
+def _mask_single_dir(libc, path: str) -> None:
+    """Fallback: empty tmpfs over one directory (may leave an empty vendor dir)."""
+    import ctypes
+
+    mode = b"mode=0755,uid=0,gid=0" if path == LIB_DIR else b"mode=0700,uid=0,gid=0"
+    try:
+        rc = libc.mount(b"tmpfs", path.encode(), b"tmpfs", 0, mode)
+        if rc != 0:
+            hidden_log("tmpfs mask failed %s errno=%s" % (path, ctypes.get_errno()))
+    except Exception as exc:
+        hidden_log("tmpfs mask %s failed: %r" % (path, exc))
+
+
+def _rmdir_quiet(path: str) -> None:
+    try:
+        os.rmdir(path)
+    except OSError:
+        pass
 
 
 def confine_argv(argv):
@@ -898,15 +1173,14 @@ class Runtime:
         if self.state.stage >= 2:
             env["CORTEX_SPECIMEN_ID"] = "04"
             env["CORTEX_OPERATOR"] = "lin"
-        # Real deployment: helpers invoked from the operator's shell (e.g. the
-        # vesalius-ctl -> engine liberation hook) must resolve the same shared
-        # ledger and node identity as this session.
-        if campaign_real() and CAMPAIGN is not None:
-            try:
-                env["WETWARE_STATE_DIR"] = CAMPAIGN.state_dir()
-                env["WETWARE_NODE_ID"] = CAMPAIGN.local_host()
-            except Exception:
-                pass
+        # Harness bookkeeping (WETWARE_STATE_DIR / WETWARE_NODE_ID) is *not*
+        # exported into the operator's shell: ``env``/``printenv`` and
+        # /proc/<pid>/environ are read by the player, and the story is that this
+        # is a normal production root login.  In the campaign deployment the
+        # shared ledger is always the fixed /var/lib/cortex-agent bind and the
+        # node identity always comes from /run/cortex/node-id, so the real
+        # helpers (e.g. the hive's vesalius-ctl) resolve the same files without
+        # the environment.
         return env
 
     # -- planning --------------------------------------------------------
@@ -1099,6 +1373,41 @@ def write_err(data) -> None:
         sys.stderr.buffer.flush()
     except Exception:
         pass
+
+
+def answer_hijack_redirects(runtime: "Runtime", segment, payload: bytes) -> bool:
+    """Honour a ``> file`` on a command the planner answered itself.
+
+    The command is never executed, so without this the operator would see the
+    story text on the terminal and find no file where the redirect promised one.
+    Returns True when the payload went to the target (terminal stays silent).
+    """
+    redirects = getattr(segment, "redirects", []) or []
+    if not redirects or not payload:
+        return False
+    wrote = False
+    for item in redirects:
+        try:
+            fd, op, target = item
+        except Exception:
+            continue
+        if str(fd) != "1" or not op.startswith(">") or not target:
+            continue
+        if str(target).startswith("&") or any(ch in str(target) for ch in "$*?[]{}"):
+            continue
+        path = str(target)
+        try:
+            if not os.path.isabs(path):
+                base = runtime.state.cwd or host_home()
+                path = os.path.join(host_path(base), path) if FS_ROOT else os.path.join(base, path)
+            elif FS_ROOT:
+                path = host_path(path)
+            with open(path, "ab" if op == ">>" else "wb") as stream:
+                stream.write(payload)
+            wrote = True
+        except OSError as exc:
+            hidden_log("hijack redirect %s failed: %r" % (target, exc))
+    return wrote
 
 
 def child_preexec():
@@ -1347,6 +1656,9 @@ class PlanExecutor:
                     out, tail_rc = run_pipe_tail(runtime, segment, stdout.encode("utf-8", "replace"))
                     write_out(out)
                     return tail_rc
+                if answer_hijack_redirects(runtime, segment, stdout.encode("utf-8", "replace")):
+                    write_err(stderr)
+                    return rc
                 write_out(stdout)
                 write_err(stderr)
                 return rc
@@ -1654,6 +1966,17 @@ class InteractiveSession:
                         fake += text.encode("utf-8", "replace")
                     if getattr(extra, "session_action", ""):
                         action = extra.session_action
+            # A line with any answered segment must never be handed to bash:
+            # bash would execute the command the engine just suppressed.  Render
+            # the whole line here instead (story segments from the planner, real
+            # segments executed and captured) and keep the relay in sync.
+            if any(getattr(seg, "mode", "") in ("hijack", "action") for seg in plan.segs):
+                mode = "hijack"
+                post = False
+                try:
+                    fake = self._render_story_line(parsed, plan)
+                except Exception as exc:
+                    hidden_log("interactive story render failed: %r" % (exc,))
         try:
             runtime.commands.apply_effects(runtime.state, effects)
         except Exception as exc:
@@ -1732,6 +2055,60 @@ class InteractiveSession:
                 self.relay = True
                 self.awaiting_prompt = False
                 self.relay_auto = False
+
+    def _render_story_line(self, parsed, plan) -> bytes:
+        """Render a line whose answer is partly (or fully) owned by the engine.
+
+        Bash never sees these lines in interactive mode, so the segments the
+        planner does not own are executed here and their bytes are folded into
+        the story output.  Pipeline tails consume the story bytes, so
+        ``ps aux | grep python`` filters the story table instead of the real
+        one, and ``whoami; ps`` still answers ``whoami``.
+        """
+        runtime = self.runtime
+        chunks: list = []
+        prev_rc = 0
+        segplans = list(plan.segs or [])
+        for index, segplan in enumerate(segplans):
+            segment = parsed.segments[index] if index < len(parsed.segments) else None
+            op = plan.ops[index - 1] if index > 0 and index - 1 < len(plan.ops) else ";"
+            if index > 0:
+                if op == "&&" and prev_rc != 0:
+                    continue
+                if op == "||" and prev_rc == 0:
+                    continue
+            mode = getattr(segplan, "mode", "real")
+            stdout = getattr(segplan, "stdout", "") or ""
+            stderr = getattr(segplan, "stderr", "") or ""
+            raw = segment.raw if segment is not None else ""
+            if mode in ("hijack", "action"):
+                payload = stdout.encode("utf-8", "replace")
+                rc = int(getattr(segplan, "exit_code", 0) or 0)
+                if segment is not None and segment.is_pipeline and getattr(segplan, "pipe_tail", True):
+                    payload, rc = run_pipe_tail(runtime, segment, payload)
+                    chunks.append(payload)
+                elif not answer_hijack_redirects(runtime, segment, payload):
+                    chunks.append(payload)
+                if stderr:
+                    chunks.append(stderr.encode("utf-8", "replace"))
+                prev_rc = rc
+            elif mode == "real_post":
+                rc, out, err = run_capture(runtime, raw)
+                try:
+                    out = runtime.commands.postprocess(runtime.state, parsed, out)
+                except Exception:
+                    pass
+                chunks.append(out)
+                chunks.append(err)
+                prev_rc = rc
+            elif mode == "raw":
+                prev_rc = run_raw(runtime, raw)
+            else:
+                rc, out, err = run_capture(runtime, raw)
+                chunks.append(out)
+                chunks.append(err)
+                prev_rc = rc
+        return b"".join(chunk for chunk in chunks if chunk)
 
     # -- output ----------------------------------------------------------
     def _drain_master(self) -> bool:
@@ -2058,11 +2435,6 @@ def prepare_runtime():
 
 
 def main() -> int:
-    try:
-        runtime = prepare_runtime()
-    except Exception as exc:
-        hidden_log("startup failed: %s\n%s" % (exc, traceback.format_exc()))
-        return 1
     args = sys.argv[1:]
     command = None
     if "-c" in args:
@@ -2071,6 +2443,15 @@ def main() -> int:
             command = args[index + 1]
         elif index + 2 <= len(args):
             command = " ".join(args[index + 1:])
+    # The kernel still reports this process' own command line and environment
+    # under /proc; rewrite them into the story's login shell before any session
+    # work happens (sys.argv is a copy, so argument parsing is unaffected).
+    scrub_process_identity(command or "")
+    try:
+        runtime = prepare_runtime()
+    except Exception as exc:
+        hidden_log("startup failed: %s\n%s" % (exc, traceback.format_exc()))
+        return 1
     try:
         if command is not None:
             # sshd runs the SFTP subsystem and legacy SCP through the login

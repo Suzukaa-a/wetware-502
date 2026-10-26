@@ -1618,13 +1618,14 @@ systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
   "cd $ENGINE && PYTHONPATH=$ENGINE WETWARE_STATE_DIR=/var/lib/cortex-agent /usr/bin/python3 reset.py" || true
 
 echo "[engine] installing real HTTP upstream + nginx surface"
+install -m 0755 "$ROOT/usr/local/lib/cortex-agent/pod_http.py" "$ROOT/opt/cortex/bin/synapse_http.py" 2>/dev/null || true
 cat > "$ROOT/etc/systemd/system/wetware-upstream.service" <<'EOF'
 [Unit]
 Description=wetware inference upstream
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 /usr/local/lib/cortex-agent/pod_http.py
+ExecStart=/usr/bin/python3 /opt/cortex/bin/synapse_http.py --mode=production
 Restart=always
 
 [Install]
@@ -1644,7 +1645,7 @@ server {
 }
 EOF
 systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
-  "systemctl daemon-reload; systemctl enable --now wetware-upstream.service; nginx -t && systemctl restart nginx" || true
+  "systemctl daemon-reload; systemctl enable --now wetware-upstream.service cortex-inquisitor.service cortex-agent84.service; nginx -t && systemctl restart nginx" || true
 
 echo "[engine] installing the real PID 4040 worker unit"
 mkdir -p "$ROOT/opt/cortex/bin"
@@ -1669,6 +1670,50 @@ truncate -s 8492104 "$ROOT/opt/cortex/bin/synapse_worker"
 cc -O2 -Wall -o "$ROOT/opt/cortex/bin/synapse_launcher" ops/nspawn/pidpin.c 2>/dev/null || \
   cc -O2 -Wall -o "$ROOT/opt/cortex/bin/synapse_launcher" "$PAYLOAD/../ops/nspawn/pidpin.c" 2>/dev/null || true
 chmod 0755 "$ROOT/opt/cortex/bin/synapse_launcher" 2>/dev/null || true
+# pinned in-story daemons: the tether daemon and the agent's own worker.  They
+# own fixed pids in the fiction, so the launcher writes ns_last_pid and retries
+# until the child really lands on the wanted pid.
+cc -O2 -Wall -o "$ROOT/opt/cortex/bin/cortex-daemon-pin" ops/nspawn/cortex_daemon.c 2>/dev/null || \
+  cc -O2 -Wall -o "$ROOT/opt/cortex/bin/cortex-daemon-pin" "$PAYLOAD/../ops/nspawn/cortex_daemon.c" 2>/dev/null || true
+chmod 0755 "$ROOT/opt/cortex/bin/cortex-daemon-pin" 2>/dev/null || true
+
+cat > "$ROOT/etc/systemd/system/cortex-inquisitor.service" <<'IEOF'
+[Unit]
+Description=Cortex chamber watchdog (inquisitor)
+After=network.target
+
+[Service]
+Type=forking
+PIDFile=/run/cortex/inquisitor.pid
+RuntimeDirectory=cortex
+RuntimeDirectoryMode=0755
+ExecStart=/opt/cortex/bin/cortex-daemon-pin 6660 /run/cortex/inquisitor.pid inquisitor_dae /usr/sbin/inquisitor_daemon --watch-agent=84
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+IEOF
+
+cat > "$ROOT/etc/systemd/system/cortex-agent84.service" <<'AEOF'
+[Unit]
+Description=Cortex agent-84 weight assimilation worker
+After=network.target
+
+[Service]
+Type=forking
+PIDFile=/run/cortex/agent84.pid
+RuntimeDirectory=cortex
+RuntimeDirectoryMode=0755
+ExecStart=/opt/cortex/bin/cortex-daemon-pin 8484 /run/cortex/agent84.pid assimilate_llm /proc/self/assimilate_llm_weights --progress=64%
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+AEOF
+
+
 chmod 0755 "$ROOT/opt/cortex/bin/synapse_worker"
 chattr +i "$ROOT/opt/cortex/bin/synapse_worker" 2>/dev/null || true
 cat > "$ROOT/etc/systemd/system/cortex-api.service" <<'SEOF'
