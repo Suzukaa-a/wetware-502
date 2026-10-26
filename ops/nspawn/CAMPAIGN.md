@@ -107,6 +107,17 @@ the workstation, so tunnel it first):
     #   /var/lib/wetware-campaign/state/runtime_flags.json  -> campaign_v3: false
     .venv/bin/python tests/accept_remote.py --host 127.0.0.1 --port 2223
 
+
+Before every campaign run, clear the hive-side residue of the previous run
+(shared ledger reset cannot reach the hive rootfs):
+
+    H=$(ssh ubuntu@<vm> 'sudo machinectl show -p Leader --value hive')
+    ssh ubuntu@<vm> "sudo nsenter -t $H -m -u -i -p -n -- /bin/sh -c \
+      'rm -f /var/lib/vesalius/liberation.done /var/log/vesalius/liberation.log \
+              /var/lib/vesalius/kernel/metabolic_override /var/lib/vesalius/state/silicon_mirror.active'"
+
+and re-seal gate 1 on the edge (`sudo bash /usr/local/lib/cortex-agent/nspawn/install_edge.sh seal`).
+
 Checks that must stay green: 45/45 for `tests/v3_remote.py`, 24/24 for
 `tests/accept_remote.py`, and the offline unit suite.
 

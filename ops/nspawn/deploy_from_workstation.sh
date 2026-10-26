@@ -32,9 +32,9 @@ ssh -o StrictHostKeyChecking=no "$TARGET" \
 echo "[deploy] installing nspawn scripts on the VM host"
 ssh -o StrictHostKeyChecking=no "$TARGET" \
   "sudo install -d -m 0755 /usr/local/lib/cortex-agent/nspawn && \
-   sudo cp -f $REMOTE_STAGE/ops/nspawn/*.sh $REMOTE_STAGE/ops/nspawn/*.c \
-     $REMOTE_STAGE/ops/nspawn/*.md /usr/local/lib/cortex-agent/nspawn/ 2>/dev/null || true; \
-   sudo chmod 0755 /usr/local/lib/cortex-agent/nspawn/*.sh"
+   sudo bash -c 'cp -f $REMOTE_STAGE/ops/nspawn/*.sh $REMOTE_STAGE/ops/nspawn/*.c \
+     $REMOTE_STAGE/ops/nspawn/*.md /usr/local/lib/cortex-agent/nspawn/ && \
+     chmod 0755 /usr/local/lib/cortex-agent/nspawn/*.sh'"
 
 echo "[deploy] clearing transient probe units"
 ssh -o StrictHostKeyChecking=no "$TARGET" \
