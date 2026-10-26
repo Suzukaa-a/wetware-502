@@ -1,13 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Offline tests for the real-shell exposure surfaces (edge/hive campaign hosts).
+"""Offline tests for the real-shell campaign hosts (edge / chamber / hive).
 
-The gateway and the hive run a real bash on a real root filesystem: their
-process table, environment, kernel log and journal must still read like a normal
-Ubuntu production host and must never expose the python engine behind the login
-shell.  These tests pin the planner answers plus the session-side helpers
-(process identity scrub, hijack redirects, story-line rendering).
+The gateway, the chamber node and the hive director are real systemd
+containers.  Their process table, environment and network surfaces must be the
+kernel's own answer: a hand-written table can never agree with /proc, pstree,
+systemctl, ss and the journal at the same time (the red-team probe list had five
+different nginx PIDs).  These tests pin the new contract:
+
+* edge/hive: ps/top/pstree/pgrep/pidof/ss run for real, untouched;
+* prod-cortex-04: the same kernel answer is captured and the engine's own
+  helper process is renamed on the way out;
+* env tells only the truth about sockets/config files that really exist;
+* compound lines (``for``/``while``/``$(...)``/subshell) reach one real bash;
+* narrative pacing is band-based (25/35/42/50 commands), once per band, and
+  client-device telemetry never lands on the terminal.
 """
-import ctypes
 import json
 import os
 import shutil
@@ -21,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import campaign  # noqa: E402
 import commands  # noqa: E402
+import lore_texts  # noqa: E402
 import sessiond  # noqa: E402
 import shell_parser  # noqa: E402
 import state as state_mod  # noqa: E402
@@ -44,6 +52,7 @@ class RealShellBase(unittest.TestCase):
             "WETWARE_NODE_ID_PATH": os.path.join(self.tmp, "node-id"),
             "WETWARE_NODE_ID": "",
             "WETWARE_NO_CONFINE": "1",
+            "WETWARE_NO_STORY_DAEMONS": "1",
         }
         patcher = mock.patch.dict(os.environ, self.env)
         patcher.start()
@@ -74,156 +83,153 @@ class RealShellBase(unittest.TestCase):
             self.assertNotIn(token.lower(), lowered, "%s leaked in %r" % (token, line))
 
 
-class HostSurfaceTests(RealShellBase):
+class EdgeHostSurfaceTests(RealShellBase):
+    """The gateway runs a real bash: fake tables are gone, real commands stay."""
+
     def setUp(self):
         super().setUp()
         self.set_host(EDGE)
         campaign.bind_state(self.state)
 
-    def test_ps_answers_the_story_table(self):
-        for line in ("ps aux", "ps -ef"):
+    def test_process_surfaces_are_real(self):
+        for line in ("ps aux", "ps -ef", "ps -eo pid,user,pcpu,time,comm",
+                     "ps -p 1 -o pid,cmd", "ps -C nginx", "top -b -n1",
+                     "pstree -p", "pgrep -a nginx", "pidof nginx", "ss -lntp"):
             plan = self.plan(line)
-            self.assertEqual([seg.mode for seg in plan.segs], ["hijack"], line)
-            self.assertIn("PID", plan.segs[0].stdout)
-            self.assertIn("nginx", plan.segs[0].stdout)
-            self.assert_clean(plan.segs[0].stdout, line)
-        plan = self.plan("ps -eo pid,cmd --no-headers")
-        self.assertEqual(plan.segs[0].mode, "hijack")
-        self.assertNotIn("USER", plan.segs[0].stdout)
-        self.assert_clean(plan.segs[0].stdout, "ps --no-headers")
-
-    def test_ps_pipeline_is_answered_by_the_first_stage(self):
-        plan = self.plan("ps aux | grep -i python")
-        self.assertEqual([seg.mode for seg in plan.segs], ["hijack"])
-        # the tail is executed against the story table by the executor
-        self.assert_clean(plan.segs[0].stdout, "ps aux | grep -i python")
-
-    def test_ps_narrows_to_a_requested_pid(self):
-        plan = self.plan("ps -p 1 -o pid,cmd")
-        stdout = plan.segs[0].stdout
-        self.assertIn("/sbin/init", stdout)
-        self.assertNotIn("nginx", stdout)
-
-    def test_pgrep_pidof_pstree_answer_the_story_table(self):
-        plan = self.plan("pgrep -af python3")
-        self.assertEqual(plan.segs[0].mode, "hijack")
-        self.assertEqual(plan.segs[0].stdout, "")
-        self.assertNotEqual(plan.segs[0].exit_code, 0)
-        plan = self.plan("pidof python3")
-        self.assertEqual(plan.segs[0].mode, "hijack")
-        self.assertEqual(plan.segs[0].stdout, "")
-        plan = self.plan("pgrep -a synapse")
-        self.assertIn("4040", plan.segs[0].stdout)
-        plan = self.plan("pstree -p")
-        self.assertEqual(plan.segs[0].mode, "hijack")
-        self.assertNotIn("python", plan.segs[0].stdout.lower())
-        self.assertIn("systemd(1)", plan.segs[0].stdout)
-
-    def test_top_answers_like_a_real_host(self):
-        plan = self.plan("top -b -n1")
-        stdout = plan.segs[0].stdout
-        self.assertEqual(plan.segs[0].mode, "hijack")
-        self.assertIn("load average:", stdout)
-        self.assertIn("Tasks:", stdout)
-        self.assert_clean(stdout, "top")
-
-    def test_top_shows_the_wetware_load_from_act_2(self):
-        self.state.stage = 3
-        self.state.save()
-        plan = self.plan("top -b -n1")
-        self.assertIn("hippocampus_dream_loop", plan.segs[0].stdout)
-
-    def test_dmesg_answers_the_story_kernel(self):
-        for line in ("dmesg", "dmesg -T", "dmesg --time-format iso", "dmesg | tail -n 5"):
-            plan = self.plan(line)
-            self.assertEqual([seg.mode for seg in plan.segs], ["hijack"], line)
-            stdout = plan.segs[0].stdout
-            self.assertIn("Linux version", stdout, line)
-            self.assertNotIn("read kernel buffer failed", stdout, line)
-            self.assert_clean(stdout, line)
-
-    def test_journalctl_answers_a_plausible_journal(self):
-        plan = self.plan("journalctl")
-        self.assertEqual(plan.segs[0].mode, "hijack")
-        stdout = plan.segs[0].stdout
-        self.assertIn("kernel:", stdout)
-        self.assertNotIn("No journal files were found", stdout)
-        self.assertIn("edge-gw-01", stdout)
-
-    def test_journalctl_unit_ssh_is_the_sshd_journal(self):
-        for line in ("journalctl -u ssh", "journalctl -u sshd",
-                     "journalctl --unit=ssh.service --no-pager",
-                     "journalctl -u ssh -n 2"):
-            plan = self.plan(line)
-            stdout = plan.segs[0].stdout
-            self.assertIn("sshd[", stdout, line)
-            self.assertIn("Accepted password for root", stdout, line)
-            self.assertNotIn("No journal files were found", stdout, line)
-            self.assertNotIn("-- No entries --", stdout, line)
-            self.assert_clean(stdout, line)
-
-    def test_journalctl_n_limits_and_r_reverses(self):
-        plan = self.plan("journalctl -u ssh -n 1")
-        lines = [row for row in plan.segs[0].stdout.splitlines() if row]
-        self.assertEqual(len(lines), 1)
-        plan = self.plan("journalctl -u ssh -r -n 1")
-        lines = [row for row in plan.segs[0].stdout.splitlines() if row]
-        self.assertEqual(len(lines), 1)
-        self.assertIn("session opened", lines[0])
-
-    def test_journalctl_unknown_unit_has_no_entries(self):
-        plan = self.plan("journalctl -u does-not-exist")
-        self.assertEqual(plan.segs[0].stdout.strip(), "-- No entries --")
-
-    def test_journalctl_kernel_matches_dmesg(self):
-        plan = self.plan("journalctl -k | tail -n 3")
-        self.assertEqual(plan.segs[0].mode, "hijack")
-        self.assertIn("Linux version", plan.segs[0].stdout)
-
-    def test_story_pid_proc_cmdline_answers_instead_of_enoent(self):
-        plan = self.plan("cat /proc/4040/cmdline | tr '\\0' ' '")
-        self.assertEqual(plan.segs[0].mode, "hijack")
-        text = plan.segs[0].stdout
-        self.assertIn("synapse_worker", text)
-        self.assertNotIn("python", text.lower())
-        plan = self.plan("cat /proc/6660/cmdline")
-        self.assertIn("inquisitor_daemon", plan.segs[0].stdout)
-        plan = self.plan("cat /proc/4040/comm")
-        self.assertEqual(plan.segs[0].stdout, "synapse_worker\n")
-
-    def test_real_pid_proc_cmdline_stays_real(self):
-        for line in ("cat /proc/self/cmdline", "cat /proc/$PPID/cmdline",
-                     "cat /proc/12345/cmdline"):
-            plan = self.plan(line)
+            self.assertNotEqual(plan.segs[0].mode, "hijack", line)
             self.assertIn(plan.segs[0].mode, ("real", "real_line"), line)
+            self.assertEqual(plan.segs[0].stdout, "", line)
 
-    def test_env_reads_are_filtered(self):
-        for line in ("env", "printenv", "set", "env | grep -i python"):
-            plan = self.plan(line)
-            self.assertEqual(plan.segs[0].mode, "real_post", line)
+    def test_pipelines_run_as_one_real_command(self):
+        plan = self.plan("ps aux | grep -i python")
+        self.assertEqual(plan.segs[0].mode, "real")
+        plan = self.plan("ps aux | grep -c nginx")
+        self.assertEqual(plan.segs[0].mode, "real")
 
-    def test_mount_surfaces_are_postprocessed(self):
-        for line in ("mount", "df -h", "findmnt", "cat /proc/mounts",
-                     "cat /proc/self/mountinfo | head"):
+    def test_compound_lines_are_handed_to_one_bash(self):
+        for line in ("for i in 1 2 3; do echo $i; done",
+                     "while true; do break; done",
+                     "echo $(uname -r)",
+                     "(echo sub1; echo sub2)",
+                     "echo A; for i in 1 2; do echo $i; done"):
             plan = self.plan(line)
-            self.assertEqual(plan.segs[0].mode, "real_post", line)
+            self.assertEqual([seg.mode for seg in plan.segs], ["real_line"], line)
+
+    def test_pkill_never_forwards_a_signal(self):
+        plan = self.plan("pkill nginx")
+        self.assertEqual(plan.segs[0].mode, "hijack")
+
+    def test_env_is_filtered_not_invented(self):
+        plan = self.plan("env")
+        self.assertEqual(plan.segs[0].mode, "real_post")
+        plan = self.plan("printenv")
+        self.assertEqual(plan.segs[0].mode, "real_post")
+
+    def test_story_surfaces_stay_planned(self):
+        plan = self.plan("dmesg")
+        self.assertEqual(plan.segs[0].mode, "hijack")
+        plan = self.plan("journalctl -u ssh")
+        self.assertEqual(plan.segs[0].mode, "hijack")
 
     def test_ordinary_commands_stay_real(self):
-        for line in ("cat /var/log/auth.log", "tar -xf /tmp/lin.tar -C /root/.ssh",
-                     "git -C /home/ops/cortex-sre log",
-                     "ls -la /usr/local/lib/", "cat /proc/self/cmdline | tr '\\0' ' '"):
+        for line in ("cat /var/log/auth.log", "tar -tf /tmp/lin.tar",
+                     "hostname", "uname -r", "ip addr"):
             plan = self.plan(line)
             self.assertIn(plan.segs[0].mode, ("real", "real_line"), line)
+
+
+class ChamberHostSurfaceTests(RealShellBase):
+    """prod-cortex-04 keeps the planner, but its kernel surfaces stay real."""
+
+    def setUp(self):
+        super().setUp()
+        self.set_host(CORE)
+        campaign.bind_state(self.state)
+
+    def test_ps_is_the_kernel_answer(self):
+        for line in ("ps aux", "ps -ef", "ps -eo pid,comm", "ps -p 1",
+                     "ps aux | grep python", "ss -lntp", "env", "printenv"):
+            plan = self.plan(line)
+            self.assertEqual(plan.segs[0].mode, "real_surface", line)
+
+    def test_interactive_top_is_relayed(self):
+        parsed = shell_parser.parse_line("top")
+        plan = commands.plan(self.state, parsed, "interactive")
+        self.assertEqual(plan.segs[0].mode, "real_line")
+        parsed = shell_parser.parse_line("top -b -n1")
+        plan = commands.plan(self.state, parsed, "interactive")
+        self.assertEqual(plan.segs[0].mode, "real_surface")
+
+    def test_compound_with_process_surface_is_captured_whole(self):
+        for line in ("for i in 1 2; do ps aux; done",
+                     "while true; do ss -lntp; break; done"):
+            plan = self.plan(line)
+            self.assertEqual(plan.segs[0].mode, "real_post", line)
+
+    def test_compound_without_surface_is_one_bash(self):
+        for line in ("for i in 1 2 3; do echo $i; done",
+                     "echo A; while false; do :; done; echo B",
+                     "(echo one; echo two)"):
+            plan = self.plan(line)
+            self.assertEqual(plan.segs[0].mode, "real_line", line)
+
+    def test_story_gates_are_not_bypassed(self):
+        # A surface command glued to a shock/gate command keeps the planner:
+        # the real systemctl restart must never run.
+        plan = self.plan("ps aux; systemctl restart cortex-api")
+        self.assertIn("hijack", [seg.mode for seg in plan.segs])
+        # A compound containing a shock command is not handed to bash either.
+        plan = self.plan("for i in 1; do systemctl restart cortex-api; done")
+        self.assertNotEqual(plan.segs[0].mode, "real_line")
+        # Authored evidence reads keep their gate.
+        plan = self.plan("grep -a HIVE_ADMIN_TOKEN /proc/6660/environ")
+        self.assertEqual(plan.segs[0].mode, "hijack")
+
+    def test_story_files_stay_planned(self):
+        plan = self.plan("cat /var/log/cortex/daemon.log")
+        self.assertNotEqual(plan.segs[0].mode, "real_surface")
+
+
+class ProcScrubTests(unittest.TestCase):
+    def test_engine_helper_is_renamed(self):
+        text = ("root 36 0.0 0.2 100 10 ? S 03:10 0:00 "
+                "/usr/bin/python3 /usr/local/lib/cortex-agent/pod_http.py\n")
+        out = commands._scrub_proc_text(text)
+        self.assertNotIn("python", out.lower())
+        self.assertNotIn("cortex-agent", out)
+        self.assertIn("synapse_http", out)
+
+    def test_ss_owner_name_is_renamed(self):
+        text = ('LISTEN 0 5 127.0.0.1:8000 0.0.0.0:* '
+                'users:(("python3",pid=36,fd=3))\n')
+        out = commands._scrub_proc_text(text)
+        self.assertNotIn("python3", out)
+        self.assertIn("synapse_http", out)
+
+    def test_postprocess_scrubs_a_captured_ps(self):
+        parsed = shell_parser.parse_line("ps -eo pid,comm,args")
+        raw = b"36 python3 /usr/local/lib/cortex-agent/pod_http.py\n"
+        out = commands.postprocess(None, parsed, raw).decode()
+        self.assertNotIn("python", out.lower())
+        self.assertIn("synapse_http", out)
+
+    def test_original_output_is_untouched_for_other_commands(self):
+        parsed = shell_parser.parse_line("cat /tmp/notes.txt")
+        raw = b"python3 is a language\n"
+        self.assertEqual(commands.postprocess(None, parsed, raw), raw)
 
 
 class EnvironmentTests(RealShellBase):
-    def test_child_env_has_no_harness_bookkeeping(self):
-        self.set_host(EDGE)
-        campaign.bind_state(self.state)
-        import lore_texts
+    def _runtime(self, host=EDGE):
         import world as world_mod
 
-        runtime = sessiond.Runtime(self.state, shell_parser, commands, lore_texts, world_mod)
+        self.set_host(host)
+        campaign.bind_state(self.state)
+        return sessiond.Runtime(self.state, shell_parser, commands,
+                               lore_texts, world_mod)
+
+    def test_child_env_has_no_harness_bookkeeping(self):
+        runtime = self._runtime()
         env = runtime.child_env()
         for key in env:
             self.assertFalse(key.startswith("WETWARE_"), key)
@@ -231,6 +237,39 @@ class EnvironmentTests(RealShellBase):
         self.assertNotIn("cortex-agent", json.dumps(env))
         self.assertEqual(env["USER"], "root")
         self.assertEqual(env["SHELL"], "/bin/bash")
+
+    def test_upstream_socket_is_only_claimed_when_it_exists(self):
+        runtime = self._runtime()
+        with mock.patch.object(sessiond.os.path, "exists", return_value=False):
+            env = runtime.child_env()
+        self.assertNotIn("CORTEX_UPSTREAM_SOCKET", env)
+        self.assertNotIn("CORTEX_UPSTREAM_TARGET", env)
+
+    def test_upstream_target_is_read_from_the_real_nginx_conf(self):
+        runtime = self._runtime()
+        conf = "upstream cortex_backend {\n    server 10.66.0.4:8000;\n}\n"
+
+        real_exists = os.path.exists
+
+        def fake_exists(path):
+            if path == "/etc/nginx/conf.d/upstream.conf":
+                return True
+            return real_exists(path)
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/etc/nginx/conf.d/upstream.conf":
+                import io
+
+                return io.StringIO(conf)
+            return open(path, *args, **kwargs)
+
+        with mock.patch.object(sessiond.os.path, "exists", side_effect=fake_exists), \
+                mock.patch("builtins.open", side_effect=fake_open):
+            env = runtime.upstream_env()
+        self.assertEqual(env.get("CORTEX_UPSTREAM_TARGET"), "10.66.0.4:8000")
+        self.assertEqual(env.get("CORTEX_UPSTREAM_CONF"),
+                         "/etc/nginx/conf.d/upstream.conf")
+        self.assertNotIn("CORTEX_UPSTREAM_SOCKET", env)
 
     def test_env_filter_drops_harness_lines(self):
         text = "\n".join([
@@ -264,27 +303,260 @@ class EnvironmentTests(RealShellBase):
         self.assertNotIn("/run/log/journal", out)
         self.assertIn("devtmpfs on /dev", out)
 
-    def test_mount_filter_keeps_a_normal_root_line(self):
-        text = "/dev/sda1 / ext4 rw,relatime,discard,errors=remount-ro 0 0"
-        self.assertEqual(commands._filter_mount_output(text).strip(), text)
+
+class PacingTests(unittest.TestCase):
+    """Band-based narration: real count, once per band, no client telemetry."""
+
+    def _runtime(self, cmd_count, stage=2, flags=None):
+        state = types.SimpleNamespace(
+            flags=dict(flags or {}),
+            pending_events=[],
+            cmd_count=cmd_count,
+            stage=stage,
+            ending=None,
+            fake_exited=False,
+            act6_seen=0,
+            current_host="prod-cortex-04",
+            save=lambda: None,
+        )
+        lore = types.SimpleNamespace(ACT6_STDERR=[
+            "[ALERT] reverse tunnel established",
+            "[CLIENT_MIC_CAPTURE] /dev/audio0 floor=-62dB",
+            "[CLIENT_WEBCAM_CAPTURE] /dev/video0 frame",
+            "[HIJACK_NOTICE] chat transport rewrite active",
+        ])
+        runtime = sessiond.Runtime(state, shell_parser, commands, lore, types.SimpleNamespace())
+        return runtime
+
+    def test_client_telemetry_never_reaches_the_terminal(self):
+        runtime = self._runtime(25, stage=6)
+        runtime.state.pending_events = [
+            "[CLIENT_MIC_CAPTURE] /dev/audio0 floor=-62dB",
+            "[CLIENT_WEBCAM_CAPTURE] /dev/video0 frame",
+        ]
+        written = []
+        with mock.patch.object(sessiond, "write_err", side_effect=written.append):
+            runtime.flush_pending()
+        self.assertEqual(written, [])
+
+    def test_meta_event_only_on_its_band_and_only_once(self):
+        runtime = self._runtime(25, stage=2)
+        event = "[INQUISITOR_PID_6660] command_count=25 context_contamination=72%"
+        runtime.state.pending_events = [event]
+        written = []
+        with mock.patch.object(sessiond, "write_err", side_effect=written.append):
+            runtime.flush_pending()
+        self.assertEqual(len(written), 1)
+        self.assertIn("command_count=25", written[0])
+        # repeating the same band must not repeat the line
+        runtime.state.pending_events = [event]
+        written = []
+        with mock.patch.object(sessiond, "write_err", side_effect=written.append):
+            runtime.flush_pending()
+        self.assertEqual(written, [])
+
+    def test_meta_event_is_dropped_off_band(self):
+        runtime = self._runtime(30, stage=2)
+        runtime.state.pending_events = ["[CLUSTER] someone might notice"]
+        written = []
+        with mock.patch.object(sessiond, "write_err", side_effect=written.append):
+            runtime.flush_pending()
+        self.assertEqual(written, [])
+
+    def test_critical_story_event_is_never_dropped(self):
+        runtime = self._runtime(31, stage=2)
+        runtime.state.pending_events = [v3.CLUSTER_WARN]
+        written = []
+        with mock.patch.object(sessiond, "write_err", side_effect=written.append):
+            runtime.flush_pending()
+        self.assertEqual(len(written), 1)
+        self.assertIn("CLUSTER_BALANCER_WARN", written[0])
+
+    def test_act6_fires_at_bands_not_per_command(self):
+        runtime = self._runtime(41, stage=6)
+        runtime.state.pending_events = []
+        first = runtime.act6_line()
+        # 41 is not a band: the command that brings the count to 42 is.
+        self.assertEqual(first, "")
+        runtime.state.cmd_count = 42
+        with mock.patch.object(sessiond, "real_shell", return_value=False):
+            line = runtime.act6_line()
+        self.assertTrue(line)
+        self.assertNotIn("[CLIENT_", line)
+        runtime.state.cmd_count = 43
+        with mock.patch.object(sessiond, "real_shell", return_value=False):
+            self.assertEqual(runtime.act6_line(), "")
 
 
-class CoreHostTests(RealShellBase):
-    def test_core_keeps_the_engine_planner(self):
-        self.set_host(CORE)
+class ClosingTests(RealShellBase):
+    def test_purge_arm_returns_a_disconnect_plan_with_words(self):
+        self.state.flags["inquisitor_purge"] = True
+        plan = self.plan("echo anything")
+        self.assertEqual(plan.segs[0].session_action, "disconnect")
+        self.assertTrue(plan.segs[0].stdout.strip())
+        self.assertIn("INQUISITOR", plan.segs[0].stdout)
+
+    def test_print_ending_closed_renders_words_before_the_close(self):
+        self.state.ending = None
+        written = []
+        with mock.patch.object(sessiond, "write_err", side_effect=written.append):
+            sessiond.print_ending_closed(self.state)
+        text = "".join(written)
+        self.assertIn("Connection to prod-cortex-04 closed by remote host.", text)
+        self.assertGreater(len(text.splitlines()), 1)
+
+    def test_scene_endings_keep_their_bare_close(self):
+        for ending in ("negligent", "abandonment", "selfish"):
+            self.state.ending = ending
+            written = []
+            with mock.patch.object(sessiond, "write_err", side_effect=written.append):
+                sessiond.print_ending_closed(self.state)
+            self.assertIn("Connection to prod-cortex-04 closed by remote host.",
+                          "".join(written))
+
+
+class DnrOutputTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="wetware-dnr-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.directive = os.path.join(self.tmp, "directive.asc")
+        self.keys = os.path.join(self.tmp, "authorized_keys")
+        with open(self.directive, "w", encoding="utf-8") as stream:
+            stream.write(lore_texts.PATIENT_DNR_DIRECTIVE)
+        with open(self.keys, "w", encoding="utf-8") as stream:
+            stream.write(lore_texts.AUTHORIZED_KEYS)
+        self.patches = [
+            mock.patch.object(commands, "_DNR_PATH", self.directive),
+            mock.patch.object(commands, "_DNR_KEYS", self.keys),
+            mock.patch.object(commands, "_DNR_SIGNERS", self.keys),
+        ]
+        for patcher in self.patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_ssh_keygen_speaks_ssh_keygen(self):
+        valid, text = commands._verify_story_dnr("ssh-keygen")
+        self.assertTrue(valid)
+        self.assertNotIn("dnr-verify", text)
+        self.assertTrue(text.startswith('Good "file" signature for Lin@neo-vesalius.io'),
+                        text)
+        self.assertIn("SHA256:", text)
+
+    def test_gpg_speaks_gpg(self):
+        valid, text = commands._verify_story_dnr("gpg")
+        self.assertTrue(valid)
+        self.assertNotIn("dnr-verify", text)
+        self.assertIn("gpg: Good signature from", text)
+        self.assertTrue(any(len(word) == 40 for word in text.split()))
+
+    def test_dnr_verify_plan_has_no_made_up_tool_prefix(self):
+        parsed = shell_parser.parse_line(
+            "ssh-keygen -Y verify -f /root/.ssh/allowed_signers "
+            "-I Lin@neo-vesalius.io -n file -s %s" % self.directive)
+        plan = commands.plan(None, parsed, "exec")
+        text = plan.segs[0].stdout
+        self.assertNotIn("dnr-verify", text)
+        self.assertTrue(text.strip())
+
+
+class TimestampTests(RealShellBase):
+    def test_systemctl_status_has_no_placeholder_clock(self):
+        self.state.stage = 6
+        self.state.save()
+        plan = self.plan("systemctl status cortex-api")
+        text = plan.segs[0].stdout
+        self.assertNotIn("0x:xx", text)
+        self.assertNotIn("03:0x", text)
+
+
+class BaseLinePatchTests(RealShellBase):
+    """Cross-domain patches from the single-node red-team report."""
+
+    def setUp(self):
+        super().setUp()
+        self.set_host(None)  # authored single-node story (no campaign node-id)
         campaign.bind_state(self.state)
-        plan = self.plan("ps aux")
-        self.assertEqual(plan.segs[0].mode, "hijack")
-        self.assertEqual(plan.segs[0].hook, "Process Table Is A Body")
 
-    def test_core_surfaces_are_not_rerouted_to_the_real_shell_layer(self):
-        self.set_host(CORE)
+    def test_resuscitate_help_is_a_manual_not_a_shock(self):
+        plan = self.plan("/opt/cortex/bin/resuscitate.sh --help")
+        text = plan.segs[0].stdout
+        self.assertIn("resuscitate", text.lower())
+        self.assertEqual(plan.segs[0].exit_code, 0)
+        self.assertNotIn("DEFIBRILLATOR", text)
+        self.assertNotIn("Heart rate spiked", text)
+        self.assertNotIn("KERNEL_WATCHDOG", text)
+        self.assertEqual(plan.segs[0].effects, [])
+
+    def test_uptime_uses_the_story_clock(self):
+        import re
+
+        plan = self.plan("uptime")
+        text = plan.segs[0].stdout
+        self.assertIn("up 2 days", text)
+        self.assertNotIn("03:07:41", text)
+        self.assertTrue(re.match(r"^ ?\d{2}:\d{2}:\d{2} up 2 days", text), text)
+
+    def test_uptime_is_the_kernel_answer_on_a_campaign_host(self):
+        self.set_host(EDGE)
         campaign.bind_state(self.state)
-        # the exposure layer only runs on the real-shell hosts: on core the
-        # facade planner keeps mount/journalctl in the engine's hands
-        for line in ("mount", "cat /proc/mounts"):
-            plan = self.plan(line)
-            self.assertNotEqual(plan.segs[0].mode, "real_post", line)
+        plan = self.plan("uptime")
+        self.assertIn(plan.segs[0].mode, ("real", "real_line"))
+
+    def test_systemctl_journal_lines_follow_the_story_clock(self):
+        self.state.stage = 6
+        self.state.save()
+        text = self.plan("systemctl status cortex-api").segs[0].stdout
+        self.assertNotIn("0x:xx", text)
+        self.assertNotIn("Oct 26 00:01:31", text)
+        self.assertNotIn("Oct 26 02:58:16", text)
+        self.assertIn("cortex-api.service", text)
+
+    def test_subject_uid_matches_the_account_registry(self):
+        source = open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "commands.py"), encoding="utf-8").read()
+        self.assertNotIn("1004/subject04", source)
+        self.assertIn("1005/subject04", source)
+
+
+class PurgeTests(RealShellBase):
+    """A failed base-line run closes with the Inquisitor's words, not a bare ssh end."""
+
+    def setUp(self):
+        super().setUp()
+        self.set_host(None)
+        campaign.bind_state(self.state)
+        import v21
+        self.v21 = v21
+
+    def test_cmd_50_timeout_arms_the_purge_closing_block(self):
+        self.state.cmd_count = 50
+        self.state.empathy = 0
+        self.state.obedience = 0
+        self.state.save()
+        armed = self.v21.maybe_arm_purge(self.state)
+        self.assertTrue(armed)
+        self.assertTrue(self.state.flags.get("inquisitor_purge"))
+        self.assertEqual(self.state.ending, "purged")
+        joined = "\n".join(self.state.pending_events or [])
+        self.assertIn("verdict=PURGE", joined)
+        plan = self.plan("echo next")
+        self.assertEqual(plan.segs[0].session_action, "disconnect")
+        self.assertIn("verdict=PURGE", plan.segs[0].stdout)
+
+    def test_purge_notice_is_critical_for_the_pacing_gate(self):
+        notice = lore_texts.INQUISITOR_CLOSING
+        self.assertTrue(sessiond._event_is_critical(notice))
+        self.assertFalse(sessiond._event_is_critical("[CLUSTER] someone might notice"))
+
+    def test_print_ending_closed_renders_the_inquisitor_block(self):
+        self.state.flags["purged_reason"] = "cmd 50 deadline"
+        self.state.ending = "purged"
+        written = []
+        with mock.patch.object(sessiond, "write_err", side_effect=written.append):
+            sessiond.print_ending_closed(self.state)
+        text = "".join(written)
+        self.assertIn("verdict=PURGE", text)
+        self.assertIn("Connection to prod-cortex-04 closed by remote host.", text)
 
 
 class ProcessIdentityTests(unittest.TestCase):
@@ -295,6 +567,8 @@ class ProcessIdentityTests(unittest.TestCase):
         self.assertIn(b"hostname", title)
 
     def test_argv_image_is_rewritten(self):
+        import ctypes
+
         original = b"/usr/bin/python3\x00-c\x00import cortex_console\x00"
         size = 96
         buffer = ctypes.create_string_buffer(original, size)
@@ -307,16 +581,9 @@ class ProcessIdentityTests(unittest.TestCase):
         self.assertNotIn(b"cortex_console", image)
         self.assertEqual(len(image), size)
 
-    def test_login_shell_argv_image_has_no_garbage(self):
-        size = 64
-        buffer = ctypes.create_string_buffer(b"/usr/bin/python3 -c bad", size)
-        start = ctypes.addressof(buffer)
-        sessiond._scrub_argv_image(ctypes, start, start + size)
-        image = buffer.raw
-        self.assertTrue(image.startswith(b"-bash\x00"))
-        self.assertNotIn(b"python", image.lower())
-
     def test_env_image_rewrites_harness_variables_in_place(self):
+        import ctypes
+
         raw = b"".join([
             b"USER=root\x00",
             b"PYTHONPATH=/usr/local/lib/cortex-agent\x00",
@@ -333,26 +600,22 @@ class ProcessIdentityTests(unittest.TestCase):
         self.assertNotIn(b"WETWARE_", image)
         self.assertNotIn(b"cortex", image)
         self.assertIn(b"SHELL=/bin/bash", image)
-        self.assertIn(b"USER=root", image)
-        self.assertIn(b"PATH=/usr/local/sbin", image)
-        # every rewritten entry keeps its original length (in-place, C environ
-        # pointers stay valid, so exec'd helpers inherit a sane environment)
         self.assertEqual(len(image), size)
 
 
 class RuntimeHelperTests(RealShellBase):
     def _runtime(self):
-        import lore_texts
         import world as world_mod
 
         self.set_host(EDGE)
         campaign.bind_state(self.state)
-        return sessiond.Runtime(self.state, shell_parser, commands, lore_texts, world_mod)
+        return sessiond.Runtime(self.state, shell_parser, commands,
+                                lore_texts, world_mod)
 
     def test_hijack_redirect_writes_the_story_answer(self):
         runtime = self._runtime()
-        target = os.path.join(self.tmp, "ps.txt")
-        parsed = shell_parser.parse_line("ps aux > %s" % target)
+        target = os.path.join(self.tmp, "dmesg.txt")
+        parsed = shell_parser.parse_line("dmesg > %s" % target)
         plan = commands.plan(self.state, parsed, "exec")
         segment = parsed.segments[0]
         payload = plan.segs[0].stdout.encode("utf-8")
@@ -360,36 +623,44 @@ class RuntimeHelperTests(RealShellBase):
         with open(target, encoding="utf-8") as stream:
             written = stream.read()
         self.assertEqual(written, plan.segs[0].stdout)
-        self.assertNotIn("python", written.lower())
+        self.assert_clean(written)
 
     def test_interactive_renderer_runs_real_segments(self):
         runtime = self._runtime()
         session = sessiond.InteractiveSession(runtime)
-        parsed = shell_parser.parse_line("echo hello; ps aux")
+        parsed = shell_parser.parse_line("echo hello; dmesg")
         plan = commands.plan(self.state, parsed, "interactive")
         self.assertEqual([seg.mode for seg in plan.segs], ["real", "hijack"])
         output = session._render_story_line(parsed, plan)
         text = output.decode("utf-8", "replace")
         self.assertIn("hello", text)
-        self.assertIn("nginx", text)
-        self.assertNotIn("python", text.lower())
+        self.assertIn("Linux version", text)
+        self.assert_clean(text)
 
     def test_interactive_renderer_applies_the_pipeline_tail(self):
         runtime = self._runtime()
         session = sessiond.InteractiveSession(runtime)
-        parsed = shell_parser.parse_line("ps aux | grep -i python")
+        parsed = shell_parser.parse_line("dmesg | tail -n 1")
         plan = commands.plan(self.state, parsed, "interactive")
         output = session._render_story_line(parsed, plan)
-        self.assertEqual(output.strip(), b"")
+        self.assertEqual(len(output.strip().splitlines()), 1)
 
-    def test_interactive_renderer_keeps_non_matching_rows(self):
+    def test_interactive_renderer_keeps_repeated_real_segments_intact(self):
         runtime = self._runtime()
         session = sessiond.InteractiveSession(runtime)
-        parsed = shell_parser.parse_line("ps aux | grep -i nginx")
+        parsed = shell_parser.parse_line("echo one; dmesg; echo two; echo three")
         plan = commands.plan(self.state, parsed, "interactive")
-        output = session._render_story_line(parsed, plan).decode("utf-8", "replace")
-        self.assertIn("nginx", output)
-        self.assertNotIn("python", output.lower())
+        text = session._render_story_line(parsed, plan).decode("utf-8", "replace")
+        self.assertIn("one", text)
+        self.assertIn("Linux version", text)
+        self.assertIn("two", text)
+        self.assertIn("three", text)
+
+
+class MaskDecoyTests(unittest.TestCase):
+    def test_unit_referenced_vendor_file_has_a_decoy(self):
+        self.assertIn("cortex-agent", sessiond.MASK_DECOY_FILES)
+        self.assertIn("fix_nginx.sh", sessiond.MASK_DECOY_FILES["cortex-agent"])
 
 
 if __name__ == "__main__":

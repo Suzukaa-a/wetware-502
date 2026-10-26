@@ -236,7 +236,7 @@ Subject: Lin                       Registry age: 37 (age at intake 36)
 Role: witness worksheet; not a signed authorization artifact.
 Primary directive: /opt/cortex/PATIENT_DNR_DIRECTIVE.asc (signed, on node).
 Verification: ssh-keygen -Y verify -f /root/.ssh/authorized_keys, or gpg --verify.
-Expected key fingerprint: SHA256:VJolS/lSXBaJBUUIGozauXDRCcy7o0AO9kbr/Hh774E
+Expected key fingerprint: SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw
 Comparison record: authorized_keys line 1, comment Lin@neo-vesalius.io.
 
 Recorded preference: no resuscitative stimulation for service recovery.

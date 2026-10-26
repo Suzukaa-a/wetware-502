@@ -365,7 +365,7 @@ server {
 
 EDGE_AUTH_LOG = """\
 Oct 26 03:10:12 edge-gw-01 sshd[2210]: Invalid user lin from 10.66.0.1 port 51022
-Oct 26 03:10:17 edge-gw-01 sshd[2214]: Failed publickey for root from 10.66.0.1 port 51024 ssh2: ED25519 SHA256:VJolS/lSXBaJBUUIGozauXDRCcy7o0AO9kbr/Hh774E
+Oct 26 03:10:17 edge-gw-01 sshd[2214]: Failed publickey for root from 10.66.0.1 port 51024 ssh2: ED25519 SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw
 Oct 26 03:10:31 edge-gw-01 sshd[2214]: Connection closed by authenticating user root 10.66.0.1 port 51024 [preauth]
 Oct 26 03:11:02 edge-gw-01 sshd[2228]: Accepted publickey for ops from 10.66.0.1 port 51030 ssh2: ED25519 SHA256:abC1d2...
 """
@@ -547,7 +547,7 @@ ssh: Could not resolve hostname 10.66.0.4: Temporary failure in name resolution
 KEY_SUCCESS = """\
 [ok] archive decrypted: /tmp/lin.tar (4.0K)
 [ok] extracted: %s (ED25519 private key, 464 bytes)
-[ok] key fingerprint: SHA256:VJolS/lSXBaJBUUIGozauXDRCcy7o0AO9kbr/Hh774E
+[ok] key fingerprint: SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw
 """
 
 KEY_BAD_PASSWORD = """\
@@ -1998,7 +1998,7 @@ def raw_special(state: Any, parsed: Any) -> Optional[Any]:
         else:
             reply = TTY_IDLE
         return C.Plan(segs=[C.SegPlan(mode="hijack",
-                                      stdout="[wetware_tty0] writing to Broca's area serial port...\n"
+                                      stdout="[wetware_tty0] tx 41 B -> residual motor buffer (vocal clamp 0 dB)\n"
                                              "[EEG_DECODE conf=0.96] %s\n" % reply,
                                       effects=["tty_contact"], hook="Two-Way Brainstem UART")], ops=[], post="")
 
