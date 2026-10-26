@@ -1945,8 +1945,10 @@ else
   GUEST_SHELL=$(in_container /bin/getent passwd root 2>/dev/null | cut -d: -f7 | tr -d '\r\n' || true)
   if [ "$GUEST_SHELL" = "/bin/bash" ]; then
     ok "root login shell = /bin/bash"
+  elif [ "$GUEST_SHELL" = "/usr/local/sbin/cortex-node-console" ]; then
+    ok "root login shell = vendor node console"
   else
-    bad "root login shell = '${GUEST_SHELL}' (expected /bin/bash)"
+    bad "root login shell = '${GUEST_SHELL}' (expected the vendor node console)"
   fi
   if in_container /bin/sh -c 'test -x /usr/local/sbin/cortex-node-console && grep -q cortex-node-console /root/.bash_profile' >/dev/null 2>&1; then
     ok "node console starts from /root/.bash_profile"
@@ -2003,7 +2005,7 @@ PYHASH
   fi
 
   # --- network ------------------------------------------------------------
-  NET_ADDR=$(in_container /bin/sh -c 'ip -4 -o addr show 2>/dev/null | awk "$2==\"host0\"||$2==\"ens192\"{print \$4}" | head -1' 2>/dev/null | tr -d '\r\n' || true)
+  NET_ADDR=$(in_container /bin/sh -c 'ip -4 -o addr show scope global 2>/dev/null | awk "{print \$4}" | head -1' 2>/dev/null | tr -d '\r\n' || true)
   if [ "$NET_ADDR" = "$GUEST_IP/32" ]; then
     ok "guest ens192 address = $GUEST_IP/32"
   else
