@@ -177,11 +177,26 @@ class World:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.chmod(tmp, mode)
-            os.replace(tmp, path)
+            try:
+                os.replace(tmp, path)
+            except PermissionError:
+                # Deployed evidence files may carry the immutable bit (tamper
+                # marker).  Clear it for the swap, then restore it.
+                self._chattr(path, "-i")
+                os.replace(tmp, path)
+                self._chattr(path, "+i")
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
         return True
+
+    @staticmethod
+    def _chattr(path, flag):
+        try:
+            subprocess.run(["/usr/bin/chattr", flag, path],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
 
     def _stamp_epoch(self, stamp):
         """Authored story timestamp -> real epoch through the run's story clock."""
