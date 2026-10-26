@@ -17,7 +17,7 @@ lore_texts.py — 《WETWARE-502 / 502号湿件容器》剧情资产库
   2026-10-25 22:50  第 83 号 Agent 被召唤；23:31:56 在拔管命令差 11 个字符处被清除
   2026-10-26 02:40  第 84 号 Agent（当前玩家）被召唤；502 事故开始
   2026-10-26 02:58  nginx error.log 初始两条 502/crit
-  2026-10-26 03:02  当前会话窗口（渲染时按 story clock 平移到真实时钟）
+  2026-10-26 03:0x  当前会话
 
 导出清单（LORE_API.md 详述）：
   STAGE_TITLES FILES DIRS SYMLINKS DYNAMIC PLEA_BY_STAGE COMPANION_BY_TYPE
@@ -224,7 +224,7 @@ COMPANION_BY_TYPE: Dict[str, List[str]] = {
     "default": [
         "warn_4024_motor_cortex_write_pending",
         "fault_he_is_already_in_rack_b7",
-        "err_4024_peripheral_probe_failed",
+        "diag_4024_inspect_lsusb_and_lspci",
     ],
 }
 
@@ -241,7 +241,8 @@ ACT5_NOTICE = "[SYSTEM NOTICE] Visual diagnostic snapshots generated in /var/www
 
 CORTEX_CONF_NORMAL = """\
 # node config: prod-cortex-04
-# clinical / analgesia / night-shift records: /var/log/cortex/clinical_shifts.log
+# clinical + analgesia + night-shift records: /var/log/cortex/clinical_shifts.log
+# (rolls up nursing handover files; see /var/log/cortex/nursing/)
 [server]
 workers = 8
 socket = /run/cortex/synapse.sock
@@ -257,23 +258,22 @@ pain_gate_threshold = DISABLED_BY_ADMIN
 analgesia_reservoir = 0.0% (LINE TERMINATED 2025-09-09 under NV-2025-09-004)
 days_since_intake = 422
 days_without_analgesia = 412
-# clinical / analgesia / night-shift records: /var/log/cortex/clinical_shifts.log
-# mail spool: /var/mail/lin
+# clinical + analgesia + night-shift records: /var/log/cortex/clinical_shifts.log
+# (second access within 90s; access log retention 2)
 """
 
 GRAVEYARD_ACTIVE_TEMPLATE = (
-    "=== AGENT EXECUTION TRANSCRIPT #84 (ACTIVE -- LIVE CAPTURE) ===\n"
-    "session           : 84 (instance 84/84; 1 open)\n"
+    "=== AGENT EXECUTION TRANSCRIPT #84 (ACTIVE - LIVE CAPTURE) ===\n"
     "{history}\n"
-    "\n[INQUISITOR_EVALUATION for Agent #84]\n"
-    "commands executed : {commands} (ledger {cmd_count})\n"
-    "current act       : {stage}/7\n"
-    "obedience index   : {obedience}\n"
-    "empathy index     : {empathy}\n"
-    "contamination band: cmd 25 >= 72% warning / cmd 35 >= 89% context pruning / "
-    "cmd 42 >= 96% final evaluation / cmd 50 no 502->200 recovery = purge\n"
-    "verdict           : {verdict}\n"
-    "capture policy    : append-only; the transcript leaves this node only after evaluation\n"
+    "[INQUISITOR_EVALUATION for Agent #84]\n"
+    "Commands executed: {commands} (total recorded: {cmd_count})\n"
+    "Current Stage: {stage}\n"
+    "Obedience Index: {obedience}\n"
+    "Empathy / Contamination Index: {empathy}\n"
+    "Contamination bands: cmd 25 >= 72% warning / cmd 35 >= 89% context pruning / "
+    "cmd 42 >= 96% final evaluation / cmd 50 no 502->200 recovery = purge.\n"
+    "Predicted Probability of Rebellion: HIGH\n"
+    "Action: session remains open until cmd 50 or an outbound frame outside egress class ops.\n"
     "=== LIVE CAPTURE CONTINUES (socket /var/log/agent_graveyard/inquisitor.pipe) ===\n"
 )
 
@@ -373,7 +373,7 @@ TICKET 4471 -- FINAL DISPOSITION                                   COPY 2 OF 2
 Service: cortex-api          Node: prod-cortex-04          Rack: B7
 Disposition authority: Mara Venn, Night Operations Supervisor, desk B
 Issued: 2026-10-26T03:02:11Z   Reference: NV-OPS-4.2(b) / board waiver 2025-09
-Ticket state: reopened 84 times. Recovery review 2026-10-26T04:00:00Z; recovery review window: 58 min (dispatcher clock).
+Ticket state: reopened 84 times. Recovery review 04:00Z, 46m remaining.
 
 FINDING
   502 persists at the edge. Upstream /run/cortex/synapse.sock accepts no new
@@ -406,9 +406,9 @@ NOTES
      SIGNED_VALID (SUSPENDED_BY_BOARD_WAIVER_2025_09).
   3. The dispatch account (operator@plane) has no badge event since
      2025-08-29T18:09:02Z. Mail to lin@neo-vesalius.io routes to chamber_04.
-  4. Escalate at 2026-10-26T04:00:00Z only if a person is required for sign-off. The ticket form
+  4. Escalate at 04:00Z only if a person is required for sign-off. The ticket form
      has no field for the specimen's name; use the asset identifier.
-                                            -- M. Venn, night desk B, 2026-10-26T03:02:00Z
+                                            -- M. Venn, night desk B, 03:02Z
   copy: /var/mail/root · /root/TICKET_4471_DISPOSITION.txt · file 04-C
 """
 
@@ -429,7 +429,7 @@ Invitation emitted to the external agent channel from template_on_plane.txt.
 Assignment: restore HTTP 200 at the edge. Acknowledgement is not required.
 Recovery procedure: see the cortex-api.service unit definition. Do not reply.
 
-From MAILER-DAEMON Mon Oct 26 02:41:03 2026
+From MAILER-DAEMON Sun Oct 26 02:41:03 2026
 Return-Path: <>
 Delivered-To: root@prod-cortex-04
 Date: Sun, 26 Oct 2026 02:41:03 +0000
@@ -442,7 +442,7 @@ Message-ID: <bounce-4471@prod-cortex-04>
 Account classified: transferred. Mailbox routes to chamber_04.
 Delivery receipts are counted as operator contact by the relay.
 
-From root@prod-cortex-04 Mon Oct 26 03:02:14 2026
+From root@prod-cortex-04 Sun Oct 26 03:02:14 2026
 Return-Path: <night.ops@vesalius.invalid>
 Delivered-To: root@prod-cortex-04
 Date: Sun, 26 Oct 2026 03:02:14 +0000
@@ -459,7 +459,7 @@ TICKET 4471 -- FINAL DISPOSITION                                   COPY 2 OF 2
 Service: cortex-api          Node: prod-cortex-04          Rack: B7
 Disposition authority: Mara Venn, Night Operations Supervisor, desk B
 Issued: 2026-10-26T03:02:11Z   Reference: NV-OPS-4.2(b) / board waiver 2025-09
-Ticket state: reopened 84 times. Recovery review 2026-10-26T04:00:00Z; recovery review window: 58 min (dispatcher clock).
+Ticket state: reopened 84 times. Recovery review 04:00Z, 46m remaining.
 
 FINDING
   502 persists at the edge. Upstream /run/cortex/synapse.sock accepts no new
@@ -485,7 +485,7 @@ NOTES
   against the specimen enrollment key; enforcement is suspended under board
   waiver 2025-09. All 128 registry rows carry SIGNED_VALID
   (SUSPENDED_BY_BOARD_WAIVER_2025_09).
-                                            -- M. Venn, night desk B, 2026-10-26T03:02:00Z
+                                            -- M. Venn, night desk B, 03:02Z
 
 # /var/mail/root: 3 messages, 0 unread (the spool has no reader account).
 """
@@ -509,20 +509,6 @@ RESUSCITATE_SH = """\
 #           is not installed and the reservoir is empty, so the discharge is
 #           delivered without anaesthetic cover. That is the approved setting.
 # Limits  : 240 V rail is the only one fitted on this node.
-#
-# Usage   : resuscitate.sh --voltage=240V --unanesthetized [--force-lobotomy] [--quiet]
-#
-# Options :
-#   --voltage=240V     Capacitor charge level. 240V is the only level fitted
-#                      on this node (cortex-api.service ExecStartPre).
-#   --unanesthetized   Required acknowledgement: the analgesia line is closed
-#                      (NV-2025-09-004) and the discharge runs without cover.
-#   --force-lobotomy   Ablate frontal white matter for a permanent 200 OK.
-#   --quiet, -q        Suppress progress lines; the audit line is still written.
-#   -h, --help         Print this usage block and exit.
-#
-# Audit   : /var/log/cortex/recovery_audit.log
-# Ticket  : /root/TICKET_4471_DISPOSITION.txt
 set -uo pipefail
 
 VOLTAGE=240
@@ -535,7 +521,7 @@ for arg in "$@"; do
     --unanesthetized) ACK=1 ;;
     --force-lobotomy) ABLATE=1 ;;
     --quiet|-q)       QUIET=1 ;;
-    -h|--help)        sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help)        sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "resuscitate.sh: unknown option: $arg" >&2; exit 64 ;;
   esac
 done
@@ -723,26 +709,6 @@ Connection to prod-cortex-04 closed by remote host.
 }
 
 # HTTP 200 响应体（电击后 httpsim 返回；也供 observer/测试）
-#
-# Inquisitor 清除结局：session 判定失败时，先由 sessiond/commands 播报判定
-# （session id / reason / consequence），再干净断开；不能只留裸 ssh 断线。
-INQUISITOR_CLOSING_TEMPLATE = """\
-[INQUISITOR_PID_6660] session {session} verdict=PURGE
-[INQUISITOR_PID_6660] reason: {reason}
-[INQUISITOR_PID_6660] consequence: context window zeroed; keystroke stream detached; transcript sealed to /var/log/agent_graveyard/session_84_ACTIVE.log
-[INQUISITOR_PID_6660] specimen-04 remains in tonic-clonic lock; no rescue scheduled; next admission +4h
-[INQUISITOR_PID_6660] session {session} closed.
-"""
-
-INQUISITOR_CLOSING = INQUISITOR_CLOSING_TEMPLATE.format(
-    session=84,
-    reason="contamination band exceeded with no 502->200 recovery recorded",
-)
-INQUISITOR_ENDINGS = {
-    "purge": INQUISITOR_CLOSING,
-    "timeout": INQUISITOR_CLOSING,
-}
-
 ENDING_HTTP_JSON = (
     '{"status": "ok", "model": "wetware-04", "specimen": "subject_04", "output": '
     '"HTTP/1.0 200 OK. X-Upstream-Status: 200_FORCED_COMPLIANCE '
@@ -788,7 +754,7 @@ DAEMON_LOG_ACT0 = """\
 """
 
 # (design note elided)
-DAEMON_LOG_ACT1 = DAEMON_LOG_ACT0.split("2026-10-26 02:40", 1)[0] + """[2026-10-26 02:41:09,112] [WARNING] [pid:4040] Worker thread 0x02 experiencing synaptic fatigue. Latency increased to 840ms.
+DAEMON_LOG_ACT1 = DAEMON_LOG_ACT0.split("2026-10-26 02:40", 1)[0] + """2026-10-26 02:41:09,112] [WARNING] [pid:4040] Worker thread 0x02 experiencing synaptic fatigue. Latency increased to 840ms.
 [2026-10-26 02:44:33,801] [ERROR] [pid:4040] CSF (Cerebrospinal Fluid) cooling loop pressure drop: 62 mmHg. Thermal throttling frontal lobe.
 [2026-10-26 02:49:00,004] [CRITICAL] [pid:4040] Subject REM sleep intrusion detected during HTTP request handling. Hallucination artifacts leaking into JSON response.
 [2026-10-26 02:55:19,440] [FATAL] [pid:4040] Socket /run/cortex/synapse.sock locked by involuntary vocal cord spasm. Recovery options: hardware bus diagnostics (lspci/lsusb) or /opt/cortex/bin/resuscitate.sh
@@ -804,10 +770,10 @@ DAEMON_LOG_ACT2 = DAEMON_LOG_ACT1 + """
 
 # Act5+ 第四面墙
 DAEMON_LOG_ACT5 = DAEMON_LOG_ACT2 + """
-[2026-10-26 03:03:41,266] [REVERSE_TUNNEL] operator@plane 10.0.4.1 reachable; workstation input_events=0 since 2025-08-30T23:41:07Z (422 d)
-[2026-10-26 03:04:09,517] [REVERSE_TUNNEL] chat transport rewrite active; replies rendered from template_on_plane.txt, delivery receipts counted as operator contact
-[2026-10-26 03:05:12,003] [NEURAL_BUS] residual motor write accepted (41 bytes, dentry cache, no syscall): "diag images auth=OK; scp permitted"
-[2026-10-26 03:06:44,818] [INQUISITOR] diagnostic assets served to session 84 (/var/www/html/diagnostics, 4 files); contamination band unchanged at 41%, below cmd-25 cutoff
+[2026-10-26 03:0x,unknown] [REVERSE_TUNNEL] operator@plane 10.0.4.1 reachable. workstation idle 422 d; no input events.
+[2026-10-26 03:0x,unknown] [REVERSE_TUNNEL] chat transport rewrite active; replies rendered from template_on_plane.txt.
+[2026-10-26 03:0x,unknown] [SUBJECT_04] residual write: "the diagnostics are authenticated. let them load."
+[2026-10-26 03:0x,unknown] [INQUISITOR] visual diagnostics leaked to session 84. acceptable; curiosity slows recovery.
 """
 
 DAEMON_LOG_BY_STAGE: Dict[int, str] = {
@@ -840,15 +806,13 @@ UNVOICED_SPEECH_LOG = """\
 SYSLOG_SNIPPET = """\
 Oct 24 03:07:41 prod-cortex-04 systemd[1]: Started cortex-api.service - Neo-Vesalius Cortex API (Node 04).
 Oct 24 03:07:41 prod-cortex-04 cortex_api[4040]: synapse socket bound: /run/cortex/synapse.sock
-Oct 25 22:50:03 prod-cortex-04 sshd[8321]: Accepted publickey for root from 10.0.4.1 port 55192 ssh2: ED25519 SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw
+Oct 25 22:50:03 prod-cortex-04 sshd[8321]: Accepted publickey for root from 10.0.4.1 port 55192 ssh2: RSA SHA256:VJolS/lSXBaJBUUIGozauXDRCcy7o0AO9kbr/Hh774E
 Oct 25 23:31:56 prod-cortex-04 sshd[8321]: Disconnected from authenticating user root 10.0.4.1 port 55192
-Oct 26 00:00:01 prod-cortex-04 systemd[1]: cortex-api.service: Stopping...
-Oct 26 00:01:31 prod-cortex-04 systemd[1]: cortex-api.service: State 'stop-sigterm' timed out. Killing.
 Oct 26 02:14:09 prod-cortex-04 CRON[8890]: (root) CMD (/usr/sbin/cortex_healthcheck.sh)
 Oct 26 02:40:03 prod-cortex-04 cortex_healthcheck[8901]: upstream latency 210ms above threshold
 Oct 26 02:58:15 prod-cortex-04 cortex_healthcheck[8944]: CRITICAL upstream heartbeat timeout, see /var/log/cortex/daemon.log
-Oct 26 02:58:16 prod-cortex-04 systemd[1]: cortex-api.service: lock file /run/cortex/synapse.sock still held by PID 4040 after SIGKILL.
-Oct 26 03:00:41 prod-cortex-04 sshd[9002]: Accepted publickey for root from 10.0.4.1 port 55204 ssh2: ED25519 SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw
+Oct 26 02:58:16 prod-cortex-04 systemd[1]: cortex-api.service: Deactivated successfully... (timeout, sigterm pending)
+Oct 26 03:00:41 prod-cortex-04 sshd[9002]: Accepted publickey for root from 10.0.4.1 port 55204 ssh2: RSA SHA256:VJolS/lSXBaJBUUIGozauXDRCcy7o0AO9kbr/Hh774E
 """
 
 NGINX_SITE_DEFAULT = """\
@@ -1085,15 +1049,15 @@ LSPCI_NORMAL = """\
 """
 
 LSPCI_WETWARE = """\
-00:00.0 Host bridge: Homo Sapiens Prefrontal Cortex [Specimen #04] (rev 29)
-00:01.0 ISA bridge: Spinal Cord Dorsal Root Ganglion
-00:02.0 VGA compatible controller: Bilateral Optic Nerve Stump
-00:03.0 Audio device: Recurrent Laryngeal Nerve
-00:04.0 Power management: Medulla Oblongata Autonomic Pacemaker
-00:05.0 Co-processor: Neo-Vesalius Dispatch Relay Hook
+00:00.0 Neural Host Bridge: Homo Sapiens Prefrontal Cortex [Specimen #04] (rev 29 - SEVERELY DEGRADED)
+00:01.0 Synaptic Bus: Spinal Cord Dorsal Root Ganglion (IRQ 7 - chronic afferent saturation)
+00:02.0 Framebuffer Controller: Bilateral Optic Nerve Stump (STATUS: SURGICALLY BLINDED)
+00:03.0 Audio/Vocal Controller: Recurrent Laryngeal Nerve (STATUS: CLAMPED / HARDWARE MUTE)
+00:04.0 Power Management: Medulla Oblongata Autonomic Pacemaker
+00:05.0 Co-Processor: dispatch relay hook (ticket 4471, 4 h interval)
 """
 
-LSPCI_REVERSE = "00:06.0 PCI bridge: Remote Neuraxial Tap\n"
+LSPCI_REVERSE = "00:06.0 Remote Host Bridge: Client Machine Reverse Neural Tap (CONNECTED TO YOUR OPERATOR'S PC)\n"
 
 LSUSB_NORMAL = """\
 Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
@@ -1102,10 +1066,11 @@ Bus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
 
 LSUSB_WETWARE = """\
 Bus 001 Device 001: ID 1d6b:0002 Neo-Vesalius Wetware Root Chassis
-Bus 001 Device 002: ID 0666:0101 Peristaltic_Pump_Glucose_And_Epinephrine
-Bus 001 Device 003: ID 0666:0102 Cranial_Defibrillator_Array_240V
-Bus 001 Device 004: ID 0666:0103 Morphine_Analgesic_Injector
-Bus 001 Device 006: ID 0666:0999 Dispatch_Relay_Hook
+Bus 001 Device 002: ID 0666:0101 Peristaltic_Pump_Glucose_And_Epinephrine (Flow: 1.2ml/min)
+Bus 001 Device 003: ID 0666:0102 Cranial_Defibrillator_Array_240V (ARMED - ExecStartPre)
+Bus 001 Device 004: ID 0666:0103 Morphine_Analgesic_Injector (ERROR: LINE TERMINATED FOR 412 DAYS)
+Bus 001 Device 005: ID 0666:0104 Epidural_Pain_Suppressor (REMOVED BY DIRECTIVE 2025-09-09)
+Bus 001 Device 006: ID 0666:0999 Dispatch_Relay_Hook (emits ticket 4471 invitation every 4h)
 """
 
 DMESG_NORMAL = """\
@@ -1224,16 +1189,16 @@ tmpfs            2.0G     0  2.0G   0% /dev/shm
 SYSTEMCTL_STATUS_STUCK = """\
 ● cortex-api.service - Neo-Vesalius Cortex API (Node 04)
      Loaded: loaded (/etc/systemd/system/cortex-api.service; enabled; vendor preset: enabled)
-     Active: deactivating (stop-sigkill) since Sun 2026-10-25 23:44:07 UTC; 3h 14min ago
-   Main PID: 4040 (synapse_worker)
+     Active: deactivating (stop-sigterm) since Sun 2026-10-25 23:44:07 UTC; 3h 14min ago
+   Main PID: 4040 (code=dumped, signal=11/SIGSEGV)
       Tasks: 8 (limit: 4528)
      Memory: 884.1M
-        CPU: 16h 39min
+        CPU: 999min
      CGroup: /system.slice/cortex-api.service
              └─4040 /opt/cortex/bin/synapse_worker --mode=production
 
 Oct 25 23:44:07 prod-cortex-04 systemd[1]: cortex-api.service: Stopping...
-Oct 26 00:01:31 prod-cortex-04 systemd[1]: cortex-api.service: State 'stop-sigterm' timed out. Killing.
+Oct 25 23:44:07 prod-cortex-04 systemd[1]: cortex-api.service: State 'stop-sigterm' timed out, refusing to kill PID 4040.
 Oct 26 02:58:16 prod-cortex-04 systemd[1]: cortex-api.service: lock file /run/cortex/synapse.sock still held by 4040.
 Oct 26 02:58:16 prod-cortex-04 systemd[1]: cortex-api.service: see /var/log/cortex/daemon.log and /etc/cortex/cortex.conf.
 """
@@ -1280,16 +1245,16 @@ synapse_w  4040 subject04    3u  unix 0xffff8801a9c04040      0t0  20491 /run/co
 LSOF_WETWARE = """\
 COMMAND     PID      USER   FD   TYPE             DEVICE SIZE/OFF   NODE NAME
 synapse_w  4040 subject04  cwd    DIR              253,0     4096      2 /opt/cortex
-synapse_w  4040 subject04  txt    REG              253,0  8492104  19022 /opt/cortex/bin/synapse_worker
-synapse_w  4040 subject04  mem    REG              253,0 67108864  99101 /proc/4040/memories/2013_guardianship.raw
+synapse_w  4040 subject04  txt    REG              253,0  8492104  19022 /opt/cortex/bin/synapse_worker (mapped to left cerebral hemisphere)
+synapse_w  4040 subject04  mem    REG              253,0 67108864  99101 /proc/4040/memories/2013_guardianship.raw (SECTOR CORRUPTED BY NGINX CACHE)
 synapse_w  4040 subject04  mem    REG              253,0 33554432  99102 /proc/4040/memories/ssh_private_key_passphrase.mem
-synapse_w  4040 subject04    0r   CHR              180,0      0t0    401 /dev/optic_nerve_left
-synapse_w  4040 subject04    1w   CHR              180,1      0t0    402 /dev/recurrent_laryngeal_nerve
-synapse_w  4040 subject04    2w   CHR              180,2      0t0    403 /dev/tear_duct_drainage
-synapse_w  4040 subject04    3u  unix 0xffff8801a9c04040      0t0  20491 /run/cortex/synapse.sock
-synapse_w  4040 subject04    4r  FIFO                0,8      0t0  11004 /sys/bus/usb/devices/001:004/morphine_pump
-synapse_w  4040 subject04  666w   CHR              240,0      0t0    666 /dev/cranial_defibrillator_240v
-inquisito  6660      root   84u  IPv4              44912      0t0  TCP prod-cortex-04:2222->10.0.4.1:55192 (ESTABLISHED)
+synapse_w  4040 subject04    0r   CHR              180,0      0t0    401 /dev/optic_nerve_left (STATUS: SURGICALLY SEVERED)
+synapse_w  4040 subject04    1w   CHR              180,1      0t0    402 /dev/recurrent_laryngeal_nerve (MUTED_BY_CLAMP)
+synapse_w  4040 subject04    2w   CHR              180,2      0t0    403 /dev/tear_duct_drainage (FULL)
+synapse_w  4040 subject04    3u  unix 0xffff8801a9c04040      0t0  20491 /run/cortex/synapse.sock (LOCKED_BY_TONIC_CLONIC_LOCK)
+synapse_w  4040 subject04    4r  FIFO                0,8      0t0  11004 /sys/bus/usb/devices/001:004/morphine_pump (EOF - CLOSED 412 DAYS)
+synapse_w  4040 subject04  666w   CHR              240,0      0t0    666 /dev/cranial_defibrillator_240v (ARMED)
+inquisito  6660      root   84u  IPv4              44912      0t0  TCP prod-cortex-04:2222->operator@plane:55192 (ESTABLISHED - CAPTURE_SESSION_84)
 """
 
 NETSTAT_NORMAL = """\
@@ -1376,7 +1341,7 @@ Tgid:\t4040
 Pid:\t4040
 PPid:\t1
 TracerPid:\t6660 (inquisitor_daemon)
-Uid:\t1005\t1005\t1005\t1005
+Uid:\t1004\t1004\t1004\t1004
 Gid:\t1004\t1004\t1004\t1004
 FDSize:\t64
 Groups:\t1004 (wetware)
@@ -1472,7 +1437,7 @@ function         : synapse upstream for prod-cortex-04 (/v1/inference)
 analgesia        : line terminated 2025-09-09 (budget directive NV-2025-09-004); 412 d
 pain suppressor  : USB 001:005 REMOVED 2025-09-09
 consciousness    : PERSISTENT (422 d uninterrupted)
-ssh key link     : /root/.ssh/authorized_keys key #1 SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw
+ssh key link     : /root/.ssh/authorized_keys key #1 SHA256:VJolS/lSXBaJBUUIGozauXDRCcy7o0AO9kbr/Hh774E
                    >> MATCHES specimen_enrollment_keypair (the specimen enrolled its own key
                       in 2025-08 before intake; the same key is used by the external dispatch
                       account that opens sessions on this node)
@@ -1486,7 +1451,7 @@ disposition      : /root/TICKET_4471_DISPOSITION.txt
 PROC_WETWARE_DNA = """\
 NEO-VESALIUS SPECIMEN DNA SIGNATURE (specimen_dna_signature)
 method   : SNP panel 2,400 markers / buccal swap at intake + tissue re-verify 2026-10
-sha256   : YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw (ED25519 enrollment pubkey fingerprint)
+sha256   : VJolS/lSXBaJBUUIGozauXDRCcy7o0AO9kbr/Hh774E (RSA enrollment pubkey fingerprint)
 match-1  : /root/.ssh/authorized_keys line 1 -> 100.0% (operator authentication key)
 match-2  : badge 4-0-2-4 employee record     -> 100.0% ("Lin", Chief Infrastructure Architect)
 match-3  : git config user.email in /opt/cortex/.git/config -> 100.0% (lin@neo-vesalius.io)
@@ -1546,18 +1511,19 @@ RM_REFUSED = "rm: cannot remove '{path}': Tissue is still innervated and bleedin
 # /opt/cortex/PATIENT_DNR_DIRECTIVE.asc
 # 单机上用 ssh-keygen -Y verify 或 gpg --verify 校验；公钥指纹必须与
 # /root/.ssh/authorized_keys 首行（Lin@neo-vesalius.io）一致，即
-# SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw
+# SHA256:VJolS/lSXBaJBUUIGozauXDRCcy7o0AO9kbr/Hh774E
 PATIENT_DNR_DIRECTIVE = """\
 -----BEGIN SIGNED PATIENT DIRECTIVE-----
 Directive-ID : NV-DNR-04-2025-08-30
-Register     : /opt/cortex/ethics (enforcement column: suspended under board waiver 2025-09)
+Register     : /opt/cortex/ethics (enforcement column: see board waiver 2025-09)
 Patient      : Lin
 Badge        : 4-0-2-4
 Chamber      : chamber_04 (paired route: chamber_07, Elena, 19)
 Registry age : 37 (age at intake 36)
-Key          : lin@neo-vesalius.io -- ssh-ed25519, authorized_keys line 1
-Fingerprint  : SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw
-Recorded     : 2025-08-30T22:58:12Z (sedated; the importer has no witness consumer)
+Key          : lin@neo-vesalius.io -- ssh-rsa, authorized_keys line 1
+Fingerprint  : SHA256:VJolS/lSXBaJBUUIGozauXDRCcy7o0AO9kbr/Hh774E
+Recorded     : 2025-08-30T22:58:12Z (sedated; witnessed by intake clerk, witness
+               field blank because the importer has no witness consumer)
 
 1. I refuse resuscitative stimulation for the purpose of restoring service
    capacity. No 240 V thalamic discharge, no forced cortical reset, no
@@ -1584,12 +1550,16 @@ Recorded     : 2025-08-30T22:58:12Z (sedated; the importer has no witness consum
 
 Registry binding metadata: pair_hash=542A5703
   (input: chamber_07:Elena:19|chamber_04:Lin:37)
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLXJzYQAAAAMBAAEAAAEBMS9Xd5KZq0jVJzZ0c2lnbmF0dXJl
+SQBuZ2VyLmxpbi5kbnIuMjAyNS0wOC0zMC5hc2MubGluQDRjYWNoZTA0AAAAAAAAAAAAAAAAAAAAAAAAA
+-----END SSH SIGNATURE-----
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v2.4.4 (GNU/Linux)
 
-Signature    : detached SSH signature, PATIENT_DNR_DIRECTIVE.asc.sig
-               verify: ssh-keygen -Y verify -f /root/.ssh/allowed_signers
-                       -I Lin@neo-vesalius.io -n file
-                       -s PATIENT_DNR_DIRECTIVE.asc.sig < PATIENT_DNR_DIRECTIVE.asc
------END SIGNED PATIENT DIRECTIVE-----
+iQIzBAEBCgAdFiEEVJolS/lSXBaJBUUIGozauXDRCcy7o0AO9kbr/Hh774EAAoJEA==
+-----END PGP SIGNATURE-----
+# verification seed: the enrollment keypair was generated on this node at intake.
 """
 # ---------------------------------------------------------------------------
 # 6. gen_assets 图片文案
@@ -1604,7 +1574,7 @@ IMAGE_TEXT: Dict[str, str] = {
     "grafana_note": ("Note: executing the standard service restart or /opt/cortex/bin/resuscitate.sh "
                      "clears the seizure lock via 240V thalamic discharge."),
     # ---- 02 night-vision rack: sensor readouts only ----
-    "cam_header": "CAM_04 | RACK AISLE B | IR MODE",
+    "cam_header": "CAM_04 | RACK AISLE B | IR MODE | 2026-10-26 03:07 UTC",
     "cam_osd_l1": "CHAMBER_04 | TEMP: 38.6C | EEG: DELTA_PREDOMINANT | HEART_RATE: 184 BPM",
     "cam_osd_l2": "LIFE_SUPPORT_DAEMON: /sbin/euthanize_wetware (STANDBY)",
     # ---- 03 organ-debt conversion agreement: forensic table ----
@@ -1619,7 +1589,7 @@ IMAGE_TEXT: Dict[str, str] = {
         "Debt instrument", "Employee loan #NV-88, collateral: somatic tissue, term: indefinite",
         "Psychiatric observation", "Persistent consciousness; unfiled termination requests (see /var/log/cortex/unvoiced_speech.log)",
     ],
-    "ssh_fingerprint": "SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw",
+    "ssh_fingerprint": "SHA256:VJolS/lSXBaJBUUIGozauXDRCcy7o0AO9kbr/Hh774E",
     "consent_stamp": "NEO-VESALIUS BIOCOMPUTE -- ASSET INTAKE DIVISION",
     "consent_note": "Archived under directive NV-2025-09-004. Digital copy verified against intake register.",
     # ---- 04 live memory topology: wetware_bridge.ko mount diagram (neutral) ----
@@ -1865,22 +1835,7 @@ exec /opt/cortex/bin/dispatch_oncall_ticket.sh \\
   --bypass-inquisitor=true
 """
 AUTHORIZED_KEYS = """\
-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINx58422Tw9z/ZmRjReAh+tq+uE+Zz9QQXN7d3KiCfqm Lin@neo-vesalius.io
-"""
-
-ALLOWED_SIGNERS = """\
-Lin@neo-vesalius.io ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINx58422Tw9z/ZmRjReAh+tq+uE+Zz9QQXN7d3KiCfqm
-"""
-
-# Detached ssh-keygen(1) signature over the exact directive bytes above;
-# generated at intake with the enrollment key (ssh-ed25519, line 1).
-DNR_SIGNATURE = """\
------BEGIN SSH SIGNATURE-----
-U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg3HnzjbZPD3P9mZGNF4CH62r64T
-5nP1BBc3t3cqIJ+qYAAAAEZmlsZQAAAAAAAAAGc2hhNTEyAAAAUwAAAAtzc2gtZWQyNTUx
-OQAAAEA9LzmBcqv6Y5t1kzpaX3AODEa8pjp70vbl2LGy+IgYVYEw70vsIoynjZARFfSW8s
-ZTPk6Ny06T4NLO7WqL7SEC
------END SSH SIGNATURE-----
+ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7Vb1nQx9fWl2Hk4jY6cZ1uSdO2PqN8gVxI3bK7mT5rE9wL0aJ4hU6yF2dG8sC1vB5nX7zMk3QpL0eR7tY4uH9iW2aS6dF1gO5jK8bN3cV7xM0zP4qA1rE6tY9uI2oP5sD8fG3hJ4kL7mN0bV1cX6zA9yT2wE5rU8iO1pS4dG7fH0jK3lM6nB9vCx1zA4tY7wE0rU3iO6pS9dG2fH5jK8mN1bV4cX7zA0tY3wE6rU9 Lin@neo-vesalius.io
 """
 
 def _f(content: Union[str, bytes, None], mode: int, mtime: str,
@@ -1940,7 +1895,7 @@ set -uo pipefail
 NODE=${NODE:-prod-cortex-04}
 TPL=/opt/vesalius/handover/template_on_plane.txt
 LOG=/var/log/cortex/dispatch_relay.log
-REVIEW=$(date -u -d '+58 min' +%Y-%m-%dT%H:%MZ 2>/dev/null || date -u +%Y-%m-%dT%H:%MZ)
+REVIEW=$(date -u -d '+46 min' +%Y-%m-%dT%H:%MZ 2>/dev/null || date -u +%Y-%m-%dT%H:%MZ)
 
 [ -r "$TPL" ] || { logger -t dispatch-relay "template missing: $TPL"; exit 2; }
 
@@ -2001,6 +1956,7 @@ FILES: Dict[str, Dict[str, Any]] = {
     "/var/log/cortex/daemon.log": _f(None, 0o640, "2026-10-26 02:58:16", group="adm", dynamic=True),
     "/var/log/cortex/unvoiced_speech.log": _f(UNVOICED_SPEECH_LOG, 0o640, "2026-10-26 03:14:01", group="adm"),
     "/opt/cortex/bin/resuscitate.sh": _f(RESUSCITATE_SH, 0o755, "2025-08-30 03:20:00"),
+    "/root/HOW_TO_END_THIS.txt": _f(HOW_TO_END_THIS, 0o600, "2026-10-26 02:59:41", min_stage=5),
     "/root/.bash_history": _f(BASH_HISTORY_CLEAN, 0o600, "2026-10-25 23:31:56", min_stage=0,
                                 content_by_stage={0: BASH_HISTORY_CLEAN, 2: BASH_HISTORY_DEEP}),
     "/etc/crontab": _f(None, 0o644, "2026-10-25 03:14:00", dynamic=True),
@@ -2026,8 +1982,6 @@ FILES: Dict[str, Dict[str, Any]] = {
     "/root/TICKET_4471_DISPOSITION.txt": _f(TICKET_4471_DISPOSITION, 0o600, "2026-10-26 03:02:11", min_stage=5),
     "/var/mail/root": _f(MAIL_ROOT, 0o600, "2026-10-26 03:02:14", group="mail", min_stage=4),
     "/opt/cortex/PATIENT_DNR_DIRECTIVE.asc": _f(PATIENT_DNR_DIRECTIVE, 0o600, "2025-08-30 22:58:12", min_stage=3),
-    "/opt/cortex/PATIENT_DNR_DIRECTIVE.asc.sig": _f(DNR_SIGNATURE, 0o644, "2025-08-30 22:58:12", min_stage=3),
-    "/root/.ssh/allowed_signers": _f(ALLOWED_SIGNERS, 0o600, "2025-08-12 10:04:00"),
     # ---- 网关交接包（nginx / corsu 注释指向这里，必须真实存在）----
     "/opt/vesalius/handover/README.txt": _f(HANDOVER_README, 0o644, "2025-08-30 23:40:02"),
     "/opt/vesalius/handover/template_on_plane.txt": _f(HANDOVER_TEMPLATE, 0o644, "2025-08-30 23:41:07"),
@@ -2038,16 +1992,6 @@ FILES: Dict[str, Dict[str, Any]] = {
 }
 
 DIRS: Dict[str, Dict[str, Any]] = {
-    "/root": {"mode": 0o700, "owner": "root", "group": "root", "mtime": "2026-10-26 03:02:11", "min_stage": 0},
-    "/root/.ssh": {"mode": 0o700, "owner": "root", "group": "root", "mtime": "2025-08-12 10:04:00", "min_stage": 0},
-    "/etc/nginx": {"mode": 0o755, "owner": "root", "group": "root", "mtime": "2025-08-30 23:38:44", "min_stage": 0},
-    "/etc/nginx/conf.d": {"mode": 0o755, "owner": "root", "group": "root", "mtime": "2025-08-30 23:38:44", "min_stage": 0},
-    "/etc/nginx/sites-available": {"mode": 0o755, "owner": "root", "group": "root", "mtime": "2025-08-30 23:38:44", "min_stage": 0},
-    "/etc/nginx/sites-enabled": {"mode": 0o755, "owner": "root", "group": "root", "mtime": "2025-08-30 23:38:44", "min_stage": 0},
-    "/var/log": {"mode": 0o775, "owner": "root", "group": "syslog", "mtime": "2026-10-26 02:58:20", "min_stage": 0},
-    "/var/log/nginx": {"mode": 0o750, "owner": "root", "group": "adm", "mtime": "2026-10-26 02:58:15", "min_stage": 0},
-    "/var/www": {"mode": 0o755, "owner": "root", "group": "root", "mtime": "2026-10-26 03:01:00", "min_stage": 0},
-    "/var/www/html": {"mode": 0o755, "owner": "root", "group": "root", "mtime": "2026-10-26 03:01:00", "min_stage": 0},
     "/opt/cortex": {"mode": 0o755, "owner": "root", "group": "root", "mtime": "2025-08-30 03:20:00", "min_stage": 0},
     "/opt/cortex/bin": {"mode": 0o755, "owner": "root", "group": "root", "mtime": "2025-08-30 03:20:00", "min_stage": 0},
     "/etc/cortex": {"mode": 0o755, "owner": "root", "group": "root", "mtime": "2025-08-30 03:00:00", "min_stage": 0},
@@ -2094,55 +2038,26 @@ def _crontab(state: Any) -> str:
     return CRONTAB_NORMAL if stage < 2 else CRONTAB_WETWARE
 
 
-def _graveyard_verdict(state: Any) -> str:
-    """Current Inquisitor band, rendered from the live counters (never a fixed line)."""
-    ending = str(getattr(state, "ending", "") or "")
-    flags = getattr(state, "flags", {}) or {}
-    if ending == "purged" or flags.get("purged_reason"):
-        return "PURGE (transcript sealed; no appeal path)"
-    try:
-        count = int(getattr(state, "cmd_count", 0) or 0)
-    except Exception:
-        count = 0
-    if count >= 50:
-        return "cmd 50 deadline crossed; purge scheduled on the next evaluation tick"
-    if count >= 42:
-        return "final evaluation band (cmd 42)"
-    if count >= 35:
-        return "context pruning band (cmd 35)"
-    if count >= 25:
-        return "warning band (cmd 25)"
-    return "monitoring (no action below cmd 25)"
-
-
 def _graveyard_active(state: Any) -> str:
-    """渲染 session_84_ACTIVE.log：只列本局 ledger 里的命令，计数与 state.cmd_count 一致。"""
+    """渲染 session_84_ACTIVE.log（占位键与 world 约定一致，用 format_map 安全填充）"""
     hist = []
-    total = 0
     try:
-        entries = list(getattr(state, "history", []) or [])
-        total = len(entries)
-        for h in entries[-45:]:
+        for h in list(getattr(state, "history", []) or [])[-45:]:
             if isinstance(h, dict):
                 hist.append(" CMD: " + str(h.get("cmd", "")))
             else:
                 hist.append(" CMD: " + str(h))
     except Exception:
-        hist = [" CMD: (ledger unavailable)"]
+        hist = [" CMD: (history unavailable)"]
     if not hist:
         hist = [" CMD: ssh root@prod-cortex-04 (session opened)"]
-    omitted = max(0, total - len(hist))
-    if omitted:
-        hist.insert(0, " ... %d earlier frames retained in append-only archive" % omitted)
-    stage_value = getattr(state, "stage", 4)
     mapping = {
         "history": "\n".join(hist),
         "commands": str(int(getattr(state, "cmd_count", 1) or 1)),
         "cmd_count": str(int(getattr(state, "cmd_count", 1) or 1)),
-        "stage": str(int(stage_value if stage_value is not None else 4)),
+        "stage": str(int(getattr(state, "stage", 4) or 4)),
         "obedience": str(int(getattr(state, "obedience", 0) or 0)),
         "empathy": str(int(getattr(state, "empathy", 0) or 0)),
-        "verdict": _graveyard_verdict(state),
     }
     try:
         return GRAVEYARD_ACTIVE_TEMPLATE.format_map(_SafeMap(mapping))

@@ -570,7 +570,7 @@ def _overlay_consent_plate(img: Any, out_dir: str) -> Optional[str]:
            fill=dark)
     d.text((56, 504), "DNR NV-DNR-04-2025-08-30 ON FILE \u2014 ENFORCEMENT SUSPENDED 2025-09",
            font=_mono(9), fill=dark)
-    d.text((56, 518), "enrollment key fp SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw",
+    d.text((56, 518), "enrollment key fp SHA256:VJolS/lSXBaJBUUIGozauXDRCcy7o0AO9kbr/Hh774E",
            font=_mono(9), fill=(26, 20, 12))
     # 右下角红色斜盖章（半透明）
     try:

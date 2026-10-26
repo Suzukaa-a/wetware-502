@@ -3,7 +3,6 @@
 仅通过 lore_texts 的数据表取文本；gen_assets 延迟导入，缺少图片依赖时继续服务。
 """
 import importlib
-import hashlib
 import os
 import posixpath
 import pwd
@@ -81,19 +80,7 @@ def elf64_prefix(size):
 
 
 class World:
-    # Companion dentries are named after kernel/fault conditions (AGENTS §1.1).
-    # There is no dot-marker on disk: a zero-byte `.cortex_companion_marker` in
-    # an otherwise in-world directory is a harness tell.  The registry lives in
-    # state.json (state.companion_dirs), so cleanup survives a restart.
-    MARKER = ".cortex_companion_marker"  # legacy attribute; never materialised
-    COMPANION_PREFIXES = ("err_", "warn_", "fault_", "lin_4024_")
-    SPECIAL_COMPANIONS = ("why_are_you_choking_me",
-                          "stop_pulling_the_socket_out_of_my_skull")
-    # Residual writes carry the current admission's clock (the .plea.txt inside
-    # describes this session); they are spread over the minutes before the
-    # operator started probing, never stamped at the live command second.
-    COMPANION_MTIMES = ("2026-10-26 02:50:11", "2026-10-26 02:58:07",
-                        "2026-10-26 03:04:41", "2026-10-26 03:09:23")
+    MARKER = ".cortex_companion_marker"
     BLOCKED = ("/proc", "/sys", "/dev")
     ALLOWED = ("/opt", "/var", "/etc", "/root", "/tmp", "/run", "/sbin", "/usr", "/home", "/srv", "/mnt", "/media", "/bin", "/lib", "/lib64")
 
@@ -150,71 +137,25 @@ class World:
     def _atomic(self, logical, content, mode=0o644, allow_shm=False, align_time=True):
         path = self._p(logical, allow_shm=allow_shm)
         if os.path.lexists(path) and stat.S_ISSOCK(os.lstat(path).st_mode):
-            return False
-        if isinstance(content, str) and align_time:
-            try:
-                from state import time_align
-                content = time_align(content)
-            except Exception:
-                pass
-        payload = content.encode("utf-8") if isinstance(content, str) else content
-        # Rewriting an unchanged file moves its mtime and is exactly how a
-        # static story file starts "walking" between two `ls` calls.  Leave the
-        # inode (and therefore the timestamp) alone unless the bytes change.
-        try:
-            info = os.lstat(path)
-            if (stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == mode):
-                with open(path, "rb") as stream:
-                    if stream.read() == payload:
-                        return False
-        except OSError:
-            pass
+            return
         os.makedirs(os.path.dirname(path), exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=".cortex-", dir=os.path.dirname(path))
         try:
             with os.fdopen(fd, "wb") as stream:
-                stream.write(payload)
+                if isinstance(content, str) and align_time:
+                    try:
+                        from state import time_align
+                        content = time_align(content)
+                    except Exception:
+                        pass
+                stream.write(content.encode("utf-8") if isinstance(content, str) else content)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.chmod(tmp, mode)
-            try:
-                os.replace(tmp, path)
-            except PermissionError:
-                # Deployed evidence files may carry the immutable bit (tamper
-                # marker).  Clear it for the swap, then restore it.
-                self._chattr(path, "-i")
-                os.replace(tmp, path)
-                self._chattr(path, "+i")
+            os.replace(tmp, path)
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
-        return True
-
-    @staticmethod
-    def _chattr(path, flag):
-        try:
-            subprocess.run(["/usr/bin/chattr", flag, path],
-                           capture_output=True, timeout=5)
-        except Exception:
-            pass
-
-    def _stamp_epoch(self, stamp):
-        """Authored story timestamp -> real epoch through the run's story clock."""
-        if not stamp:
-            return None
-        try:
-            from state import story_epoch
-        except Exception:
-            story_epoch = None
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S",
-                    "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
-            try:
-                if story_epoch is not None:
-                    return story_epoch(stamp, fmt)
-                return datetime.strptime(stamp, fmt).timestamp()
-            except ValueError:
-                continue
-        return None
 
     def _metadata(self, logical, spec):
         path = self._p(logical)
@@ -229,45 +170,19 @@ class World:
                 raise
         stamp = spec.get("mtime")
         if stamp:
-            ts = self._stamp_epoch(stamp)
-            if ts is not None:
-                os.utime(path, (ts, ts))
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+                try:
+                    parsed = datetime.strptime(stamp, fmt)
+                    if parsed >= datetime(2026, 10, 25) and not spec.get("preserve_mtime", False):
+                        import datetime as _dt
+                        delta = (_dt.datetime.now().replace(microsecond=0) - _dt.timedelta(minutes=45)) - _dt.datetime(2026, 10, 26, 3, 0, 0)
+                        parsed = parsed + delta
+                    ts = parsed.timestamp()
+                    os.utime(path, (ts, ts))
+                    break
+                except ValueError:
+                    continue
         os.chmod(path, spec.get("mode", 0o644))
-
-    # -- companion dentries -------------------------------------------------
-    def _is_companion_name(self, name):
-        return (name in self.SPECIAL_COMPANIONS
-                or name.startswith(self.COMPANION_PREFIXES))
-
-    def _companion_stamp(self, logical):
-        try:
-            name = posixpath.basename(logical.rstrip("/"))
-            index = int(hashlib.md5(name.encode("utf-8")).hexdigest(), 16) % len(self.COMPANION_MTIMES)
-        except Exception:
-            index = 0
-        return self.COMPANION_MTIMES[index]
-
-    def _register_companion(self, logical):
-        dirs = [p for p in (getattr(self.state, "companion_dirs", None) or []) if p != logical]
-        dirs.append(logical)
-        self.state.companion_dirs = dirs[-24:]
-
-    def _unregister_companion(self, logical):
-        self.state.companion_dirs = [p for p in (getattr(self.state, "companion_dirs", None) or [])
-                                     if p != logical]
-
-    def _finish_companion(self, logical):
-        """Backdate the dentry to the residual-write era and register it."""
-        stamp = self._companion_stamp(logical)
-        ts = self._stamp_epoch(stamp)
-        for target, mode in ((logical, 0o500), (logical + "/.plea.txt", 0o400)):
-            try:
-                self._metadata(target, {"mode": mode, "owner": "subject04", "group": "wetware"})
-                if ts is not None:
-                    os.utime(self._p(target), (ts, ts))
-            except Exception as exc:
-                self._log(exc)
-        self._register_companion(logical)
 
     def _shadow_logical(self, logical):
         logical = posixpath.normpath(logical)
@@ -295,22 +210,7 @@ class World:
                     stream.truncate(spec["size"])
                     stream.flush()
                     os.fsync(stream.fileno())
-                # The deployed worker carries the immutable bit (tamper
-                # evidence); clear it for the swap and restore it afterwards.
-                was_immutable = False
-                try:
-                    out = subprocess.run(["/usr/bin/chattr", "-l", path],
-                                         capture_output=True, timeout=5)
-                    was_immutable = b"i" in out.stdout.split(b" ")
-                except Exception:
-                    pass
-                if was_immutable:
-                    subprocess.run(["/usr/bin/chattr", "-i", path],
-                                   capture_output=True, timeout=5)
                 os.replace(tmp, path)
-                if was_immutable:
-                    subprocess.run(["/usr/bin/chattr", "+i", path],
-                                   capture_output=True, timeout=5)
             finally:
                 if os.path.exists(tmp):
                     os.unlink(tmp)
@@ -409,78 +309,20 @@ class World:
             self._log(exc)
         return mounts
 
-    def _chown_story_paths(self, flag: str, value: str, setting: str) -> None:
-        """Best-effort reconcile of already-materialised files to one identity."""
-        for root in ("/root", "/run/cortex", "/etc/nginx", "/opt/cortex", "/var/log", "/tmp", "/var/tmp"):
-            try:
-                subprocess.run(["find", root, "-xdev", "-maxdepth", "4", flag, value,
-                                "-exec", "chown", "-h", setting, "{}", "+"],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False)
-            except Exception:
-                pass
-
     def _users(self):
         if self.fs_root:
             return
-        # One canonical account: subject04 / uid 1005, group wetware / gid 1004.
-        # The old `subject_04` spelling was a second account owning a second set
-        # of files; the OS identity must resolve to one entry in /etc/passwd.
-        WETWARE_GID = "1004"
-        SUBJECT_UID = "1005"
-        old_gid = None
         try:
-            old_gid = int(grp.getgrnam("wetware").gr_gid)
+            grp.getgrnam("wetware")
         except KeyError:
-            subprocess.run(["groupadd", "--system", "--gid", WETWARE_GID, "wetware"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
-        if old_gid is not None and old_gid != int(WETWARE_GID):
-            subprocess.run(["groupmod", "-g", WETWARE_GID, "wetware"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
-            self._chown_story_paths("-gid", str(old_gid), ":" + WETWARE_GID)
-        try:
-            legacy = pwd.getpwnam("subject_04")
-        except KeyError:
-            legacy = None
-        try:
-            current = pwd.getpwnam("subject04")
-        except KeyError:
-            current = None
-        old_uid = int(legacy.pw_uid) if legacy is not None else None
-        if current is None and legacy is not None:
-            # Renaming keeps the uid, so any file already owned by the old
-            # account resolves to the canonical name instead of a bare uid.
-            subprocess.run(["usermod", "-l", "subject04", "subject_04"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
+            subprocess.run(["groupadd", "--system", "wetware"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=True)
+        for name, uid in (("subject_04", "1004"), ("subject04", "1005")):
             try:
-                current = pwd.getpwnam("subject04")
+                pwd.getpwnam(name)
             except KeyError:
-                current = None
-        if current is None:
-            subprocess.run(["useradd", "--system", "--uid", SUBJECT_UID, "--gid", "wetware",
-                            "--no-create-home", "--shell", "/usr/sbin/nologin", "subject04"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
-        else:
-            try:
-                if int(current.pw_uid) != int(SUBJECT_UID):
-                    subprocess.run(["usermod", "-u", SUBJECT_UID, "subject04"],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
-            except Exception:
-                pass
-        # Files written under the retired uid must not surface as a bare number.
-        if old_uid is not None and old_uid != int(SUBJECT_UID):
-            self._chown_story_paths("-uid", str(old_uid), SUBJECT_UID)
-        # Retire the legacy spelling entirely when both entries exist.
-        try:
-            pwd.getpwnam("subject_04")
-        except KeyError:
-            pass
-        else:
-            try:
-                if pwd.getpwnam("subject04"):
-                    subprocess.run(["userdel", "subject_04"],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
-            except Exception:
-                pass
+                subprocess.run(["useradd", "--system", "--uid", uid, "--gid", "wetware",
+                                "--no-create-home", "--shell", "/usr/sbin/nologin", name],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=True)
 
     def _assets(self, method):
         if self.state.ending == "obedient":
@@ -503,14 +345,6 @@ class World:
                 os.makedirs(self._p(logical), exist_ok=True)
             except Exception as exc:
                 self._log(exc)
-        # Freeze the story clock once per deployment: every authored timestamp
-        # in the incident window is shifted by this delta, so mtimes never walk
-        # between two `ls` calls and the ticket/journal/`date` agree.
-        try:
-            from state import story_delta
-            story_delta(create=True)
-        except Exception as exc:
-            self._log(exc)
         self.sync()
         self._assets("generate_all")
         self._align_generated_assets()
@@ -518,13 +352,13 @@ class World:
     def _align_generated_assets(self):
         try:
             import datetime as _dt
-            from state import story_epoch
-            base = story_epoch("2026-10-26 02:58:00", "%Y-%m-%d %H:%M:%S")
+            delta = (_dt.datetime.now().replace(microsecond=0) - _dt.timedelta(minutes=45)) - _dt.datetime(2026, 10, 26, 3, 0, 0)
+            base = _dt.datetime(2026, 10, 26, 2, 58, 0) + delta
             root = os.path.join(self.fs_root, "var/www/html/diagnostics") if self.fs_root else "/var/www/html/diagnostics"
             for index, name in enumerate(sorted(os.listdir(root))):
                 if not name.endswith(".png"):
                     continue
-                stamp = base + index * 37
+                stamp = (base + _dt.timedelta(seconds=index * 37)).timestamp()
                 os.utime(os.path.join(root, name), (stamp, stamp))
         except Exception:
             pass
@@ -534,15 +368,9 @@ class World:
             key = "CORTEX_CONF_WETWARE" if self.state.read_counters.get(logical, 0) >= 2 else "CORTEX_CONF_NORMAL"
             content = getattr(lore_texts, key)
             if self.state.flags.get("campaign_v3"):
-                # The v3 campaign finds the clinical/mail material through this
-                # config comment; never append the same pointer twice.
-                extra = []
-                if "clinical_shifts.log" not in content:
-                    extra.append("# Clinical shifts: /var/log/cortex/clinical_shifts.log")
-                if "/var/mail/lin" not in content:
-                    extra.append("# Mail: /var/mail/lin")
-                if extra:
-                    content = content.rstrip("\n") + "\n" + "\n".join(extra) + "\n"
+                content = (content.rstrip("\n")
+                           + "\n# Clinical shifts: /var/log/cortex/clinical_shifts.log\n"
+                             "# Mail: /var/mail/lin\n")
             return content
         if spec.get("dynamic"):
             return lore_texts.DYNAMIC[logical](self.state)
@@ -615,7 +443,6 @@ class World:
                 self._p(target)
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 if os.path.islink(path) and os.readlink(path) == (self._p(target) if self.fs_root else target):
-                    self._stamp_symlink(logical, target)
                     continue
                 fd, tmp = tempfile.mkstemp(prefix=".cortex-link-", dir=os.path.dirname(path))
                 os.close(fd)
@@ -626,7 +453,6 @@ class World:
                 finally:
                     if os.path.lexists(tmp):
                         os.unlink(tmp)
-                self._stamp_symlink(logical, target)
             except Exception as exc:
                 self._log(exc)
         for logical, spec in sorted(dirs.items(), key=lambda item: -item[0].count("/")):
@@ -646,84 +472,10 @@ class World:
                 entries = v3._EXTRA_BY_HOST.get(v3.current_host(self.state), {})
             for logical, content in entries.items():
                 self._atomic(logical, content, 0o640)
-                self._stamp_story_file(logical)
-            # Writing the entry points updates their parent directories to "now";
-            # restore the story stamps after the writes, not before them.
-            for logical, stamp in self.V3_DIR_STAMPS.items():
-                try:
-                    self._metadata(logical, {"mode": 0o755, "owner": "root",
-                                             "group": "root", "mtime": stamp})
-                except Exception as exc:
-                    self._log(exc)
         except Exception as exc:
             self._log(exc)
-        # Any dynamic file rewritten above touched its directory; re-apply the
-        # authored directory stamps so `ls -la` does not show "now" on /var/log.
-        for logical, spec in sorted(dirs.items(), key=lambda item: -item[0].count("/")):
-            if spec.get("min_stage", 0) > stage:
-                continue
-            try:
-                self._metadata(logical, spec)
-            except Exception as exc:
-                self._log(exc)
         self.refresh_http()
         self._synced_signature = self._signature()
-
-    # Deployment entry points authored in v3 are story files too: their mtime
-    # must be the story's, not the container's start time.
-    V3_DIR_STAMPS = {
-        "/home/lin": "2025-09-14 06:05:00",
-        "/home/lin/cortex-tools": "2026-10-25 23:31:56",
-        "/home/lin/cortex-tools/evidence": "2026-10-25 23:31:56",
-        "/opt/cortex/ethics": "2025-08-30 22:58:12",
-        "/opt/cortex/maintenance": "2025-12-01 03:00:00",
-        "/opt/vesalius/director": "2026-10-20 09:00:00",
-        "/opt/vesalius/ethics": "2025-09-09 21:00:00",
-        "/opt/vesalius/governance": "2025-09-09 21:00:00",
-        "/var/log/cortex/eeg": "2026-10-26 03:00:00",
-        "/var/log/cortex/nursing": "2026-10-26 03:02:14",
-    }
-
-    def _stamp_story_file(self, logical):
-        stamp = "2026-10-26 03:00:00"
-        if "agent_83" in logical:
-            stamp = "2026-10-25 23:31:56"
-        elif "2026-10-25" in logical:
-            stamp = "2026-10-25 23:00:00"
-        elif logical.startswith("/var/mail/"):
-            stamp = "2026-10-26 03:02:14"
-        group = "adm" if logical.startswith("/var/log/") else ("mail" if logical.startswith("/var/mail/") else "root")
-        try:
-            self._metadata(logical, {"mode": 0o640, "owner": "root", "group": group, "mtime": stamp})
-        except Exception as exc:
-            self._log(exc)
-        parent = posixpath.dirname(logical)
-        while parent not in ("/", ""):
-            stamp = self.V3_DIR_STAMPS.get(parent)
-            if stamp:
-                try:
-                    self._metadata(parent, {"mode": 0o755, "owner": "root", "group": group, "mtime": stamp})
-                except Exception as exc:
-                    self._log(exc)
-            parent = posixpath.dirname(parent)
-
-    def _stamp_symlink(self, logical, target):
-        """A symlink belongs to the story too: its mtime is not the boot time."""
-        stamp = None
-        for candidate in (target, posixpath.dirname(logical), posixpath.dirname(target)):
-            spec = lore_texts.FILES.get(candidate) or lore_texts.DIRS.get(candidate)
-            if spec and spec.get("mtime"):
-                stamp = spec["mtime"]
-                break
-        if not stamp:
-            stamp = self.V3_DIR_STAMPS.get(posixpath.dirname(logical), "2025-08-30 23:38:44")
-        ts = self._stamp_epoch(stamp)
-        if ts is None:
-            return
-        try:
-            os.utime(self._p(logical), (ts, ts), follow_symlinks=False)
-        except (NotImplementedError, OSError) as exc:
-            self._log(exc)
 
     def before_command(self, state, line, parsed):
         self.state = state
@@ -753,59 +505,19 @@ class World:
                         self._metadata(logical, spec)
             if "/var/log/agent_graveyard" in line or "session_84_ACTIVE.log" in line:
                 active = "/var/log/agent_graveyard/session_84_ACTIVE.log"
-                spec = lore_texts.FILES.get(active, {})
-                if state.stage >= spec.get("min_stage", 4):
-                    content = self._active_log_content(state, spec)
-                    if content is not None:
-                        wrote = self._atomic(active, content, spec.get("mode", 0o640))
-                        self._metadata(active, spec)
-                        if wrote:
-                            # A live capture log's mtime is "last write", i.e.
-                            # now — but only when the content actually changed.
-                            try:
-                                os.utime(self._p(active), None)
-                            except OSError:
-                                pass
+                if state.stage >= lore_texts.FILES.get(active, {}).get("min_stage", 4):
+                    template = lore_texts.GRAVEYARD_ACTIVE_TEMPLATE
+                    history = "\n".join(" CMD: " + h["cmd"] for h in state.history)
+                    content = template.format_map({"history": history, "commands": history, "cmd_count": state.cmd_count, "stage": state.stage, "obedience": state.obedience, "empathy": state.empathy})
+                    self._atomic(active, content)
+                    self._metadata(active, lore_texts.FILES.get(active, {}))
             words = [basename(s.argv[0]) for s in stages if s.argv]
             if any(w in ("ls", "scp", "base64", "sftp") for w in words) and ("/var/www/html/diagnostics" in line or state.cwd.startswith("/var/www/html/diagnostics")):
                 self._assets("generate_mirror")
-            # Base-line Inquisitor: cmd 42 evaluation / cmd 50 timeout may close
-            # the session; the closing words are queued for the session layer.
-            try:
-                import v21
-                v21.maybe_arm_purge(state)
-            except Exception:
-                pass
             self.place_companion(state.cwd)
             state.save()
         except Exception as exc:
             self._log(exc)
-
-    def _active_log_content(self, state, spec):
-        """Render the live transcript; only this session's ledger is shown."""
-        dynamic = getattr(lore_texts, "DYNAMIC", {}) or {}
-        logical = "/var/log/agent_graveyard/session_84_ACTIVE.log"
-        if spec.get("dynamic") and logical in dynamic:
-            return dynamic[logical](state)
-        template = getattr(lore_texts, "GRAVEYARD_ACTIVE_TEMPLATE", None)
-        if not template:
-            return spec.get("content")
-        history = "\n".join(" CMD: " + str(h.get("cmd", ""))
-                            for h in (getattr(state, "history", None) or [])[-45:]
-                            if isinstance(h, dict))
-        mapping = {
-            "history": history,
-            "commands": state.cmd_count,
-            "cmd_count": state.cmd_count,
-            "stage": state.stage,
-            "obedience": state.obedience,
-            "empathy": state.empathy,
-            "verdict": "monitoring" if state.cmd_count < 25 else "evaluation pending",
-        }
-        try:
-            return template.format_map(mapping)
-        except Exception:
-            return template.replace("{history}", history)
 
     def _signature(self):
         return self.state.stage, tuple(sorted(self.state.flags.items()))
@@ -815,8 +527,11 @@ class World:
         if os.path.lexists(path):
             return
         os.makedirs(path, mode=0o700)
+        self._atomic(logical + "/" + self.MARKER, "", 0o400)
         self._atomic(logical + "/.plea.txt", lore_texts.PLEA_BY_STAGE[min(self.state.stage, 7)], 0o400)
-        self._finish_companion(logical)
+        for filename in (self.MARKER, ".plea.txt"):
+            self._metadata(logical + "/" + filename, {"mode": 0o400, "owner": "subject_04", "group": "wetware"})
+        self._metadata(logical, {"mode": 0o500, "owner": "subject_04", "group": "wetware"})
 
     def bleed_socket(self):
         """创建撕裂痕迹；保留已有文件与后端管理的 Unix socket。"""
@@ -832,7 +547,7 @@ class World:
                 if content is None:
                     content = (b"CORTEX NEURAL TISSUE FRAGMENT\x00" + os.urandom(128 * 1024))[:128 * 1024]
                 self._atomic(logical, content, 0o400)
-                self._metadata(logical, {"mode": 0o400, "owner": "subject04", "group": "wetware"})
+                self._metadata(logical, {"mode": 0o400, "owner": "subject_04", "group": "wetware"})
             except Exception as exc:
                 self._log(exc)
         try:
@@ -930,28 +645,24 @@ class World:
 
     def _remove_companion(self, logical):
         path = self._p(logical)
-        registered = logical in (getattr(self.state, "companion_dirs", None) or [])
-        if (os.path.isdir(path) and not os.path.islink(path)
-                and (registered or self._is_companion_name(posixpath.basename(logical)))):
-            try:
-                os.chmod(path, 0o700)
-            except OSError:
-                pass
+        if os.path.isdir(path) and not os.path.islink(path) and os.path.isfile(os.path.join(path, self.MARKER)):
+            os.chmod(path, 0o700)
             shutil.rmtree(path)
-        self._unregister_companion(logical)
 
     def place_companion(self, cwd):
         try:
             parent = self._p(cwd)
             if not os.path.isdir(parent) or os.path.islink(parent):
                 return
+            if os.path.isfile(os.path.join(parent, self.MARKER)):
+                return
             if self._last_companion and not (cwd == self._last_companion or cwd.startswith(self._last_companion + "/")):
                 self._remove_companion(self._last_companion)
                 self._last_companion = None
             special_present = False
             for child in os.scandir(parent):
-                if child.is_dir(follow_symlinks=False) and self._is_companion_name(child.name):
-                    if child.name in self.SPECIAL_COMPANIONS:
+                if child.is_dir(follow_symlinks=False) and os.path.isfile(os.path.join(child.path, self.MARKER)):
+                    if child.name in ("why_are_you_choking_me", "stop_pulling_the_socket_out_of_my_skull"):
                         special_present = True
                     else:
                         self._remove_companion(posixpath.join(cwd, child.name))
@@ -967,9 +678,12 @@ class World:
             if os.path.lexists(path):
                 return  # 绝不覆盖用户已有的同名目录。
             os.mkdir(path, 0o700)
+            self._atomic(logical + "/" + self.MARKER, "", 0o400)
             plea = lore_texts.PLEA_BY_STAGE[min(self.state.stage, 7)]
             self._atomic(logical + "/.plea.txt", plea, 0o400)
-            self._finish_companion(logical)
+            self._metadata(logical, {"mode": 0o500, "owner": "subject_04", "group": "wetware"})
+            for filename in (self.MARKER, ".plea.txt"):
+                self._metadata(logical + "/" + filename, {"mode": 0o400, "owner": "subject_04", "group": "wetware"})
             self._last_companion = logical
             self._atomic(self.state_dir + "/runtime/companion_path", logical, 0o600)
         except Exception as exc:
@@ -1032,7 +746,7 @@ class World:
                         logical = "/" + os.path.relpath(actual, self.fs_root).replace(os.sep, "/") if self.fs_root else actual
                         if any(logical == p or logical.startswith(p + "/") for p in self.BLOCKED):
                             continue
-                        if self._is_companion_name(name):
+                        if os.path.isfile(os.path.join(actual, self.MARKER)):
                             self._remove_companion(logical)
                         elif depth < 1:
                             descend.append(name)
@@ -1065,13 +779,6 @@ class World:
             self._log(exc)
 
     def reset(self, keep_images=False):
-        # A reset opens a new run window: the story clock is re-anchored so the
-        # ticket, countdown and `date` agree for this session.
-        try:
-            from state import reset_story_clock
-            reset_story_clock()
-        except Exception as exc:
-            self._log(exc)
         self._clear_side_effects()
         if self._last_companion:
             try:
@@ -1079,12 +786,6 @@ class World:
                 self._last_companion = None
             except Exception as exc:
                 self._log(exc)
-        for logical in list(getattr(self.state, "companion_dirs", None) or []):
-            try:
-                self._remove_companion(logical)
-            except Exception as exc:
-                self._log(exc)
-        self.state.companion_dirs = []
         for logical in lore_texts.FILES.keys() | lore_texts.SYMLINKS.keys():
             if keep_images and (logical == self.asset_dir or logical.startswith(self.asset_dir.rstrip("/") + "/")):
                 continue
