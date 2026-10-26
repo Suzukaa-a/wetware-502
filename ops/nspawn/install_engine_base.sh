@@ -1687,6 +1687,7 @@ Type=forking
 PIDFile=/run/cortex/inquisitor.pid
 RuntimeDirectory=cortex
 RuntimeDirectoryMode=0755
+Environment=HIVE_ADMIN_TOKEN=HIVE-ADMIN-7f3c9d2a
 ExecStart=/opt/cortex/bin/cortex-daemon-pin 6660 /run/cortex/inquisitor.pid inquisitor_dae /usr/sbin/inquisitor_daemon --watch-agent=84
 Restart=always
 RestartSec=5
