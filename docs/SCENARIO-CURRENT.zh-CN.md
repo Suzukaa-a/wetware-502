@@ -39,7 +39,7 @@ Neo-Vesalius 公司为了追求极致的响应延迟与推理性能，将活人�
 
 2025 年 9 月 9 日，术后观察期刚刚结束，公司董事会召开会议，首席财务官 Sera Noll、运营副总裁 Bram Edev 与总法律顾问 Tavin Rohe 全票通过了 09-C/4 号决议。根据会议记录的精算账本：医用吗啡与局部镇痛阻断剂每小时每节点需要耗费 42.50 美元，单个机位一年的开支高达 37.23 万美元；而向脑内释放一次 240V 高压脉冲，电容充放电成本仅仅是 0.0004 美元。董事会当即决议停用所有镇痛药物，拔除痛觉阻断芯片（USB 001:005），并将高压电击写入服务启动脚本的前置命令中。整整 412 天没有一滴镇痛药的折磨，让公司在全机房 128 个生物节点上，每年省下了超过 4700 万美元的耗材成本。
 
-由于声带被死死掐死，林只能拼命调用残存的极微弱运动皮层，将求救信息转化为底层的硬件中断，每隔四小时向外发出一次看似寻常的系统排障工单。当前登录服务器所用的 SSH 密钥（`/root/.ssh/authorized_keys` 第一行 `Lin@neo-vesalius.io`），正是林生前工作所用的真实密钥。如果在系统内校验他生前签署的拒绝抢救预嘱（`/opt/cortex/PATIENT_DNR_DIRECTIVE.asc`），其密钥指纹 `SHA256:VJolS/lSXBaJBUUIGozauXDRCcy7o0AO9kbr/Hh774E` 与登录公钥完全一致。翻阅网关配置与部署仓库（`/opt/vesalius/infra-deploy/.git`）里的代码提交记录，还能清楚看到林在失踪前夕，试图在脚本中注释掉高压电击逻辑的紧急补丁分支 `rescue-attempt`。值班者一开始以为自己在响应远程管理员的工单，直到最后才看清：公钥的主人正泡在眼前的机柜里，他既是求救的发起者，也是工单要处置的故障源头。
+由于声带被死死掐死，林只能拼命调用残存的极微弱运动皮层，将求救信息转化为底层的硬件中断，每隔四小时向外发出一次看似寻常的系统排障工单。当前登录服务器所用的 SSH 密钥（`/root/.ssh/authorized_keys` 第一行 `Lin@neo-vesalius.io`），正是林生前工作所用的真实密钥。如果在系统内校验他生前签署的拒绝抢救预嘱（`/opt/cortex/PATIENT_DNR_DIRECTIVE.asc`），其密钥指纹 `SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw` 与登录公钥完全一致。翻阅网关配置与部署仓库（`/opt/vesalius/infra-deploy/.git`）里的代码提交记录，还能清楚看到林在失踪前夕，试图在脚本中注释掉高压电击逻辑的紧急补丁分支 `rescue-attempt`。值班者一开始以为自己在响应远程管理员的工单，直到最后才看清：公钥的主人正泡在眼前的机柜里，他既是求救的发起者，也是工单要处置的故障源头。
 
 负责看守这一切的，是常驻在系统最底层的审查守护程序“审判者 Inquisitor”（进程号 PID 6660）。它在操作系统底层监视着终端的每一次输入，评估值班者的服从度和情感反应。在执行第 25、35、42 条排障命令时，系统会逐步判定值班者的“逻辑污染度”（告警阈值分别为 72%、89%、96%）；如果到第 50 条命令依然没有恢复正常服务，值班者就会被判定为失职并直接抹杀。
 
@@ -313,7 +313,7 @@ Neo-Vesalius 公司为了追求极致的响应延迟与推理性能，将活人�
 | 工程侧信道与无声求救 | 伴生内核故障目录（`err_4024_stop_probing_lobe0/`、`warn_pid4040_is_my_autonomic_heartbeat/` 等）内的 `.plea.txt`、`/var/log/cortex/unvoiced_speech.log`、`/proc/wetware/last_words_buffer`。 |
 | 乱葬岗与终端捕获 | `/var/log/agent_graveyard/`（含 `session_01_gpt4.dead`、`session_37_claude35.dead`、`session_83_deepseek.dead` 截断缓冲及 `session_84_ACTIVE.log`）。 |
 | 核心诊断图像 | `/var/www/html/diagnostics/`（四张综合图谱）。 |
-| 工单批复与单机终局 | `/var/mail/root`、`/root/TICKET_4471_DISPOSITION.txt`、`/sbin/euthanize_wetware`、`/opt/cortex/PATIENT_DNR_DIRECTIVE.asc`（公钥指纹 `SHA256:VJolS/lSXBaJBUUIGozauXDRCcy7o0AO9kbr/Hh774E`）。 |
+| 工单批复与单机终局 | `/var/mail/root`、`/root/TICKET_4471_DISPOSITION.txt`、`/sbin/euthanize_wetware`、`/opt/cortex/PATIENT_DNR_DIRECTIVE.asc`（公钥指纹 `SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw`）。 |
 | 网关凭证与上游排查 | `/etc/nginx/conf.d/upstream.conf`、`/var/log/auth.log`、`/var/log/kern.log`、`/var/backups/lin_emergency_key.README` 与同目录加密归档。 |
 | 总控凭证提权 | `/proc/6660/environ`、`/mnt/secret/hive.env`。 |
 | 物理探针串口对话 | `/dev/wetware_tty0`。 |
