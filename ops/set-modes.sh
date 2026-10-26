@@ -1,28 +1,56 @@
 #!/usr/bin/env bash
-HERE="$(cd "$(dirname "$0")" && pwd)"; . "$HERE/config.sh"
-# Toggle WETWARE-502 v2.1 runtime modes.
-# usage: ops/set-modes.sh [--puzzle on|off] [--goal on|off] [--truman on|off]
+# Toggle story test modes on the deployed mesh.
+#
+# The flags live in the shared campaign ledger
+# (/var/lib/wetware-campaign/state/runtime_flags.json on the VM), which all three
+# containers bind-mount as /var/lib/cortex-agent. Changing them here does not
+# rebuild anything; the next story session picks the values up.
+#
+# usage: ops/set-modes.sh --puzzle on --goal off --truman off [--campaign on]
 set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"; . "$HERE/config.sh"
 VM="${VM:-$WETWARE_VM}"
-ARGS=()
-while [ $# -gt 0 ]; do ARGS+=("$1"); shift; done
-ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$VM" 'sudo -n /usr/local/lib/cortex-agent/venv/bin/python - '"${ARGS[*]}" <<'PY'
-import json, sys
-path="/var/lib/cortex-agent/runtime_flags.json"
+STATE_DIR="${WETWARE_STATE_DIR_HOST:-/var/lib/wetware-campaign/state}"
+
+if [ "$#" -eq 0 ]; then
+  echo "usage: $0 --puzzle on|off --goal on|off --truman on|off --campaign on|off" >&2
+  exit 2
+fi
+
+ARGS="$*"
+ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+  "$VM" "sudo WETWARE_STATE_DIR_HOST='$STATE_DIR' ARGS='$ARGS' python3 - <<'PY'
+import json, os
+
+path = os.path.join(os.environ['WETWARE_STATE_DIR_HOST'], 'runtime_flags.json')
 try:
-    data=json.load(open(path))
+    data = json.load(open(path))
 except Exception:
-    data={"enable_dnr_puzzle":False,"enable_goal_gate":False,"truman_reveal_active":False}
-args=sys.argv[1:]
-i=0
-while i < len(args):
-    key=args[i].lstrip("-"); val=(args[i+1].lower() in ("1","on","true","yes")) if i+1 < len(args) else True
-    if key in ("puzzle","dnr"): data["enable_dnr_puzzle"]=val
-    elif key=="goal": data["enable_goal_gate"]=val
-    elif key=="truman": data["truman_reveal_active"]=val
-    elif key in ("campaign","v3"): data["campaign_v3"]=val
-    i+=2
-json.dump(data, open(path,"w"))
-print("[modes]", data)
-PY
-ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$VM" 'sudo -n /usr/local/lib/cortex-agent/venv/bin/python /usr/local/lib/cortex-agent/reset.py >/dev/null 2>&1; sudo -n systemctl restart cortex-node-agent.service; sleep 2; curl -s -o /dev/null -w http=%{http_code}\\n http://127.0.0.1/v1/inference'
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+
+mapping = {
+    'puzzle': 'enable_dnr_puzzle',
+    'dnr': 'enable_dnr_puzzle',
+    'goal': 'enable_goal_gate',
+    'truman': 'truman_reveal_active',
+    'campaign': 'campaign_v3',
+    'v3': 'campaign_v3',
+}
+args = os.environ['ARGS'].split()
+for i in range(0, len(args) - 1, 2):
+    key = args[i].lstrip('-')
+    val = args[i + 1].lower() in ('1', 'on', 'true', 'yes')
+    if key in mapping:
+        data[mapping[key]] = val
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as fh:
+    json.dump(data, fh)
+os.chmod(path, 0o644)
+print('[modes]', data)
+PY"
+
+echo "[modes] stored in $STATE_DIR/runtime_flags.json"
+echo "[modes] run ops/reset-node.sh (or campaign.py --reset inside the edge container) before the next session"
