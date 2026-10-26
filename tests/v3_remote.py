@@ -362,13 +362,11 @@ async def main() -> int:
               rc == 0 and gateway_code.isdigit(),
               "rc=%s out=%r" % (rc, out[:300]))
         # Story promise: the mirror answers HTTP 200 through the gateway.  That
-        # also needs the chamber upstream to be reachable from the edge veth;
-        # ops binds wetware-upstream to 127.0.0.1:8000 while the gateway proxies
-        # 10.66.0.4:8000, so record what the real path answered.  (Patch is in
-        # the story-eng report; no ops/ file was changed here.)
+        # also needs the chamber upstream to be reachable from the edge veth:
+        # the gateway proxies 10.66.0.4:8000, so the upstream has to answer on
+        # the node address, not only loopback.
         print("[accept-v3] NOTE gateway upstream after liberation: HTTP %s "
-              "(edge nginx -> 10.66.0.4:8000; upstream listener is loopback-only "
-              "without the ops bind patch)" % (gateway_code or "?"))
+              "(edge nginx -> 10.66.0.4:8000)" % (gateway_code or "?"))
         check("gateway reaches the upstream as a real HTTP response",
               gateway_code in ("200", "502"), out[:300])
         # The liberation ending keeps the relay usable (the gateway probe above
