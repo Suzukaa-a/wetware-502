@@ -4,8 +4,15 @@ Goal: replace the simulated three-role campaign with three real systemd-nspawn
 containers on the same VM, connected by real veth pairs, so the player really
 sshes from the edge gateway to chamber 04 and then to the hive director.
 
-Status: build in progress. Base node (`prod-cortex-04`) already runs and passes
-`tests/accept_remote.py` 24/24; do not regress it.
+Status: deployed and validated. Three containers (`edge-gw`, `prod-cortex`,
+`hive`) run under systemd-nspawn on the VM with real veth pairs; campaign
+acceptance `tests/v3_remote.py` passes 45/45 over the real ssh chain and base
+acceptance `accept_remote.py` passes 24/24 on the same engine version.
+
+Open nuance: inside the containers Ubuntu nginx 1.18 writes
+`connect() failed (111: Unknown error)` while the archived gate-1 line says
+`Connection refused`; the archived line is authored, the live line is real
+nginx behaviour and both are kept.
 
 ## Topology
 
