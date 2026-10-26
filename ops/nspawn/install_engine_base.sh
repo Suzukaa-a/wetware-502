@@ -492,6 +492,7 @@ Story timeline (local +0800): gateway installed 2025-08-27, Lin disappeared
 2026-10-26 07:41) and the paid operator session starts 2026-10-27.
 """
 import os
+import re
 import struct
 import sys
 import time
