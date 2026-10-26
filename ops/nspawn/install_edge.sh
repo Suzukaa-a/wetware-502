@@ -1473,6 +1473,20 @@ cmd_verify() {
   check_has "node-id" "$HOST_ID" "$(cexec 'cat /run/cortex/node-id' 2>/dev/null || true)"
   check_eq "hostnamectl chassis" "vm" "$(cexec 'hostnamectl 2>/dev/null | sed -n "s/^ *Chassis: //p"' 2>/dev/null || true)"
   check_has "guest nic renamed to ens192" "ens192" "$(cexec 'ip -br a 2>/dev/null' || true)"
+  check_eq "hostnamectl virtualization" "none" "$(cexec 'hostnamectl 2>/dev/null | sed -n "s/^ *Virtualization: //p"' 2>/dev/null || true)"
+  check_eq "systemd-detect-virt" "none" "$(cexec 'systemd-detect-virt 2>/dev/null' || true)"
+  check_eq "detect-virt --vm exits non-zero" "" "$(cexec 'systemd-detect-virt --vm 2>/dev/null' || true)"
+  if cexec 'grep -rqE "T0[0-9]:[0-9][0-9]:[0-9][0-9]Z" /var/log/cortex/daemon.log /root/TICKET_4471_DISPOSITION.txt 2>/dev/null'; then
+    bad "story clock still prints Z-suffixed timestamps"
+  else
+    ok "story clock stays in node local time"
+  fi
+  apt_last="$(cexec 'tail -n 40 /var/log/apt/history.log 2>/dev/null | grep "^End-Date" | tail -1 | cut -c11-16' || true)"
+  if [ -z "$apt_last" ] || [ "$apt_last" \< "2026-10-27" ]; then
+    ok "apt history is backdated (last: ${apt_last:-none})"
+  else
+    bad "apt history carries an install from today: $apt_last"
+  fi
   check_file "$ROOTFS/etc/tmpfiles.d/wetware-node-id.conf" "node-id tmpfiles rule"
   check_has "tmpfiles rule content" "$HOST_ID" "$(cat "$ROOTFS/etc/tmpfiles.d/wetware-node-id.conf" 2>/dev/null || true)"
 
