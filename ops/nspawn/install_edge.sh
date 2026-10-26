@@ -1539,7 +1539,11 @@ print("ok" if h and crypt.crypt("123456", h) == h else "bad")
 PY
 )"
   check_eq "root password is 123456" "ok" "$passok"
-  check_eq "root login shell" "/bin/bash" "$(awk -F: '$1=="root"{print $7}' "$ROOTFS/etc/passwd" 2>/dev/null || true)"
+  root_shell="$(awk -F: '$1=="root"{print $7}' "$ROOTFS/etc/passwd" 2>/dev/null || true)"
+  case "$root_shell" in
+    /usr/local/sbin/cortex-node-console) ok "root login shell is the vendor node console";;
+    *) bad "root login shell = '$root_shell' (expected the vendor node console)";;
+  esac
   local account_rows
   account_rows="$(awk -F: '$3 >= 1000 && $3 < 65534 {printf "%s:%s:%s:%s\n", $1, $3, $4, $5}' "$ROOTFS/etc/passwd" 2>/dev/null || true)"
   check_eq "no near-duplicate subject_04 account" "" "$(printf '%s\n' "$account_rows" | awk -F: '$1=="subject_04"')"

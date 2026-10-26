@@ -1237,6 +1237,10 @@ PS1='\\[\\e]133;A\\a\\]\\[\\e[01;32m\\]root@%s\\[\\e[00m\\]:\\[\\e[01;34m\\]\\w\
 
 HOSTNAMECTL_WRAPPER = """#!/bin/sh
 # node image: the operator question is answered by the rack, not the sandbox
+case "$1" in
+  --static|--transient|--pretty) hostname; exit 0 ;;
+  --version) echo "systemd 249 (249.11-0ubuntu3.12)"; exit 0 ;;
+esac
 host=$(hostname)
 mid=$(cat /etc/machine-id 2>/dev/null)
 bid=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
@@ -1528,6 +1532,17 @@ def main():
         write(root, "/var/log/nginx/error.log", errors, 0o640, www_uid,
               adm_gid, now - 210)
 
+    for rel in ("/root/TICKET_4471_DISPOSITION.txt", "/var/log/cortex/daemon.log"):
+        path = os.path.join(root, rel.lstrip("/"))
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                body = fh.read()
+        except OSError:
+            continue
+        fixed = re.sub(r"(2026-10-2\d)T(\d\d:\d\d:\d\d)Z", r"\1 \2", body)
+        if fixed != body:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(fixed)
     write(root, "/root/.bash_history", bash_history(role), 0o600, 0, 0,
           ts(2026, 10, 26, 8, 41, 9))
     write(root, "/root/.bashrc", bashrc(host), 0o644, 0, 0, INSTALL + 3600)
