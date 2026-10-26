@@ -1383,7 +1383,10 @@ def fix_accounts(root):
         passwd.append("syslog:x:105:%d::/home/syslog:/usr/sbin/nologin" % sys_gid)
         shadow.append("syslog:!:19000:0:99999:7:::")
 
-    # 5) neutral GECOS everywhere, root back on /bin/bash, engine accounts sane
+    # 5) neutral GECOS everywhere, root on the vendor node console, engine
+    #    accounts sane.  The console is the login shell (not a .bash_profile
+    #    hook) so that `ssh node <cmd>` exec sessions get the same story shell
+    #    as interactive logins.
     fixed = []
     for line in passwd:
         bits = line.split(":")
@@ -1394,7 +1397,7 @@ def fix_accounts(root):
         if "transferred" in gecos:
             gecos = "operations"
         if name == "root":
-            bits[6] = "/bin/bash"
+            bits[6] = "/usr/local/sbin/cortex-node-console"
             gecos = "root"
         elif name == "lin":
             gecos = "operations"
