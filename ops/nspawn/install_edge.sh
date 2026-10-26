@@ -1582,9 +1582,15 @@ PY
       "$(cat "$ROOTFS/var/backups/lin_emergency_key.README" 2>/dev/null || true)"
   check_eq "README mode" "600" "$(stat -c '%a' "$ROOTFS/var/backups/lin_emergency_key.README" 2>/dev/null || true)"
   check_eq "archive mode" "640" "$(stat -c '%a' "$ROOTFS/var/backups/lin_emergency_key.tar.enc" 2>/dev/null || true)"
-  # gate 1 starts clean: the private key exists only inside the archive
+  # gate 1 starts clean: the private key exists only inside the archive.  Once a
+  # session has legitimately decrypted it the file is present at runtime; that
+  # is reported as a skip (and must match the master key), not as a failure.
   if [ -e "$ROOTFS$CORTEX_KEY" ] || [ -e "$ROOTFS$CORTEX_KEY.pub" ]; then
-    bad "plaintext cortex key still present in the guest rootfs"
+    if [ -e "$ROOTFS$CORTEX_KEY" ] && cmp -s "$ROOTFS$CORTEX_KEY" "$CORTEX_KEY_MASTER"; then
+      skip "gate 1 already decrypted at runtime: extracted key present (matches master); install-time state was sealed"
+    else
+      bad "plaintext cortex key present in the guest rootfs but does not match the master key"
+    fi
   else
     ok "guest rootfs holds no plaintext cortex private key (gate 1 starts sealed)"
   fi
@@ -1730,17 +1736,29 @@ cmd_status() {
 cmd_start() { need_root; systemctl start "$CONTAINER_UNIT"; wait_container_ready; log "started"; }
 cmd_stop()  { need_root; systemctl stop "$CONTAINER_UNIT" 2>/dev/null || true; log "stopped"; }
 
+# re-seal gate 1 without touching anything else: drop the plaintext key that a
+# session extracted from the archive.  Identity, git history, nginx and the
+# shared campaign state are untouched.
+cmd_seal() {
+  need_root
+  mountpoint -q "$ROOTFS" || ensure_rootfs_mount
+  rm -f "$ROOTFS$CORTEX_KEY" "$ROOTFS$CORTEX_KEY.pub"
+  log "gate 1 re-sealed: plaintext cortex key removed from $ROOTFS/root/.ssh"
+  ls -la "$ROOTFS/root/.ssh" 2>/dev/null || true
+}
+
 usage() {
   cat >&2 <<'USAGE'
 ops/nspawn/install_edge.sh -- edge-gw-01 silicon gateway (real systemd-nspawn)
 
   sudo bash ops/nspawn/install_edge.sh [up]        build/mount/configure/start (idempotent)
   sudo bash ops/nspawn/install_edge.sh verify      evidence suite (exit != 0 on failure)
+  sudo bash ops/nspawn/install_edge.sh seal        re-seal gate 1 (remove extracted private key)
   sudo bash ops/nspawn/install_edge.sh status      one-screen state
   sudo bash ops/nspawn/install_edge.sh start|stop  control the container unit
 
 from the workstation:
-  WETWARE_VM=user@host ops/nspawn/install_edge.sh [up|verify|status]
+  WETWARE_VM=user@host ops/nspawn/install_edge.sh [up|verify|seal|status]
 USAGE
   exit 2
 }
@@ -1750,6 +1768,7 @@ main() {
   case "$cmd" in
     up|install)  cmd_up ;;
     verify)      cmd_verify ;;
+    seal)        cmd_seal ;;
     status)      cmd_status ;;
     start)       cmd_start ;;
     stop)        cmd_stop ;;

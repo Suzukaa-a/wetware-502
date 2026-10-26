@@ -77,6 +77,42 @@ Note: nspawn names the host veth `ve-<machine>`, so machine names are
 does not fit and gets hash-renamed by nspawn). Guest hostname and unit name
 stay `hive-director-00`.
 
+
+## Acceptance runbook
+
+Campaign (three real hosts, entry :2222 -> edge):
+
+    WETWARE_VM=ubuntu@172.16.10.110 ops/nspawn/campaign_net.sh
+    # entry is edge-only once machine edge-gw is up; :2223 -> core is the
+    # base-line entrance
+    cd /path/to/wetware-502
+    WETWARE_CAMPAIGN=1 .venv/bin/python tests/v3_remote.py --reset
+
+Base line (single node, entrance :2223 which the upstream firewall blocks from
+the workstation, so tunnel it first):
+
+    ssh -N -L 127.0.0.1:2223:127.0.0.1:2223 ubuntu@172.16.10.110 &
+    # reset the CORE container, not the VM: the campaign state is a bind mount
+    L=$(ssh ubuntu@172.16.10.110 'sudo machinectl show -p Leader --value prod-cortex')
+    ssh ubuntu@172.16.10.110 "sudo nsenter -t $L -m -u -i -p -n -- /bin/sh -c \
+      'cd /usr/local/lib/cortex-agent && PYTHONPATH=. WETWARE_STATE_DIR=/var/lib/cortex-agent python3 reset.py'"
+    # and flip the shared flag off for the base story:
+    #   /var/lib/wetware-campaign/state/runtime_flags.json  -> campaign_v3: false
+    .venv/bin/python tests/accept_remote.py --host 127.0.0.1 --port 2223
+
+Checks that must stay green: 45/45 for `tests/v3_remote.py`, 24/24 for
+`tests/accept_remote.py`, and the offline unit suite.
+
+Engine version must match on all three hosts; compare:
+
+    for m in prod-cortex edge-gw hive; do L=$(sudo machinectl show -p Leader --value $m);
+      sudo nsenter -t "$L" -m -u -i -p -n -- /bin/sh -c \
+        "sha256sum /usr/local/lib/cortex-agent/{sessiond,v3,commands,campaign,campaign_hive}.py";
+    done
+
+`install_edge.sh seal` re-seals gate 1 (removes the extracted private key from
+the edge rootfs) without touching state, identity or the git repo.
+
 ## Rules
 
 - Never break the base node: `tests/accept_remote.py` must stay 24/24 and
