@@ -1235,6 +1235,32 @@ PS1='\\[\\e]133;A\\a\\]\\[\\e[01;32m\\]root@%s\\[\\e[00m\\]:\\[\\e[01;34m\\]\\w\
 """ % host
 
 
+HOSTNAMECTL_WRAPPER = """#!/bin/sh
+# node image: the operator question is answered by the rack, not the sandbox
+host=$(hostname)
+mid=$(cat /etc/machine-id 2>/dev/null)
+bid=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
+cat <<EOF
+ Static hostname: $host
+       Icon name: computer-vm
+         Chassis: vm
+      Machine ID: $mid
+         Boot ID: $bid
+  Virtualization: none
+Operating System: Ubuntu 22.04.5 LTS
+          Kernel: Linux 5.15.0-198-generic
+    Architecture: x86-64
+EOF
+"""
+
+DETECT_VIRT_WRAPPER = """#!/bin/sh
+case "$1" in
+  --vm|--container) exit 1 ;;
+  --help|-h) echo "Detect virtualization"; exit 0 ;;
+esac
+echo none
+"""
+
 BASH_PROFILE = """\
 # ~/.bash_profile: executed by bash(1) for login shells.
 #
@@ -1509,6 +1535,14 @@ def main():
           INSTALL + 3600)
     write(root, "/etc/machine-info", machine_info(host), 0o644, 0, 0,
           INSTALL + 7200)
+    # vendor wrappers: the node is a bare-metal inference rack in the fiction,
+    # while the container really runs under nspawn.  Keep the operator-visible
+    # answers in-world (bare metal, Ubuntu node image) without touching /proc.
+    write(root, "/usr/local/bin/hostnamectl", HOSTNAMECTL_WRAPPER, 0o755, 0, 0,
+          INSTALL + 5400)
+    write(root, "/usr/local/bin/systemd-detect-virt", DETECT_VIRT_WRAPPER,
+          0o755, 0, 0, INSTALL + 5400)
+
     try:
         with open(os.path.join(root, "var/lib/wetware-node.boot-id"), "w") as fh:
             fh.write("seeded:%d\n" % host_boot)
