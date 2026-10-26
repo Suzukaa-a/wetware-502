@@ -1681,7 +1681,19 @@ PY
   local badcomment
   badcomment="$(grep -l "root@$SRC_HOST_ID" "$ROOTFS"/etc/ssh/ssh_host_*_key.pub 2>/dev/null | head -n1 || true)"
   check_eq "ssh host key comments name this gateway" "" "$badcomment"
-  check_has "bashrc prompt uses the runtime hostname" 'root@\h' "$(cat "$ROOTFS/root/.bashrc" 2>/dev/null || true)"
+  # the installed prompt must be bound to this gateway: either the dynamic \h
+  # form written by the installer or the concrete hostname the engine world
+  # materialiser writes on a campaign reset.
+  local ps1line
+  ps1line="$(grep -E "PS1=.*root@" "$ROOTFS/root/.bashrc" 2>/dev/null | tail -n1 || true)"
+  if printf '%s' "$ps1line" | grep -qE "root@(\\\\h|$HOST_ID)"; then
+    ok "bashrc prompt uses this gateway's hostname"
+  else
+    bad "bashrc prompt is not bound to this gateway: ${ps1line:-missing}"
+  fi
+  if grep -q "root@$SRC_HOST_ID" "$ROOTFS/root/.bashrc" 2>/dev/null; then
+    bad "bashrc prompt still names the base node"
+  fi
 
   # --- engine --------------------------------------------------------------
   vsay "-- engine"
