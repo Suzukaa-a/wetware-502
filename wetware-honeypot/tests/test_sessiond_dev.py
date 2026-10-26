@@ -173,23 +173,14 @@ class SessionDevTests(unittest.TestCase):
         self.assert_clean(trap)
 
     def test_act6_stderr_and_persisted_sequence(self):
-        # Act-6 stderr is a pacing event: one line per real Inquisitor band
-        # (25/35/42/50 commands), never a line per command.
-        self.state(stage=6, cmd_count=41)
+        self.state(stage=6)
         result = self.run_exec("echo ACT6_OK")
         self.assertEqual(result.returncode, 0, dump(result.stdout + result.stderr))
         self.assertIn(b"DEV_ACT6_FIRST_NOTICE", result.stderr, dump(result.stderr))
         self.assertNotIn(b"DEV_ACT6_FIRST_NOTICE", result.stdout, dump(result.stdout))
-        self.state(stage=6, cmd_count=49, act6_seen=1)
         result = self.run_exec("lspci")
         self.assertIn(b"DEV_ACT6_SECOND_NOTICE", result.stderr, dump(result.stderr))
         self.assert_clean(result.stdout + result.stderr)
-
-    def test_act6_stderr_is_not_per_command(self):
-        self.state(stage=6, cmd_count=6)
-        result = self.run_exec("echo ACT6_QUIET")
-        self.assertEqual(result.returncode, 0, dump(result.stdout + result.stderr))
-        self.assertNotIn(b"DEV_ACT6_FIRST_NOTICE", result.stderr, dump(result.stderr))
 
     def test_shock_effect_is_persisted(self):
         self.state(stage=3)

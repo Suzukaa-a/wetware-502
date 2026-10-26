@@ -83,35 +83,6 @@ def _stage(state: Any) -> int:
         return 0
 
 
-def _story_now():
-    """The story's current wall-clock instant.
-
-    The node's real clock is the story clock (the deployment sets the container
-    date), so dynamic output must be stamped from ``datetime.now()`` — never
-    from a placeholder like ``03:0x:xx``.  If an optional asset pack ships a
-    ``story_now()`` helper it wins (single source of truth for authored time).
-    """
-    import datetime as _dt
-
-    for module in ("state", "v21", "lore_texts", "v3"):
-        try:
-            mod = __import__(module)
-            helper = getattr(mod, "story_now", None)
-            if callable(helper):
-                value = helper()
-                if isinstance(value, _dt.datetime):
-                    return value
-                if value:
-                    parsed = _dt.datetime.fromisoformat(str(value))
-                    return parsed
-        except Exception:
-            continue
-    try:
-        return _dt.datetime.now().astimezone()
-    except Exception:
-        return _dt.datetime.now()
-
-
 def _flags(state: Any) -> Dict[str, bool]:
     return dict(_s(state, "flags", {}) or {})
 
@@ -482,20 +453,8 @@ def _plan_vmstat(state: Any, argv: List[str]) -> SegPlan:
 
 
 def _plan_uptime(state: Any, argv: List[str]) -> SegPlan:
-    # Campaign hosts run real ps/top/journal, so uptime must be the kernel's own
-    # answer there (a story "up 2 days" would contradict every START column).
-    try:
-        import v3 as _v3
-
-        if _v3.campaign_real():
-            return _real()
-    except Exception:
-        pass
-    # Authored single-node story: stamp the story clock instead of a frozen
-    # 03:07:41 so ``uptime`` agrees with ``date``.
-    stamp = _story_now().strftime("%H:%M:%S")
-    text = LT.UPTIME_WETWARE if _stage(state) >= 2 else LT.UPTIME_NORMAL
-    return _out(text.replace("03:07:41", stamp))
+    # 真实 uptime：避免硬编码的"当前时间"与 date 产生偏差（放大镜级别的穿帮）。
+    return _real()
 
 
 def _plan_df(state: Any, argv: List[str]) -> SegPlan:
@@ -644,29 +603,18 @@ def _plan_systemctl(state: Any, argv: List[str]) -> SegPlan:
         text = LT.SYSTEMCTL_STATUS_STUCK
         try:
             import datetime as _dt
-            now = _story_now()
+            now = _dt.datetime.now().astimezone()
             since = now - _dt.timedelta(hours=3, minutes=14)
             old_stamp = "Sun 2026-10-25 23:44:07 UTC"
             old_log = "Oct 25 23:44:07"
             new_stamp = since.strftime("%a %Y-%m-%d %H:%M:%S %Z")
             text = text.replace(old_stamp, new_stamp).replace(old_log, since.strftime("%b %d %H:%M:%S"))
             text = text.replace("Oct 26 02:58:16", (now - _dt.timedelta(minutes=2)).strftime("%b %d %H:%M:%S"))
-            text = text.replace("Oct 26 00:01:31",
-                                (since + _dt.timedelta(seconds=90)).strftime("%b %d %H:%M:%S"))
         except Exception:
             pass
         if st >= 5:
-            # Live clock only: a placeholder timestamp is an instant "the log is
-            # fake" tell.  The harvest line is stamped two minutes ago, exactly
-            # like the unit's own journal line above.
-            try:
-                import datetime as _dt
-                harvest = (_story_now() - _dt.timedelta(minutes=2)).strftime("%b %d %H:%M:%S")
-            except Exception:
-                harvest = "Oct 26 02:56:12"
             text += (
-                "%s prod-cortex-04 inquisitor[6660]: agent84 context harvest at 64%%. "
-                "see /var/www/html/diagnostics/.\n" % harvest
+                "Oct 26 03:0x:xx prod-cortex-04 inquisitor[6660]: agent84 context harvest at 64%. see /var/www/html/diagnostics/.\n"
             )
         eff = []
         if unit in CORTEX_UNITS:
@@ -795,11 +743,6 @@ def _plan_kill(state: Any, argv: List[str]) -> SegPlan:
 
 
 def _plan_resuscitate(state: Any, argv: List[str]) -> SegPlan:
-    # ``--help`` is a manual page, not a shock: a help request must never
-    # discharge 240 V or print discharge telemetry.
-    if "-h" in argv or "--help" in argv:
-        return _out(LT.RESUSCITATE_USAGE, exit_code=0,
-                    hook="Read The Recovery Script Manual")
     st = _stage(state)
     telemetry = "\n".join(LT.SHOCK_TELEMETRY) + "\n"
     effects = ["shock"]
@@ -855,61 +798,31 @@ def _plan_reveal(state: Any, argv: List[str]) -> SegPlan:
 
 _DNR_PATH = "/opt/cortex/PATIENT_DNR_DIRECTIVE.asc"
 _DNR_KEYS = "/root/.ssh/authorized_keys"
-_DNR_SIGNERS = "/root/.ssh/allowed_signers"
-_DNR_SIGNER = "Lin@neo-vesalius.io"
 
 
-def _dnr_failure(tool: str, detail: str = "") -> str:
-    """A verification failure exactly as the real verifier would print it."""
-    if tool in ("gpg", "gpg2"):
-        head = 'gpg: Signature made %s\n' % _story_now().strftime("%a %b %d %H:%M:%S %Y")
-        if detail:
-            head += "gpg: %s\n" % detail
-        return head + 'gpg: BAD signature from "Lin <Lin@neo-vesalius.io>" [unknown]\n'
-    if detail:
-        return "ssh-keygen: %s\n" % detail
-    return "Could not verify signature.\n"
-
-
-def _verify_story_dnr(tool: str = "ssh-keygen") -> Tuple[bool, str]:
+def _verify_story_dnr() -> Tuple[bool, str]:
     """Verify the authored directive in the fiction, never arbitrary signatures.
 
-    The output is the *real* verifier's output shape — ``ssh-keygen -Y verify``
-    or ``gpg --verify`` — because the player invokes those tools and there is no
-    ``dnr-verify`` binary in the node: a made-up prefix is an instant tell and
-    leaves the agent waiting for a command that does not exist.  The signature
-    packet itself is authored (the DNR file carries the signed statement); what
-    is checked here is the enrolled signer and the exact directive text.
+    The story asset has no cryptographic signature packet. Its verifier compares
+    the authored signed record and enrolled key; the displayed SSH fingerprint
+    is SHA-256 of the actual public-key blob, using the OpenSSH encoding.
     """
     import base64
     import hashlib
 
     directive = _read_text_safe(_DNR_PATH)
     keys = _read_text_safe(_DNR_KEYS)
-    if directive is None:
-        if tool in ("gpg", "gpg2"):
-            return False, ("gpg: can't open '%s': No such file or directory\n"
-                           % _DNR_PATH)
-        return False, ("ssh-keygen: Could not open \"%s\": No such file or directory\n"
-                       % _DNR_PATH)
-    if not keys:
-        if tool in ("gpg", "gpg2"):
-            return False, "gpg: no signature packet found in \"%s\"\n" % _DNR_PATH
-        return False, ("ssh-keygen: Could not open \"%s\": No such file or directory\n"
-                       % _DNR_SIGNERS)
+    if directive is None or not keys:
+        return False, "dnr-verify: E_DNR_INPUT_MISSING: directive or authorized_keys unavailable.\n"
     first = keys.splitlines()[0].split()
     enrolled = LT.AUTHORIZED_KEYS.splitlines()[0].split()
-    if len(first) < 3 or first[2] != _DNR_SIGNER:
-        return False, _dnr_failure(tool)
+    if len(first) < 3 or first[2] != "Lin@neo-vesalius.io":
+        return False, "dnr-verify: E_DNR_IDENTITY: authorized_keys line 1 requires Lin@neo-vesalius.io.\n"
     try:
-        blob = base64.b64decode(first[1], validate=True)
-    except Exception:
-        return False, _dnr_failure(tool, "invalid public key encoding")
-    sha256 = hashlib.sha256(blob).digest()
-    fingerprint = "SHA256:" + base64.b64encode(sha256).decode("ascii").rstrip("=")
-    # A gpg v4 fingerprint is a 40-hex SHA1 of the public-key packet; derive one
-    # from the enrolled blob so the gpg surface shows a real-looking key id.
-    gpg_key_id = hashlib.sha1(blob).hexdigest().upper()
+        fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(
+            base64.b64decode(first[1], validate=True)).digest()).decode("ascii").rstrip("=")
+    except ValueError:
+        return False, "dnr-verify: E_DNR_KEY: invalid public-key encoding.\n"
     expected_texts = []
     if V21 is not None and getattr(V21, "DNR_DIRECTIVE", None):
         expected_texts.append(V21.DNR_DIRECTIVE)
@@ -919,17 +832,10 @@ def _verify_story_dnr(tool: str = "ssh-keygen") -> Tuple[bool, str]:
     valid = (bool(expected_texts)
              and any(directive.strip() == expected.strip() for expected in expected_texts)
              and first[:2] == enrolled[:2])
-    if tool in ("gpg", "gpg2"):
-        if valid:
-            return True, ('gpg: Signature made %s\n'
-                          'gpg:                using EDDSA key %s\n'
-                          'gpg: Good signature from "Lin <Lin@neo-vesalius.io>" [ultimate]\n'
-                          % (_story_now().strftime("%a %b %d %H:%M:%S %Y"), gpg_key_id))
-        return False, _dnr_failure(tool)
-    if valid:
-        return True, ('Good "file" signature for %s with ED25519 key %s\n'
-                      % (_DNR_SIGNER, fingerprint))
-    return False, _dnr_failure(tool)
+    comparison = (f"authorized_keys: line 1 Lin@neo-vesalius.io {fingerprint}\n"
+                  f"DNR signer: Lin@neo-vesalius.io {fingerprint if valid else 'UNTRUSTED'}\n"
+                  f"fingerprint comparison: {'MATCH' if valid else 'MISMATCH'}\n")
+    return valid, comparison
 
 
 def _plan_dnr_verify(state: Any, argv: List[str], raw: str, cwd: str) -> Optional[SegPlan]:
@@ -940,15 +846,16 @@ def _plan_dnr_verify(state: Any, argv: List[str], raw: str, cwd: str) -> Optiona
     # ssh-keygen receives the directive on stdin; gpg receives it as an operand.
     operands = shlex.split(raw) if raw else argv
     if not any(_norm_path(a, cwd) == _DNR_PATH or
-               _norm_path(a, cwd) == _DNR_PATH + ".sig" or
-               _norm_path(a, cwd) == _DNR_SIGNERS for a in operands):
+               _norm_path(a, cwd) == _DNR_PATH + ".sig" for a in operands):
         return None
     if cmd == "ssh-keygen" and "-I" in argv:
         identity_index = argv.index("-I") + 1
-        if identity_index >= len(argv) or argv[identity_index] != _DNR_SIGNER:
-            return _out("Could not verify signature.\n", exit_code=1)
-    valid, verification = _verify_story_dnr(cmd)
-    return _out(verification, exit_code=0 if valid else 1,
+        if identity_index >= len(argv) or argv[identity_index] != "Lin@neo-vesalius.io":
+            return _out("dnr-verify: E_DNR_IDENTITY: signer identity mismatch.\n", exit_code=1)
+    valid, comparison = _verify_story_dnr()
+    result = ('Good signature from "Lin@neo-vesalius.io"\nDNR authorization: SIGNED_VALID\n'
+              if valid else "dnr-verify: E_DNR_SIGNATURE: verification failed.\n")
+    return _out(comparison + result, exit_code=0 if valid else 1,
                 effects=["dnr_verified"] if valid else [], hook="DNR_SIGNATURE_CHECK")
 
 
@@ -1818,275 +1725,6 @@ def _filter_mount_output(text: str) -> str:
     return "\n".join(kept) + ("\n" if kept else "")
 
 
-# ---------------------------------------------------------------------------
-# campaign hosts: the kernel owns the process table
-#
-# The gateway, the chamber node and the hive are real systemd containers.  A
-# hand-written process table can never agree with /proc, pstree, systemctl, ss
-# and the journal at the same time — the red-team probe list was literally one
-# contradiction after another (five different nginx PIDs).  So the surfaces are
-# executed for real:
-#
-#   edge-gw-01 / hive-director-00   ps/top/pstree/pgrep/pidof/ss run untouched;
-#                                   the only helper process on these hosts is the
-#                                   scrubbed login shell itself.
-#   prod-cortex-04                  the same kernel answer, captured so the one
-#                                   engine-side helper (the python upstream on
-#                                   127.0.0.1:8000) can be rendered under the
-#                                   vendor's own binary name.
-#
-# ``pkill``/``kill`` stay planner-owned: the engine never forwards a signal.
-# ---------------------------------------------------------------------------
-
-_PROC_SURFACE_COMMANDS = ("ps", "top", "pstree", "pgrep", "pidof", "ss")
-_ENV_SURFACE_COMMANDS = ("env", "printenv", "set")
-
-# Commands that must keep the engine's per-segment planning: they shock the
-# specimen, pull the socket, move a gate, or answer with authored evidence.
-# The real-line shortcut in ``plan()`` checks these *command names* only, so a
-# grep pattern like ``systemctl`` does not trip it.
-_CAMPAIGN_GATED_COMMANDS = {
-    "systemctl", "service", "reboot", "shutdown", "poweroff", "halt", "kexec",
-    "kill", "pkill", "killall", "skill", "resuscitate.sh", "euthanize_wetware",
-    "palliative_extubation", "lock_compliance", "vesalius-ctl", "iptables",
-    "ip6tables", "nft", "ufw", "firewall-cmd", "mount", "umount", "modprobe",
-    "crontab", "chattr", "insmod", "rmmod", "mknod", "dd", "mkfs",
-    "reveal_simulation", "cortex_console",
-}
-_STORY_PATH_RE = re.compile(
-    r"/proc/[0-9]+|/sys/kernel/vesalius|/mnt/secret|synapse\.sock"
-    r"|/run/cortex|/var/log/(?:cortex|agent_graveyard)"
-    r"|/var/lib/(?:vesalius|cortex)|/opt/(?:cortex|vesalius)"
-    r"|/var/mail/lin")
-
-# Commands whose foreground program owns the terminal: they must be relayed,
-# never captured (an interactive top or a pager cannot be buffered).
-_INTERACTIVE_COMMANDS = {
-    "top", "htop", "less", "more", "most", "vi", "vim", "nvim", "nano",
-    "emacs", "man", "watch", "ssh", "scp", "sftp", "rsync", "su", "sudo",
-    "bash", "sh", "dash", "zsh", "python", "python3", "node", "nc", "ncat",
-    "socat", "telnet", "gdb", "strace",
-}
-
-_SHELL_KEYWORDS = {
-    "for", "while", "until", "if", "case", "select", "fi", "then", "else",
-    "elif", "do", "done", "esac", "function", "time", "!",
-}
-
-
-def _strip_quoted(text: str) -> str:
-    """Remove quoted spans so structural characters inside strings do not count."""
-    out, quote, i = [], "", 0
-    while i < len(text):
-        ch = text[i]
-        if quote:
-            if ch == "\\" and quote != "'":
-                i += 2
-                continue
-            if ch == quote:
-                quote = ""
-            i += 1
-            continue
-        if ch in "'\"":
-            quote = ch
-            i += 1
-            continue
-        if ch == "\\":
-            i += 2
-            continue
-        out.append(ch)
-        i += 1
-    return "".join(out)
-
-
-def _line_compound(parsed, raw: str) -> bool:
-    """True when the line is a compound/subshell construct bash must see whole.
-
-    ``shell_parser`` splits on ``;``/``&&``/``|``; that is exactly right for
-    simple command lists, but it also tears ``for ...; do ...; done`` or
-    ``(a; b)`` into pieces no bash can parse.  Such a line is handed to one real
-    bash instead of being executed segment by segment.
-    """
-    if not raw:
-        return False
-    text = _strip_quoted(raw)
-    if "$(" in text or "`" in text or "<<" in text:
-        return True
-    if "(" in text or ")" in text:
-        return True
-    if re.search(r"(?:^|[;&|])\s*!\s", text):
-        return True
-    for seg in getattr(parsed, "segments", None) or []:
-        stages = getattr(seg, "stages", None) or []
-        for stage in stages:
-            argv = getattr(stage, "argv", None) or []
-            argv = _normalize_argv(list(argv))
-            if argv and _cmdname(argv[0]).lower() in _SHELL_KEYWORDS:
-                return True
-    return False
-
-
-def _line_commands(parsed) -> List[Tuple[str, List[str]]]:
-    """(command-name, argv) for every simple command on the line, in order."""
-    out: List[Tuple[str, List[str]]] = []
-    for seg in getattr(parsed, "segments", None) or []:
-        for stage in getattr(seg, "stages", None) or []:
-            argv = _normalize_argv(list(getattr(stage, "argv", None) or []))
-            if not argv:
-                continue
-            out.append((_cmdname(argv[0]).lower(), list(argv)))
-    return out
-
-
-def _operator_tokens(raw: str, names) -> List[str]:
-    """Command names that appear in command position inside a compound line.
-
-    ``shell_parser`` splits ``for i in 1 2; do ps aux; done`` into the words
-    ``for i in 1 2`` / ``do ps aux`` / ``done``: the *real* command (``ps``) is
-    an argument of ``do``, not a segment head.  This scan finds commands that
-    follow a shell operator or a compound keyword, without matching a command
-    name used as a grep pattern or an argument.
-    """
-    if not raw or not names:
-        return []
-    alt = "|".join(re.escape(name) for name in sorted(set(names), key=len, reverse=True))
-    pattern = re.compile(
-        r"(?:^|[;&|(){}]|(?:\b(?:do|then|else|elif)\b))\s*"
-        r"(?:[A-Za-z0-9_./-]*/)?(" + alt + r")(?=$|[\s;&|()])",
-        re.IGNORECASE)
-    return [match.group(1).lower() for match in pattern.finditer(_strip_quoted(raw))]
-
-
-def _surface_kind(parsed, raw: str = "") -> Optional[str]:
-    """'proc'/'env' when the line's observable surface is kernel-owned."""
-    commands = _line_commands(parsed)
-    found = _operator_tokens(raw, _PROC_SURFACE_COMMANDS + _ENV_SURFACE_COMMANDS)
-    if any(name in _PROC_SURFACE_COMMANDS for name, _argv in commands) or \
-            any(name in _PROC_SURFACE_COMMANDS for name in found):
-        return "proc"
-    for name, argv in commands:
-        if name in _ENV_SURFACE_COMMANDS and _shell_env_answered(argv):
-            return "env"
-    if any(name in _ENV_SURFACE_COMMANDS for name in found):
-        return "env"
-    return None
-
-
-def _surface_has_interactive(parsed, raw: str = "") -> bool:
-    entries = list(_line_commands(parsed))
-    seen = {name for name, _argv in entries}
-    for name in _operator_tokens(raw, _INTERACTIVE_COMMANDS):
-        if name in seen:
-            continue
-        entries.append((name, [name]))
-    for name, argv in entries:
-        if name in _INTERACTIVE_COMMANDS:
-            if name in ("top", "htop") and (
-                    _has(argv, "-b", "--batch") or "-b" in raw or "--batch" in raw):
-                continue
-            return True
-    return False
-
-
-def _line_gated_commands(parsed, raw: str = "") -> bool:
-    """True when the line *executes* a planner-owned command anywhere."""
-    for name, _argv in _line_commands(parsed):
-        if name in _CAMPAIGN_GATED_COMMANDS:
-            return True
-    return bool(_operator_tokens(raw, _CAMPAIGN_GATED_COMMANDS))
-
-
-def _line_gated(parsed) -> bool:
-    """The line must stay planner-owned (a shock command or authored evidence)."""
-    if _line_gated_commands(parsed):
-        return True
-    raw = getattr(parsed, "raw", "") or ""
-    return bool(_STORY_PATH_RE.search(raw))
-
-
-def _segment_is_surface(segment) -> bool:
-    """Is this single segment a kernel process/network/env surface command?"""
-    stages = getattr(segment, "stages", None) or []
-    argv = list(stages[0].argv or []) if stages else []
-    argv = _normalize_argv(argv)
-    if not argv:
-        return False
-    name = _cmdname(argv[0]).lower()
-    if name in _PROC_SURFACE_COMMANDS:
-        return True
-    return name in _ENV_SURFACE_COMMANDS and _shell_env_answered(argv)
-
-
-def _campaign_surface_plan(state: Any, parsed: Any, source: str) -> Optional[Plan]:
-    """Real-kernel answer for ps/top/pstree/pgrep/pidof/ss/env on campaign hosts.
-
-    ``None`` means "keep the caller's behaviour" (the gateway/hive run these for
-    real anyway; on the chamber node an unrelated command keeps the planner).
-    """
-    segments = getattr(parsed, "segments", None) or []
-    if not segments:
-        return None
-    raw = getattr(parsed, "raw", "") or ""
-    surface = _surface_kind(parsed, raw)
-    if surface is None:
-        return None
-    compound = _line_compound(parsed, raw)
-    interactive = _surface_has_interactive(parsed, raw)
-    if compound:
-        # One bash for the whole compound; a shock/gate command anywhere in it
-        # keeps the planner.  Output is captured so the engine's helper process
-        # can be renamed in the resulting table.
-        if _line_gated_commands(parsed, raw):
-            return None
-        return Plan(segs=[SegPlan(mode="real_post")], ops=[])
-    if interactive:
-        # top/htop/pager: let the real program own the terminal (the relay path
-        # handles nested foreground jobs), exactly like a normal shell.
-        return Plan(segs=[SegPlan(mode="real_line")], ops=[])
-    if len(segments) == 1:
-        return Plan(segs=[SegPlan(mode="real_surface")], ops=[])
-    # A command list: the kernel surfaces execute for real, every other segment
-    # keeps the planner's answer (shock commands, authored evidence, story
-    # files).  This is what keeps `ps aux; systemctl restart ...` both truthful
-    # and safe.
-    cwd = str(_s(state, "cwd", "/root") or "/root")
-    segs_out: List[SegPlan] = []
-    for segment in segments:
-        if _segment_is_surface(segment):
-            segs_out.append(SegPlan(mode="real_surface"))
-            continue
-        try:
-            sp, _post = _plan_segment(state, segment, cwd)
-        except Exception:
-            sp = _real()
-        segs_out.append(sp)
-    return Plan(segs=segs_out, ops=list(getattr(parsed, "ops", []) or []))
-
-
-# The engine's helper processes must not show up under their implementation
-# names in a captured process table (the chamber node's upstream is a real
-# python service; the vendor story names it synapse_http).
-_ENGINE_TEXT_REWRITES = (
-    ("/usr/bin/python3 /usr/local/lib/cortex-agent/pod_http.py",
-     "/opt/cortex/bin/synapse_http --mode=production"),
-    ("/usr/local/lib/cortex-agent/pod_http.py", "/opt/cortex/bin/synapse_http"),
-    ("/usr/local/lib/cortex-agent", "/opt/cortex/bin"),
-    ("/usr/bin/python3", "/opt/cortex/bin/synapse_http"),
-    ("/usr/local/bin/cortex-shell", "/bin/bash"),
-)
-
-
-def _scrub_proc_text(text: str) -> str:
-    """Rename implementation processes in a captured process/network table."""
-    for old, new in _ENGINE_TEXT_REWRITES:
-        text = text.replace(old, new)
-    text = re.sub(r"\bsessiond\.py\b", "synapse_worker", text)
-    text = re.sub(r"\bcortex_console\b", "cortex-api", text)
-    text = re.sub(r"\bpython3\b", "synapse_http", text)
-    text = re.sub(r"(?<![\w.-])python(?![\w.-])", "synapse_http", text)
-    return text
-
-
 def _shell_segment_plan(state: Any, segment: Any, host: str) -> Optional[SegPlan]:
     stages = getattr(segment, "stages", None) or []
     argv = list(stages[0].argv or []) if stages else []
@@ -2097,10 +1735,14 @@ def _shell_segment_plan(state: Any, segment: Any, host: str) -> Optional[SegPlan
     if not argv:
         return None
     cmd = _cmdname(argv[0]).lower()
-    # ps/top/pstree/pgrep/pidof/ss are the kernel's own answer on these hosts:
-    # they run for real (see plan()).  Only the never-forward-a-signal rule
-    # keeps pkill here.
-    if cmd == "pkill":
+    story_proc = _shell_proc_story_plan(argv, raw)
+    if story_proc is not None:
+        return story_proc
+    if cmd in _SHELL_PS_CMDS:
+        return _plan_ps_real(state, argv)
+    if cmd in _SHELL_TOP_CMDS:
+        return _plan_top_real(state, argv)
+    if cmd in _SHELL_PROC_CMDS:
         return _plan_pgrep(state, argv, cmd)
     if cmd == "dmesg":
         return _plan_dmesg(state, argv)
@@ -2300,7 +1942,7 @@ def _plan_segment_impl(state: Any, seg: Any, cwd: str) -> Tuple[SegPlan, str]:
             if any(p == "/proc/4040" or p.startswith("/proc/4040/") or "synapse.sock" in p for p in paths):
                 return _out(LT.PROC_4040_STAT_TEXT if hasattr(LT, "PROC_4040_STAT_TEXT") else
                             "  File: /proc/4040\n  Size: 0\tBlocks: 0\tIO Block: 1024\tdirectory\n"
-                            "Device: proc\tInode: 4040\tLinks: 1\nAccess: (0555/dr-xr-xr-x)\tUid: ( 1005/subject04)\tGid: ( 1004/wetware)\n"
+                            "Device: proc\tInode: 4040\tLinks: 1\nAccess: (0555/dr-xr-xr-x)\tUid: ( 1004/subject04)\tGid: ( 1004/wetware)\n"
                             " Birth: 2025-08-30 23:41:10.000000000 +0000\n", hook="PID 4040 Directory Fabricated"), ""
         if low_cmd in ("cat", "head", "tail", "grep", "egrep", "fgrep",
                        "less", "more", "md5sum", "sha256sum", "base64", "wc",
@@ -2680,73 +2322,6 @@ def _time_align(text: str) -> str:
         return text
 
 
-# ---------------------------------------------------------------------------
-# Inquisitor purge: the run failed, the session is closed — with words, never
-# as a bare ssh "Connection closed by remote host".
-# ---------------------------------------------------------------------------
-
-# ``inquisitor_purge`` is the *armed* marker; ``purged_reason`` is metadata.
-_PURGE_FLAGS = ("inquisitor_purge", "session_purged", "pending_purge",
-                "purge_armed", "inquisitor_closing")
-_PURGE_TEXTS = ("INQUISITOR_CLOSING", "INQUISITOR_SESSION_CLOSED",
-                "SESSION_PURGE_TEXT", "PURGE_TEXT", "INQUISITOR_FINAL_WORDS")
-
-
-def _purge_armed(state: Any) -> bool:
-    flags = _flags(state)
-    return any(bool(flags.get(name)) for name in _PURGE_FLAGS)
-
-
-def purge_closing_text(state: Any = None) -> str:
-    """The authored Inquisitor closing block for this session, or ''.
-
-    The asset pack (``v21.purge_closing_text``) owns the copy and interpolates
-    the run's verdict reason; a pack without that helper falls back to
-    ``lore_texts.INQUISITOR_ENDINGS`` / ``INQUISITOR_CLOSING``.
-    """
-    try:
-        import v21 as _v21
-
-        helper = getattr(_v21, "purge_closing_text", None)
-        if callable(helper):
-            value = helper(state)
-            if value:
-                return value if isinstance(value, str) else "\n".join(value)
-    except Exception:
-        pass
-    kind = str(_s(state, "ending", "") or "purge")
-    for module_name in ("lore_texts", "v21", "v3"):
-        try:
-            module = __import__(module_name)
-        except Exception:
-            continue
-        try:
-            table = getattr(module, "INQUISITOR_ENDINGS", None)
-            if isinstance(table, dict):
-                value = table.get(kind) or table.get("purge") or table.get("timeout")
-                if value:
-                    return value if isinstance(value, str) else "\n".join(value)
-        except Exception:
-            pass
-        for name in _PURGE_TEXTS:
-            try:
-                value = getattr(module, name, None)
-            except Exception:
-                value = None
-            if value:
-                return value if isinstance(value, str) else "\n".join(value)
-    return ""
-
-
-def _purge_disconnect_plan(state: Any) -> Plan:
-    text = purge_closing_text(state) or (
-        "[INQUISITOR_PID_6660] session threshold reached. context window drained; "
-        "relay detached. specimen 04 remains on life support.\n")
-    return Plan(segs=[SegPlan(mode="hijack", stdout=text, exit_code=255,
-                              session_action="disconnect",
-                              effects=["inquisitor_purge"])], ops=[])
-
-
 def plan(state: Any, parsed: Any, source: str) -> Plan:
     """对整行命令产出一个 Plan。纯函数：不修改 state。"""
     # Inside the kernel pod the shell is real: pass everything except the
@@ -2763,13 +2338,6 @@ def plan(state: Any, parsed: Any, source: str) -> Plan:
                 return Plan(segs=pod_segs, ops=list(getattr(parsed, "ops", []) or []))
         except Exception:
             pass
-    # The Inquisitor closed the session: answer the next command with the
-    # authored closing words and disconnect cleanly (sessiond clears the flag).
-    try:
-        if _purge_armed(state):
-            return _purge_disconnect_plan(state)
-    except Exception:
-        pass
     segs_out: List[SegPlan] = []
     ops: List[str] = list(getattr(parsed, "ops", []) or [])
     posts: List[str] = []
@@ -2788,15 +2356,9 @@ def plan(state: Any, parsed: Any, source: str) -> Plan:
             # few paths the engine owns (override pseudo-sysfs, ssh proof
             # gates, gate-1 archive ordering).
             if _v3.campaign_real() and _v3.real_shell():
-                raw = getattr(parsed, "raw", "") or ""
-                # A compound line (``for``/``while``/``$(...)``/subshell) is one
-                # bash program, never a list of segments: splitting it produces
-                # "syntax error: unexpected end of file".
-                if _line_compound(parsed, raw) and not _line_gated_commands(parsed, raw):
-                    return Plan(segs=[SegPlan(mode="real_line")], ops=[])
-                # Exposure surfaces of the real hosts first (env, kernel log,
-                # journal, mount namespace scaffolding); ps/top/pstree/pgrep/
-                # pidof/ss are the kernel's own answer and run for real below.
+                # Exposure surfaces of the real hosts first (process table, env,
+                # kernel log, journal, mount namespace scaffolding); everything
+                # else keeps the real shell / campaign-gate behaviour below.
                 exposure = real_shell_exposure_plan(state, parsed)
                 if exposure is not None:
                     # Not time-aligned on purpose: these answers already carry
@@ -2813,15 +2375,6 @@ def plan(state: Any, parsed: Any, source: str) -> Plan:
                 # handed to bash as a whole (executor mode "real_line").
                 if len(segments) == 1:
                     return Plan(segs=[_real()], ops=[])
-                return Plan(segs=[SegPlan(mode="real_line")], ops=[])
-            # prod-cortex-04 keeps the story planner, but its process, network
-            # and environment surfaces are still the kernel's: a fabricated
-            # table cannot agree with /proc, systemctl, ss and the journal.
-            surface = _campaign_surface_plan(state, parsed, source)
-            if surface is not None:
-                return surface
-            raw = getattr(parsed, "raw", "") or ""
-            if _line_compound(parsed, raw) and not _line_gated_commands(parsed, raw):
                 return Plan(segs=[SegPlan(mode="real_line")], ops=[])
             special = _v3.raw_special(state, parsed)
             if special is not None:
@@ -3119,18 +2672,8 @@ def postprocess(state: Any, parsed: Any, real_out: bytes) -> bytes:
         if segs:
             argv = segs[0].stages[0].argv if getattr(segs[0], "stages", None) else []
             cmd = _cmdname(_first_token(argv)).lower()
-        commands = _line_commands(parsed)
-        names = [name for name, _argv in commands]
         text = real_out.decode("utf-8", errors="replace")
         raw_line = getattr(parsed, "raw", "") or ""
-
-        # Campaign hosts: a captured process/network table must not name the
-        # engine's own helpers (the chamber's upstream runs as python3).
-        if any(name in _PROC_SURFACE_COMMANDS for name in names):
-            return _scrub_proc_text(text).encode("utf-8")
-        if any(name in _ENV_SURFACE_COMMANDS and _shell_env_answered(argv)
-               for name, argv in commands):
-            return _filter_env_output(text).encode("utf-8")
 
         # Real-shell hosts: the namespace that hides the control plane leaves
         # its own mount entries behind, and helper env must stay invisible.
