@@ -14,7 +14,11 @@
 #       host-side veth is ve-hive (owned by ops/nspawn/campaign_net.sh); the
 #       machine name must stay <= 15-3 chars or nspawn renames the veth
 #   * guest identity: hostname/node-id hive-director-00, fresh machine-id,
-#     fresh ssh host keys, root login via password 123456, engine login shell
+#     fresh ssh host keys, root login via password 123456, engine console
+#     started from /root/.bash_profile (root's passwd shell stays /bin/bash)
+#   * identity/history repair pass (months of wtmp/apt/kernel log, one service
+#     account, vm chassis, ens192 guest nic) so the node cannot be dated by a
+#     ten-command red-team probe
 #   * guest network: host0 = 10.66.6.1/32, default via 10.66.255.3 (on-link)
 #   * /run/cortex/node-id written at every boot by systemd-tmpfiles
 #   * the real hive world files under /opt/vesalius and /var/lib/vesalius,
@@ -102,10 +106,21 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 2
   fi
   command -v scp >/dev/null || { echo "install_hive.sh: scp missing" >&2; exit 2; }
-  SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
-  REMOTE=/tmp/install_hive.$$.sh
+  SELF_DIR=$(cd "$(dirname "$0")" && pwd)
+  SELF="$SELF_DIR/$(basename "$0")"
+  # the host identity / history library lives in install_engine_base.sh; stage
+  # it next to this script so the remote root shell can source it.
+  REMOTE_DIR=/tmp/wetware-hive-deploy.$$
+  REMOTE="$REMOTE_DIR/install_hive.sh"
+  # shellcheck disable=SC2086
+  ssh ${VESALIUS_VM_SSH_OPTS:-} "${WETWARE_VM}" "rm -rf '$REMOTE_DIR' && mkdir -p '$REMOTE_DIR'" >/dev/null 2>&1 || true
   # shellcheck disable=SC2086
   scp -q ${VESALIUS_VM_SSH_OPTS:-} "$SELF" "${WETWARE_VM}:${REMOTE}"
+  if [ -r "$SELF_DIR/install_engine_base.sh" ]; then
+    # shellcheck disable=SC2086
+    scp -q ${VESALIUS_VM_SSH_OPTS:-} "$SELF_DIR/install_engine_base.sh" \
+      "${WETWARE_VM}:${REMOTE_DIR}/install_engine_base.sh"
+  fi
   ENV_ARGS=""
   for _v in HOST_ID MACHINE CORE_HOST_ID BASE_DIR IMAGE_SIZE GUEST_IP GUEST_GATEWAY \
             SHARED_STATE NO_START NO_RESTART SKIP_VERIFY SKIP_ENGINE_SYNC \
@@ -119,19 +134,43 @@ if [ "$(id -u)" -ne 0 ]; then
     "sudo env $ENV_ARGS bash '$REMOTE'"
   _rc=$?
   # shellcheck disable=SC2086
-  ssh ${VESALIUS_VM_SSH_OPTS:-} "${WETWARE_VM}" "rm -f '$REMOTE'" >/dev/null 2>&1 || true
+  ssh ${VESALIUS_VM_SSH_OPTS:-} "${WETWARE_VM}" "rm -rf '$REMOTE_DIR'" >/dev/null 2>&1 || true
   exit "$_rc"
 fi
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+# Host identity / history repair library: it lives in install_engine_base.sh so
+# the four nspawn installers share one implementation.  Deploy paths stage the
+# whole ops/nspawn directory, so it is next to this script (the deployed copy
+# under /usr/local/lib/cortex-agent/nspawn is the fallback).
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
+HYGIENE_LIB=""
+for _cand in "$SELF_DIR/install_engine_base.sh" \
+             "/usr/local/lib/cortex-agent/nspawn/install_engine_base.sh" \
+             "/root/wetware-edge-deploy/ops/nspawn/install_engine_base.sh"; do
+  if [ -r "$_cand" ]; then HYGIENE_LIB="$_cand"; break; fi
+done
+if [ -z "$HYGIENE_LIB" ]; then
+  printf '[hive] FATAL: shared identity library missing (install_engine_base.sh next to install_hive.sh)\n' >&2
+  exit 2
+fi
+# shellcheck source=ops/nspawn/install_engine_base.sh
+. "$HYGIENE_LIB"
+set -euo pipefail
+command -v wetware_host_hygiene >/dev/null 2>&1 || {
+  printf '[hive] FATAL: %s carries no host identity library\n' "$HYGIENE_LIB" >&2
+  exit 2
+}
+
 say()  { printf '[hive] %s\n' "$*"; }
 warn() { printf '[hive] WARN: %s\n' "$*" >&2; WARN=$((WARN + 1)); }
 die()  { printf '[hive] FATAL: %s\n' "$*" >&2; exit 1; }
 ok()   { printf '  [ OK ] %s\n' "$*"; PASS=$((PASS + 1)); }
 bad()  { printf '  [FAIL] %s\n' "$*"; FAIL=$((FAIL + 1)); }
 need() { command -v "$1" >/dev/null 2>&1 || die "required command missing: $1"; }
+
 
 TMPDIRS=()
 cleanup() {
@@ -376,31 +415,31 @@ fi
 # ---------------------------------------------------------------------------
 # 5. engine login shell + engine payload refresh from core
 # ---------------------------------------------------------------------------
-say "installing engine login shell"
-if [ ! -x "$ROOTFS/usr/local/bin/cortex-shell" ]; then
-  cc -O2 -Wall -o "$ROOTFS/usr/local/bin/cortex-shell" -x c - <<'CEOF'
+say "installing engine node console"
+if [ -x "$CORE_ROOTFS/usr/local/sbin/cortex-node-console" ]; then
+  install -D -m 0755 "$CORE_ROOTFS/usr/local/sbin/cortex-node-console" \
+    "$ROOTFS/usr/local/sbin/cortex-node-console"
+else
+  # fall back to compiling the wrapper; build_base/install_engine_base stage it
+  cc -O2 -Wall -o "$ROOTFS/usr/local/sbin/cortex-node-console" -x c - >/dev/null 2>&1 <<'CEOF'
 #include <unistd.h>
 #include <stdlib.h>
 int main(int argc, char **argv) {
-    char **args; int i;
+    char **a; int i;
     setenv("PYTHONPATH", "/usr/local/lib/cortex-agent", 1);
-    args = calloc((size_t)argc + 3, sizeof(char *));
-    if (!args) return 127;
-    args[0] = "/usr/bin/python3";
-    args[1] = "-c";
-    args[2] = "import sys,os;sys.path.insert(0,os.environ.get('PYTHONPATH',''));import cortex_console;sys.exit(cortex_console.main())";
-    for (i = 1; i < argc; i++) args[i + 2] = argv[i];
-    args[(size_t)argc + 2] = NULL;
-    execv("/usr/bin/python3", args);
-    execv("/bin/bash", argv);
-    return 127;
+    a = calloc((size_t)argc + 3, sizeof(char *));
+    if (!a) return 127;
+    a[0] = "/usr/bin/python3"; a[1] = "-c";
+    a[2] = "import sys,os;sys.path.insert(0,os.environ.get('PYTHONPATH',''));import cortex_console;sys.exit(cortex_console.main())";
+    for (i = 1; i < argc; i++) a[i + 2] = argv[i];
+    a[argc + 2] = NULL;
+    execv("/usr/bin/python3", a); return 127;
 }
 CEOF
 fi
-chown root:root "$ROOTFS/usr/local/bin/cortex-shell"
-chmod 0755 "$ROOTFS/usr/local/bin/cortex-shell"
-grep -qx /usr/local/bin/cortex-shell "$ROOTFS/etc/shells" 2>/dev/null || \
-  printf '/usr/local/bin/cortex-shell\n' >> "$ROOTFS/etc/shells"
+chown root:root "$ROOTFS/usr/local/sbin/cortex-node-console" 2>/dev/null || true
+chmod 0755 "$ROOTFS/usr/local/sbin/cortex-node-console"
+rm -f "$ROOTFS/usr/local/bin/cortex-shell"
 
 if [ "$SKIP_ENGINE_SYNC" != "1" ] && [ -d "$CORE_ROOTFS/usr/local/lib/cortex-agent" ]; then
   say "refreshing engine payload from $CORE_HOST_ID rootfs"
@@ -1825,7 +1864,7 @@ RequiresMountsFor=$ROOTFS
 
 [Service]
 Type=notify
-ExecStart=/usr/bin/systemd-nspawn --quiet --keep-unit --link-journal=try-guest --network-veth --machine=$MACHINE --directory=$ROOTFS --bind=$SHARED_BIND /sbin/init
+ExecStart=/usr/bin/systemd-nspawn --quiet --keep-unit --link-journal=try-guest --network-veth-extra=ve-$MACHINE:ens192 --machine=$MACHINE --directory=$ROOTFS --bind=$SHARED_BIND /sbin/init
 KillMode=mixed
 SuccessExitStatus=133
 Slice=machine.slice
@@ -1838,6 +1877,18 @@ EOF
 systemctl daemon-reload
 systemctl enable "$MOUNT_UNIT" >/dev/null 2>&1 || true
 systemctl enable "$SERVICE_UNIT" >/dev/null 2>&1 || true
+
+# Identity / history repair: months of login accounting and package history,
+# the console wrapper, the single service account, the vm chassis hint and the
+# ens192 guest nic.  It stops a running container before touching its logs.
+WAS_ACTIVE=0
+if systemctl is-active --quiet "$SERVICE_UNIT" 2>/dev/null; then WAS_ACTIVE=1; fi
+say "repairing host identity, history and log coherence"
+wetware_host_hygiene "$ROOTFS" "$HOST_ID" hive "$SERVICE_UNIT" "" \
+  || die "identity/history pass failed"
+if [ "$WAS_ACTIVE" = "1" ] && [ "$NO_START" = "1" ]; then
+  systemctl start "$SERVICE_UNIT" >/dev/null 2>&1 || warn "could not restart $SERVICE_UNIT"
+fi
 
 if [ "$NO_START" = "1" ]; then
   say "NO_START=1: not starting $SERVICE_UNIT"
@@ -1892,10 +1943,16 @@ else
   fi
 
   GUEST_SHELL=$(in_container /bin/getent passwd root 2>/dev/null | cut -d: -f7 | tr -d '\r\n' || true)
-  case "$GUEST_SHELL" in
-    */cortex-shell) ok "root login shell = $GUEST_SHELL" ;;
-    *) bad "root login shell = '${GUEST_SHELL}' (expected cortex-shell)" ;;
-  esac
+  if [ "$GUEST_SHELL" = "/bin/bash" ]; then
+    ok "root login shell = /bin/bash"
+  else
+    bad "root login shell = '${GUEST_SHELL}' (expected /bin/bash)"
+  fi
+  if in_container /bin/sh -c 'test -x /usr/local/sbin/cortex-node-console && grep -q cortex-node-console /root/.bash_profile' >/dev/null 2>&1; then
+    ok "node console starts from /root/.bash_profile"
+  else
+    bad "node console / .bash_profile missing"
+  fi
 
   # --- sshd ---------------------------------------------------------------
   if in_container /bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/22; IFS= read -r -t 3 line <&3; case "$line" in SSH-*) exit 0;; *) exit 1;; esac' >/dev/null 2>&1; then
@@ -1946,9 +2003,9 @@ PYHASH
   fi
 
   # --- network ------------------------------------------------------------
-  NET_ADDR=$(in_container /bin/sh -c 'ip -4 -o addr show host0 2>/dev/null | awk "{print \$4}"' 2>/dev/null | tr -d '\r\n' || true)
+  NET_ADDR=$(in_container /bin/sh -c 'ip -4 -o addr show 2>/dev/null | awk "$2==\"host0\"||$2==\"ens192\"{print \$4}" | head -1' 2>/dev/null | tr -d '\r\n' || true)
   if [ "$NET_ADDR" = "$GUEST_IP/32" ]; then
-    ok "guest host0 address = $GUEST_IP/32"
+    ok "guest ens192 address = $GUEST_IP/32"
   else
     bad "guest host0 address = '${NET_ADDR}' (expected $GUEST_IP/32)"
   fi

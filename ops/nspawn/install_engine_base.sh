@@ -3,35 +3,67 @@
 # Run as root on the VM.  The container rootfs must already be mounted by
 # wetware-host-prod-cortex-04.mount; the container itself is managed by
 # systemd-nspawn as machine "prod-cortex".
+#
+# This file also carries the shared node identity / history repair library used
+# by build_base.sh, install_hive.sh and install_edge.sh (they source it).  A
+# sourced run only defines functions and returns; the engine install happens
+# when the file is executed directly.
+#
+# A re-run is idempotent: the engine payload is re-synced and the identity /
+# history pass rewrites the same baseline instead of appending to it.
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# configuration
+# ---------------------------------------------------------------------------
 ROOT=${ROOT:-/var/lib/wetware-hosts/prod-cortex-04}
 MACHINE=${MACHINE:-prod-cortex}
 ENGINE=${ENGINE:-/usr/local/lib/cortex-agent}
 PAYLOAD=${PAYLOAD:-$ENGINE/engine-src}
 HOST_ID=${HOST_ID:-prod-cortex-04}
 
-[ -d "$ROOT/etc" ] || { echo "container rootfs not mounted: $ROOT" >&2; exit 2; }
-[ -d "$PAYLOAD" ] || { echo "engine payload missing: $PAYLOAD" >&2; exit 2; }
-command -v systemd-run >/dev/null || { echo "systemd-run missing" >&2; exit 2; }
+warn() { printf '[engine] WARNING: %s\n' "$*" >&2; }
 
-# Campaign networking (three veths, /32 peers, :2222 entry, boot guard) is
-# owned by ops/nspawn/campaign_net.sh.  When that script is deployed next to
-# this one the guest network and the host guard are delegated to it, so a
-# redeploy can never revert the node to the single-veth /24 layout.
-NETSCRIPT=""
-for candidate in ops/nspawn/campaign_net.sh "$(dirname "$0")/campaign_net.sh"; do
-  if [ -r "$candidate" ]; then NETSCRIPT=$candidate; break; fi
-done
 
-echo "[engine] installing code from $PAYLOAD"
-mkdir -p "$ROOT$ENGINE"
-tar -C "$PAYLOAD" -czf - --exclude '__pycache__' --exclude 'tests' . |
-  tar -xzpf - -C "$ROOT$ENGINE"
+# ===========================================================================
+# host identity / history repair library
+# ---------------------------------------------------------------------------
+# This block lives in install_engine_base.sh so all four nspawn installers
+# share one implementation: install_edge.sh / install_hive.sh / build_base.sh
+# source this file (a sourced run only defines functions, it installs nothing).
+#
+# Why: a red team with a shell dates the whole image in ten commands.  The
+# node must look like a gateway that has been in service since 2025-08-27:
+# months of login accounting, package maintenance and kernel log; one service
+# account, no builder residue, no "built a minute ago" mtimes, and a chassis
+# that reads vm instead of container.
+#
+# What is repaired (idempotent: every pass rewrites the same baseline):
+#   A. root's login shell is /bin/bash; the engine console starts from
+#      /root/.bash_profile via /usr/local/sbin/cortex-node-console
+#   B. exactly one service account (subject04, 1005:999); no near-duplicate
+#      accounts and no HR remarks in GECOS
+#   C. months-long shell/apt/dpkg history, no /root/__pycache__ or probes
+#   D. auth/kern/syslog/dmesg owned syslog:adm with months of entries; wtmp/
+#      btmp/lastlog rebuilt from one coherent session list (no duplicated or
+#      overlapping pts sessions)
+#   E. /etc/machine-info presents Chassis=vm; the guest nic is renamed
+#      host0 -> ens192 by a udev .link (the veth peer index shown by `ip -br a`
+#      is a kernel-level detail, see the deployment report)
+#   F. /run/utmp is left empty; wtmp/lastlog carry the audit trail instead
+#
+# The history generator is embedded below (python3, stdlib only) and runs
+# before the container starts so no live syslog writer is replaced.
+# ===========================================================================
+HYGIENE_INSTALL_DATE="2025-08-27 09:41:22"
 
-echo "[engine] compiling container login shell"
-cc -O2 -Wall -o /tmp/cortex-shell-container ops/nspawn/container_shell.c 2>/dev/null ||
-  cc -O2 -Wall -o /tmp/cortex-shell-container -x c - <<'EOF'
+hyg() { printf '[hygiene] %s\n' "$*"; }
+
+# Compile and install the console wrapper; remove the old login-shell binary.
+wetware_install_node_console() {
+  local R="$1" tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/wetware-console.XXXXXX")"
+  cc -O2 -Wall -o "$tmp" -x c - >/dev/null 2>&1 <<'CEOF'
 #include <unistd.h>
 #include <stdlib.h>
 int main(int argc, char **argv) {
@@ -45,14 +77,1506 @@ int main(int argc, char **argv) {
     a[argc + 2] = NULL;
     execv("/usr/bin/python3", a); return 127;
 }
-EOF
-install -m 0755 /tmp/cortex-shell-container "$ROOT/usr/local/bin/cortex-shell"
-grep -qx /usr/local/bin/cortex-shell "$ROOT/etc/shells" 2>/dev/null ||
-  echo /usr/local/bin/cortex-shell >> "$ROOT/etc/shells"
-chroot "$ROOT" usermod -s /usr/local/bin/cortex-shell root
-chroot "$ROOT" chpasswd <<'EOF'
+CEOF
+  if [ ! -s "$tmp" ]; then
+    rm -f "$tmp"
+    printf '[hygiene] ERROR: cannot compile the node console wrapper\n' >&2
+    return 1
+  fi
+  mkdir -p "$R/usr/local/sbin"
+  install -m 0755 "$tmp" "$R/usr/local/sbin/cortex-node-console"
+  rm -f "$tmp"
+  # the old image used a custom ELF as root's *login shell*; that is the single
+  # most obvious tell in /etc/passwd, so both the binary and the /etc/shells
+  # registration go away.
+  rm -f "$R/usr/local/bin/cortex-shell"
+  if [ -f "$R/etc/shells" ]; then
+    grep -v '^/usr/local/bin/cortex-shell$' "$R/etc/shells" > "$R/etc/shells.tmp" \
+      && mv -f "$R/etc/shells.tmp" "$R/etc/shells" || rm -f "$R/etc/shells.tmp"
+  fi
+  chown root:root "$R/usr/local/sbin/cortex-node-console" 2>/dev/null || true
+  touch -d "$HYGIENE_INSTALL_DATE" "$R/usr/local/sbin/cortex-node-console" 2>/dev/null || true
+}
+
+# Boot record unit: nspawn does not expose the host kernel ring buffer, so the
+# node records its own boot block in kern.log/dmesg (and fixes log owners
+# before rsyslog opens the files).
+wetware_install_bootlog() {
+  local R="$1"
+  mkdir -p "$R/usr/local/sbin" "$R/etc/systemd/system" \
+           "$R/etc/systemd/system/dmesg.service.d" "$R/etc/tmpfiles.d" "$R/var/lib"
+  cat > "$R/usr/local/sbin/wetware-node-bootlog" <<'BOOTLOG'
+#!/bin/sh
+# Neo-Vesalius node boot record.
+#
+# The guest may not read the host kernel ring buffer (container isolation), so
+# the node image records its own boot block for the capacity team's log review:
+# /var/log/kern.log gets the lines a bare-metal gateway would receive from
+# rsyslog's imklog module, and /var/log/dmesg is the raw ring buffer snapshot
+# the distro's dmesg.service normally writes.
+#
+# It also keeps the utmp/wtmp boot records coherent with /proc/uptime: the
+# container shell is restarted by the operators, which makes systemd append a
+# new "reboot" record every time even though the kernel did not boot again.
+set -eu
+mode="${1:-boot}"
+host="$(cat /etc/hostname 2>/dev/null || echo localhost)"
+state=/var/lib/wetware-node.boot-id
+now="$(date +%s)"
+up="$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)"
+boot_epoch=$((now - ${up:-0}))
+boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown)"
+kernel="5.15.0-105-generic"
+kernel_full="$kernel (buildd@lcy02-amd64) #115-Ubuntu SMP"
+nic="$(ls /sys/class/net 2>/dev/null | grep -v '^lo$' | head -n1 || true)"
+[ -n "$nic" ] || nic=ens192
+
+block() {
+  echo "[    0.000000] Linux version $kernel_full"
+  echo "[    0.000000] Command line: BOOT_IMAGE=/vmlinuz-$kernel root=/dev/sda1 ro quiet"
+  echo "[    0.000104] Memory: 7958396K/8192000K available (6732K kernel code, 1204K rwdata, 3664K rodata, 1592K init)"
+  echo "[    0.104435] smpboot: CPU0: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz (fam: 06, model: 4f, stepping: 01)"
+  echo "[    0.220034] ACPI: Core revision 20210730"
+  echo "[    0.333641] pci 0000:00:03.0: [15ad:07b0] type 00 class 0x020000"
+  echo "[    0.854211] EXT4-fs (sda1): mounted filesystem with ordered data mode. Opts: (null)"
+  echo "[    1.482301] udevd[351]: starting version 249.11-0ubuntu3.12"
+  echo "[    2.145882] IPv6: ADDRCONF(NETDEV_CHANGE): $nic: link becomes ready"
+  echo "[    2.917044] EXT4-fs (sda1): re-mounted. Opts: errors=remount-ro"
+}
+
+fix_owners() {
+  chown syslog:adm /var/log/auth.log /var/log/kern.log /var/log/syslog 2>/dev/null || \
+    chown root:adm /var/log/auth.log /var/log/kern.log /var/log/syslog 2>/dev/null || true
+  chmod 0640 /var/log/auth.log /var/log/kern.log /var/log/syslog 2>/dev/null || true
+  chown root:adm /var/log/dmesg 2>/dev/null || true
+  chmod 0640 /var/log/dmesg 2>/dev/null || true
+  chown root:utmp /var/log/wtmp /var/log/btmp /var/log/lastlog 2>/dev/null || true
+  chmod 0664 /var/log/wtmp /var/log/lastlog 2>/dev/null || true
+  chmod 0660 /var/log/btmp 2>/dev/null || true
+}
+
+# drop the "reboot" record systemd writes for every container shell restart and
+# make sure exactly one canonical boot record (host uptime base) is present.
+normalise_wtmp() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$boot_epoch" <<'PYWTMP' 2>/dev/null || true
+import struct, sys
+boot = int(float(sys.argv[1]))
+size = struct.Struct("<hxxi32s4s32s256shhiii16s20s").size
+path = "/var/log/wtmp"
+try:
+    data = open(path, "rb").read()
+except OSError:
+    sys.exit(0)
+recs = [data[i:i + size] for i in range(0, len(data) - size + 1, size)]
+def fields(rec):
+    return struct.unpack("<hxxi32s4s32s256shhiii16s20s", rec)
+# strip trailing boot/runlevel records written by this container start
+while recs:
+    f = fields(recs[-1])
+    if f[0] in (1, 2) and f[9] > boot + 30:  # ut_type, ut_tv.tv_sec
+        recs.pop()
+        continue
+    break
+have = any(fields(r)[0] == 2 and abs(fields(r)[9] - boot) <= 120 for r in recs[-6:])
+if not have:
+    recs.append(struct.pack("<hxxi32s4s32s256shhiii16s20s", 2, 0, b"~", b"~~",
+                            b"reboot", b"5.15.0-105-generic", 0, 0, 0,
+                            boot + 2, 0, b"\0" * 16, b"\0" * 20))
+    recs.append(struct.pack("<hxxi32s4s32s256shhiii16s20s", 1, 53, b"~", b"~~",
+                            b"runlevel", b"5.15.0-105-generic", 0, 0, 0,
+                            boot + 6, 0, b"\0" * 16, b"\0" * 20))
+try:
+    with open(path, "wb") as fh:
+        fh.write(b"".join(recs))
+except OSError:
+    pass
+PYWTMP
+}
+
+if [ "$mode" = "dmesg" ]; then
+  block > /var/log/dmesg.tmp 2>/dev/null || true
+  if [ -s /var/log/dmesg.tmp ]; then mv -f /var/log/dmesg.tmp /var/log/dmesg; fi
+  rm -f /var/log/dmesg.tmp
+  fix_owners
+  exit 0
+fi
+
+fix_owners
+normalise_wtmp
+[ -f /var/log/kern.log ] || : > /var/log/kern.log
+# the image was provisioned on this host boot: the history pass already wrote
+# the current kernel block, so only a real host reboot adds another one.
+if [ -f "$state" ]; then
+  stored="$(cat "$state" 2>/dev/null || true)"
+  case "$stored" in
+    "seeded:$boot_epoch"|"$boot_id") printf '%s\n' "$boot_id" > "$state" 2>/dev/null || true; exit 0 ;;
+  esac
+fi
+if tail -n 200 /var/log/kern.log 2>/dev/null |
+   grep -q "$(date -d "@$boot_epoch" '+%b %e') .*kernel: \[    0.000000\] Linux version"; then
+  printf '%s\n' "$boot_id" > "$state" 2>/dev/null || true
+  exit 0
+fi
+i=0
+block | while IFS= read -r line; do
+  printf '%s %s kernel: %s\n' \
+    "$(date -d "@$((boot_epoch + i))" '+%b %e %H:%M:%S')" "$host" "$line"
+  i=$((i + 1))
+done >> /var/log/kern.log
+touch -d "@$((boot_epoch + 10))" /var/log/kern.log 2>/dev/null || true
+printf '%s\n' "$boot_id" > "$state" 2>/dev/null || true
+exit 0
+BOOTLOG
+  chmod 0755 "$R/usr/local/sbin/wetware-node-bootlog"
+  chown root:root "$R/usr/local/sbin/wetware-node-bootlog"
+
+  cat > "$R/etc/systemd/system/wetware-node-bootlog.service" <<'UNIT'
+[Unit]
+Description=Neo-Vesalius node boot record (kern.log relay)
+Documentation=man:systemd-nspawn(1)
+DefaultDependencies=no
+After=local-fs.target systemd-update-utmp.service
+Before=rsyslog.service syslog.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/wetware-node-bootlog boot
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  # the distro dmesg.service cannot read the host ring buffer in a container;
+  # let it write the node's own boot snapshot instead of a zero-byte file.
+  cat > "$R/etc/systemd/system/dmesg.service.d/wetware.conf" <<'DROPIN'
+[Service]
+ExecStart=
+ExecStart=/usr/local/sbin/wetware-node-bootlog dmesg
+DROPIN
+  cat > "$R/etc/tmpfiles.d/wetware-node-logs.conf" <<'TMPF'
+# node log ownership survives image copies and reboots
+z /var/log/auth.log 0640 syslog adm -
+z /var/log/kern.log 0640 syslog adm -
+z /var/log/syslog 0640 syslog adm -
+z /var/log/dmesg 0640 root adm -
+z /var/log/wtmp 0664 root utmp -
+z /var/log/btmp 0660 root utmp -
+z /var/log/lastlog 0664 root utmp -
+TMPF
+  systemctl --root="$R" enable wetware-node-bootlog.service >/dev/null 2>&1 || true
+}
+
+# nspawn names the guest end of the veth "host0"; a physical gateway shows
+# ens192.  A udev .link rule renames the link before networkd configures it,
+# and every host0 *.network file gets an ens192 twin so either name works.
+wetware_network_rename() {
+  local R="$1" mode="${2:-ens192}" f base twin
+  mkdir -p "$R/etc/systemd/network"
+  if [ "$mode" = "keep" ]; then
+    # campaign_net.sh pins the core node by its host0 name; leave it alone.
+    rm -f "$R/etc/systemd/network/10-wetware-nic.link"
+    return 0
+  fi
+  cat > "$R/etc/systemd/network/10-wetware-nic.link" <<'LINK'
+[Match]
+OriginalName=host0
+
+[Link]
+Name=ens192
+MACAddressPolicy=none
+LINK
+  for f in "$R"/etc/systemd/network/*host0*.network; do
+    [ -f "$f" ] || continue
+    base="${f%.network}"
+    case "$base" in
+      *-host0) twin="${base%-host0}-ens192.network" ;;
+      *) twin="$R/etc/systemd/network/20-wetware-ens192.network" ;;
+    esac
+    sed 's/^Name=host0$/Name=ens192/' "$f" > "$twin"
+    chown root:root "$twin" 2>/dev/null || true
+    chmod 0644 "$twin"
+    touch -d "2025-08-27 09:46:12" "$twin" 2>/dev/null || true
+  done
+  chown root:root "$R/etc/systemd/network/10-wetware-nic.link" 2>/dev/null || true
+  chmod 0644 "$R/etc/systemd/network/10-wetware-nic.link"
+  touch -d "2025-08-27 09:46:12" "$R/etc/systemd/network/10-wetware-nic.link" 2>/dev/null || true
+}
+
+# re-stamp every file in a tree that was modified during the build window
+wetware_stamp_recent() {
+  local R="$1" since="$2" when="$3" p
+  shift 3
+  [ -d "$R" ] || return 0
+  for p in "$@"; do
+    [ -e "$R$p" ] || continue
+    find "$R$p" -newermt "@$since" -print0 2>/dev/null |
+      while IFS= read -r -d '' f; do
+        touch -h -d "@$when" "$f" 2>/dev/null || true
+      done
+  done
+}
+
+stamp_one() {
+  local R="$1" rel="$2" when="$3"
+  [ -e "$R$rel" ] || return 0
+  touch -h -d "$when" "$R$rel" 2>/dev/null || true
+}
+
+stamp_glob() {
+  local R="$1" pat="$2" when="$3" f
+  for f in "$R"$pat; do
+    [ -e "$f" ] || continue
+    touch -h -d "$when" "$f" 2>/dev/null || true
+  done
+}
+
+# the file-metadata pass that runs after the history generator
+wetware_stamp_identity() {
+  local R="$1" role="$2"
+  local ACCOUNTS PATCH ENGINE APT_UPDATE
+  ACCOUNTS="2026-03-16 10:08:33"
+  PATCH="2026-09-21 10:02:40"
+  APT_UPDATE="2026-09-21 06:31:04"
+  ENGINE="2025-08-27 10:05:14"
+
+  # accounts + package manager metadata
+  for rel in /etc/passwd /etc/passwd- /etc/group /etc/group- /etc/shadow \
+             /etc/shadow- /etc/gshadow /etc/gshadow- /etc/subuid /etc/subuid- \
+             /etc/subgid /etc/subgid- /etc/gitconfig; do
+    stamp_one "$R" "$rel" "$ACCOUNTS"
+  done
+  for rel in /var/lib/dpkg/status /var/lib/dpkg/status-old \
+             /var/lib/dpkg/available /var/lib/dpkg/lock \
+             /var/lib/apt/extended_states /var/lib/dpkg/info /var/lib/dpkg; do
+    stamp_one "$R" "$rel" "$PATCH"
+  done
+  stamp_glob "$R" "/var/lib/apt/lists/*" "$APT_UPDATE"
+  stamp_glob "$R" "/var/cache/apt/*.bin" "$APT_UPDATE"
+  stamp_one "$R" /var/cache/apt/archives "$APT_UPDATE"
+  stamp_one "$R" /etc/ld.so.cache "2026-09-21 10:03:10"
+
+  # machine identity
+  stamp_one "$R" /etc/machine-id "2025-08-27 09:41:30"
+  stamp_one "$R" /var/lib/dbus/machine-id "2025-08-27 09:41:30"
+  stamp_glob "$R" "/etc/ssh/ssh_host_*" "2025-08-27 09:42:05"
+  stamp_one "$R" /etc/ssh/sshd_config "2025-08-27 09:44:31"
+  stamp_glob "$R" "/etc/ssh/sshd_config.d/*" "2025-08-27 09:44:31"
+  stamp_glob "$R" "/root/.ssh/*" "2025-08-30 18:02:19"
+  stamp_glob "$R" "/home/lin/.ssh/*" "2025-08-30 18:02:19"
+  stamp_one "$R" /root/.ssh "2025-09-14 02:10:00"
+  stamp_one "$R" /home/lin/.ssh "2025-09-14 02:10:00"
+
+  # package sources + vendor configuration
+  stamp_one "$R" /etc/apt/sources.list "2025-08-27 09:12:01"
+  stamp_glob "$R" "/etc/apt/sources.list.d/*" "2025-08-27 09:12:01"
+  stamp_glob "$R" "/etc/apt/apt.conf.d/*" "2025-08-27 09:12:01"
+  stamp_one "$R" /etc/rsyslog.conf "2026-03-16 10:08:12"
+  stamp_glob "$R" "/etc/rsyslog.d/*" "2026-03-16 10:08:12"
+  stamp_glob "$R" "/etc/logcheck/*" "2026-03-16 10:08:12"
+  stamp_glob "$R" "/etc/apparmor.d/disable/*" "2026-03-16 10:08:12"
+  stamp_glob "$R" "/etc/systemd/network/*" "2025-08-27 09:46:12"
+  stamp_glob "$R" "/etc/tmpfiles.d/*" "$ENGINE"
+  stamp_glob "$R" "/etc/systemd/system/*.service" "$ENGINE"
+  stamp_glob "$R" "/etc/systemd/system/*/*" "$ENGINE"
+  stamp_glob "$R" "/etc/systemd/system/multi-user.target.wants/*" "$ENGINE"
+  stamp_glob "$R" "/etc/nginx/sites-enabled/*" "2025-08-27 09:44:02"
+  stamp_glob "$R" "/etc/nginx/sites-available/*" "2025-08-27 09:44:02"
+  stamp_one "$R" /etc/nginx/nginx.conf "2025-08-27 09:44:02"
+  stamp_one "$R" /etc/nginx/conf.d/00-wetware.conf "2025-08-27 09:44:02"
+  stamp_one "$R" /etc/nginx/conf.d/cortex-node.conf "2026-10-26 07:41:55"
+  stamp_one "$R" /etc/nginx/conf.d/upstream.conf "2026-10-26 07:41:55"
+
+  stamp_one "$R" /etc/shells "$ACCOUNTS"
+  stamp_one "$R" /etc/ssh "2025-08-27 09:44:31"
+  stamp_one "$R" /etc/apt "2025-08-27 09:12:01"
+  stamp_one "$R" /etc/apt/apt.conf.d "2025-08-27 09:12:01"
+  stamp_one "$R" /etc/rsyslog.d "2026-03-16 10:08:12"
+  stamp_one "$R" /etc/systemd "2025-08-27 09:46:12"
+  stamp_one "$R" /etc/systemd/system "2025-08-27 09:46:12"
+  stamp_one "$R" /etc/systemd/network "2025-08-27 09:46:12"
+  stamp_one "$R" /etc/tmpfiles.d "2025-08-27 09:46:12"
+  stamp_one "$R" /etc/nginx "2025-08-27 09:44:02"
+  stamp_one "$R" /etc/nginx/conf.d "2026-10-26 07:41:55"
+
+  # installed engine payload + node console (vendor image, install date)
+  if [ -d "$R/usr/local/lib/cortex-agent" ]; then
+    touch -d "2025-08-27 10:05:14" "$R/usr/local/lib/cortex-agent"
+    find "$R/usr/local/lib/cortex-agent" -mindepth 1 \
+      -exec touch -h -d "2025-08-27 10:05:14" {} + 2>/dev/null || true
+  fi
+  for rel in /usr/local/sbin/cortex-node-console /usr/local/sbin/wetware-node-bootlog \
+             /usr/local/sbin /usr/local/bin; do
+    stamp_one "$R" "$rel" "$ENGINE"
+  done
+
+  # login accounting and log directories
+  stamp_one "$R" /var/log/faillog "$PATCH"
+  stamp_one "$R" /var/log/apt "$PATCH"
+  stamp_one "$R" /var/log/nginx "2026-10-20 15:23:11"
+  stamp_one "$R" /var/log "2026-10-26 08:03:16"
+
+  # root home + tool caches
+  stamp_glob "$R" "/root/.cache/*" "2025-08-27 10:13:07"
+  stamp_one "$R" /root/.cache "2025-08-27 10:13:07"
+  stamp_glob "$R" "/root/.config/*" "2026-10-26 08:40:51"
+  stamp_one "$R" /root/.config "2026-10-26 08:40:51"
+  stamp_one "$R" /root "2026-10-26 08:41:09"
+
+  # repository metadata: git was cloned/committed by the installer, while the
+  # worktree files carry the story dates set by the world materialiser.
+  if [ "$role" = "edge" ]; then
+    wetware_stamp_recent "$R" "$(($(date +%s) - 7 * 86400))" \
+      "$(date -d '2026-10-25 23:41:55' +%s)" \
+      /home/ops/cortex-sre/.git /opt/vesalius/infra-deploy
+  fi
+}
+
+# main entry point: repair one node rootfs before it boots
+wetware_host_hygiene() {
+  local R="$1" host="$2" role="${3:-edge}" unit="${4:-}" gate_fp="${5:-}"
+  local now i
+  now="$(date +%s)"
+
+  [ -d "$R/etc" ] || {
+    printf '[hygiene] ERROR: %s is not a rootfs\n' "$R" >&2; return 1; }
+
+  # sshd and the syslog daemon append to these files: never rewrite a log
+  # under a running container.
+  if [ -n "$unit" ] && systemctl is-active --quiet "$unit" 2>/dev/null; then
+    hyg "stopping $unit for the identity pass"
+    systemctl stop "$unit" 2>/dev/null || true
+    for i in $(seq 1 30); do
+      systemctl is-active --quiet "$unit" 2>/dev/null || break
+      sleep 1
+    done
+  fi
+
+  hyg "rewriting node history for $host ($role)"
+  wetware_install_node_console "$R" || return 1
+  wetware_install_bootlog "$R"
+  # core keeps host0: ops/nspawn/campaign_net.sh addresses that node by name.
+  case "$role" in
+    edge|hive) wetware_network_rename "$R" "${HYGIENE_NIC:-ens192}" ;;
+    *)         wetware_network_rename "$R" "keep" ;;
+  esac
+
+  # the shell config must be writable before the generator replaces it
+  [ -e "$R/root/.bashrc" ] && chattr -i "$R/root/.bashrc" 2>/dev/null || true
+
+  # the container shares the host kernel clock: uptime() is the machine's boot
+  # time, so the live boot record and the kernel block must use that epoch.
+  local host_boot host_boot_id
+  host_boot=$(( now - $(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0) ))
+  host_boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown)"
+
+  python3 - "$R" "$host" "$role" "$now" "$host_boot" "$host_boot_id" "$gate_fp" <<'WETWARE_HISTORY_PY'
+#!/usr/bin/env python3
+"""Generate a coherent months-long host history for a WETWARE node rootfs.
+
+Embedded copy used by ops/nspawn/{build_base,install_engine_base,install_hive,
+install_edge}.sh.  Invocation:
+
+    python3 <this> <rootfs> <hostname> <role> <now-epoch> [gate-fp]
+
+role: edge | core | hive | base
+
+It rewrites login accounting (wtmp/btmp/lastlog), syslog artefacts
+(auth.log/kern.log/syslog/dmesg), apt/dpkg history, the root shell history,
+the vendor bash config and /etc/machine-info.  The timeline is deterministic
+so a second install pass rewrites the same baseline instead of appending.
+
+Story timeline (local +0800): gateway installed 2025-08-27, Lin disappeared
+2025-08-30, chamber-04 stopped answering 2026-10-25T23:41Z (local
+2026-10-26 07:41) and the paid operator session starts 2026-10-27.
+"""
+import os
+import struct
+import sys
+import time
+
+GATE_HASH = "4f2a9c1e"
+KERNEL = "5.15.0-105-generic"
+KERNEL_FULL = KERNEL + " (buildd@lcy02-amd64) #115-Ubuntu SMP"
+
+
+def ts(y, mo, d, h, mi, s):
+    return int(time.mktime((y, mo, d, h, mi, s, 0, 0, -1)))
+
+
+INSTALL = ts(2025, 8, 27, 9, 41, 22)
+BOOTS = [
+    INSTALL,
+    ts(2025, 10, 12, 4, 3, 7),
+    ts(2025, 12, 14, 4, 1, 44),
+    ts(2026, 2, 8, 4, 2, 19),
+    ts(2026, 4, 12, 4, 3, 2),
+    ts(2026, 6, 14, 4, 1, 30),
+    ts(2026, 8, 9, 4, 2, 51),
+]
+OOM = ts(2026, 10, 26, 7, 41, 2)          # 2026-10-25T23:41:02Z
+PREV_BOOT = BOOTS[-1]
+
+
+class Rng:
+    def __init__(self, seed):
+        self.s = (seed & 0xFFFFFFFF) or 0x5EED
+
+    def next(self):
+        self.s = (1664525 * self.s + 1013904223) & 0xFFFFFFFF
+        return self.s
+
+    def rand(self, lo, hi):
+        return lo if hi <= lo else lo + self.next() % (hi - lo + 1)
+
+
+def stamp(epoch, fmt="%b %e %H:%M:%S"):
+    return time.strftime(fmt, time.localtime(epoch))
+
+
+def write(root, rel, data, mode=0o644, uid=0, gid=0, mtime=None):
+    path = os.path.join(root, rel.lstrip("/"))
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    with open(path, "wb") as fh:
+        fh.write(data)
+    try:
+        os.chmod(path, mode)
+        os.chown(path, uid, gid)
+    except OSError:
+        pass
+    if mtime is not None:
+        try:
+            os.utime(path, (mtime, mtime))
+        except OSError:
+            pass
+
+
+def read_passwd(root):
+    users = {}
+    try:
+        with open(os.path.join(root, "etc/passwd"), encoding="utf-8",
+                  errors="replace") as fh:
+            for line in fh:
+                p = line.rstrip("\n").split(":")
+                if len(p) >= 7:
+                    users[p[0]] = (int(p[2] or 0), int(p[3] or 0))
+    except OSError:
+        pass
+    return users
+
+
+def read_group(root):
+    groups = {}
+    try:
+        with open(os.path.join(root, "etc/group"), encoding="utf-8",
+                  errors="replace") as fh:
+            for line in fh:
+                p = line.rstrip("\n").split(":")
+                if len(p) >= 3:
+                    groups[p[0]] = int(p[2] or 0)
+    except OSError:
+        pass
+    return groups
+
+
+def uid_of(users, name, default=0):
+    return users.get(name, (default, default))[0]
+
+
+def gid_of(groups, name, default=0):
+    return groups.get(name, default)
+
+
+def read_packages(root):
+    pkgs = {}
+    try:
+        with open(os.path.join(root, "var/lib/dpkg/status"), encoding="utf-8",
+                  errors="replace") as fh:
+            name = version = state = ""
+            for line in fh:
+                line = line.rstrip("\n")
+                if line.startswith("Package: "):
+                    name = line.split(": ", 1)[1]
+                elif line.startswith("Version: "):
+                    version = line.split(": ", 1)[1]
+                elif line.startswith("Status: "):
+                    state = line.split(": ", 1)[1]
+                elif not line.strip():
+                    if name and version and "installed" in state:
+                        pkgs[name] = version
+                    name = version = state = ""
+    except OSError:
+        pass
+    return pkgs
+
+
+# ---------------------------------------------------------------------------
+# sessions
+# ---------------------------------------------------------------------------
+def build_sessions():
+    rng = Rng(0x4024094)
+    sessions = []
+    pts = [0]
+
+    def add(login, minutes, user, host, method="password", extra=None):
+        logout = login + minutes * 60 + rng.rand(3, 47)
+        s = {"login": login, "logout": logout, "user": user, "host": host,
+             "pts": "pts/%d" % (pts[0] % 3), "method": method,
+             "pid": rng.rand(2200, 9800), "port": rng.rand(41000, 61000)}
+        if extra:
+            s.update(extra)
+        sessions.append(s)
+        pts[0] += 1
+
+    add(ts(2025, 8, 27, 10, 12, 5), 74, "root", "10.66.255.1")
+    maintenance = [
+        (2025, 9, 15, 11), (2025, 10, 13, 4), (2025, 11, 17, 11),
+        (2025, 12, 15, 10), (2026, 1, 19, 11), (2026, 2, 9, 4),
+        (2026, 3, 16, 10), (2026, 4, 13, 4), (2026, 5, 18, 11),
+        (2026, 6, 15, 10), (2026, 7, 20, 11), (2026, 8, 10, 4),
+        (2026, 9, 21, 10),
+    ]
+    for (y, mo, d, h) in maintenance:
+        add(ts(y, mo, d, h, rng.rand(2, 55), rng.rand(0, 59)),
+            rng.rand(18, 76), "root", "10.66.255.1")
+        if rng.rand(0, 1):
+            add(ts(y, mo, d, min(h + 2, 23), rng.rand(2, 40), rng.rand(0, 59)),
+                rng.rand(6, 24), "root", "10.66.255.1")
+    for (y, mo, d) in ((2025, 9, 8), (2026, 1, 26), (2026, 5, 4)):
+        add(ts(y, mo, d, 15, rng.rand(2, 50), rng.rand(0, 59)),
+            rng.rand(2, 9), "root", "10.66.0.4", "publickey")
+    add(ts(2026, 10, 20, 15, 12, 4), 11, "root", "10.66.255.1")
+    add(ts(2026, 10, 26, 7, 52, 31), 48, "root", "10.66.0.4", "cortex",
+        {"logout": ts(2026, 10, 26, 8, 41, 7), "pid": 2210, "port": 51024,
+         "pts": "pts/2", "invalid_lin": True})
+    sessions.sort(key=lambda s: s["login"])
+    return sessions
+
+
+# ---------------------------------------------------------------------------
+# utmp / lastlog
+# ---------------------------------------------------------------------------
+USER_PROCESS, DEAD_PROCESS, BOOT_TIME = 7, 8, 2
+UTMP = struct.Struct("<hxxi32s4s32s256shhiii16s20s")
+LASTLOG = struct.Struct("<i32s256s")
+
+
+def utmp_record(kind, pid, line, user, host, epoch):
+    line_b = line.encode()[:31]
+    ident = (b"ts/" + line_b[-1:]) if line_b.startswith(b"pts") else line_b[:4]
+    return UTMP.pack(kind, pid, line_b, ident, user.encode()[:31],
+                     host.encode()[:255], 0, 0, 0, int(epoch), 0,
+                     b"\0" * 16, b"\0" * 20)
+
+
+def wtmp_bytes(sessions, host_boot):
+    """systemd-update-utmp record sequence of a normally rebooted host:
+    shutdown (RUN_LVL) -> reboot (BOOT_TIME) -> runlevel (RUN_LVL) -> logins.
+    The last pair is the live boot (host uptime base), so `last` and `uptime`
+    agree; the boot-time helper only has to drop the duplicates systemd writes
+    when the container shell restarts."""
+    rows = []
+    for epoch in list(BOOTS) + [host_boot]:
+        rows.append((epoch - 10, utmp_record(1, 0, "~", "shutdown",
+                                             KERNEL, epoch - 10)))
+        rows.append((epoch + 2, utmp_record(BOOT_TIME, 0, "~", "reboot",
+                                            KERNEL, epoch + 2)))
+        rows.append((epoch + 6, utmp_record(1, 53, "~", "runlevel",
+                                            KERNEL, epoch + 6)))
+    for s in sessions:
+        rows.append((s["login"], utmp_record(USER_PROCESS, s["pid"],
+                                             s["pts"], s["user"], s["host"],
+                                             s["login"])))
+        rows.append((s["logout"], utmp_record(DEAD_PROCESS, s["pid"],
+                                              s["pts"], "", "", s["logout"])))
+    rows.sort(key=lambda r: r[0])
+    return b"".join(r[1] for r in rows)
+
+
+def btmp_bytes():
+    rng = Rng(0xB7AB)
+    rows = []
+    for (y, mo, d, h, who) in ((2025, 11, 3, 5, "root"),
+                               (2026, 2, 21, 2, "admin"),
+                               (2026, 6, 7, 3, "lin"),
+                               (2026, 9, 30, 4, "root")):
+        epoch = ts(y, mo, d, h, rng.rand(0, 59), rng.rand(0, 59))
+        rows.append((epoch, utmp_record(USER_PROCESS, rng.rand(2200, 9800),
+                                        "ssh:notty", who, "10.66.0.4", epoch)))
+    rows.sort(key=lambda r: r[0])
+    return b"".join(r[1] for r in rows)
+
+
+def write_lastlog(root, users, sessions, uid, gid, mtime):
+    """Sparse /var/log/lastlog: one 292-byte record per uid, holes stay holes."""
+    last = {}
+    for s in sessions:
+        if s["user"] in users:
+            last[s["user"]] = s
+    max_uid = max([u[0] for u in users.values()] + [1005])
+    path = os.path.join(root, "var/log/lastlog")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as fh:
+        fh.truncate((max_uid + 1) * LASTLOG.size)
+        for name, s in last.items():
+            fh.seek(users[name][0] * LASTLOG.size)
+            fh.write(LASTLOG.pack(int(s["login"]),
+                                  s["pts"].encode()[:31],
+                                  s["host"].encode()[:255]))
+    try:
+        os.chmod(path, 0o664)
+        os.chown(path, uid, gid)
+        os.utime(path, (mtime, mtime))
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# auth.log
+# ---------------------------------------------------------------------------
+def auth_text(host, sessions, gate_fp):
+    rng = Rng(0xA17)
+    rows = []
+
+    def put(epoch, text):
+        rows.append((epoch, "%s %s %s" % (stamp(epoch), host, text)))
+
+    for idx, epoch in enumerate(BOOTS):
+        if idx == 0:
+            continue
+        pid = rng.rand(880, 980)
+        put(epoch + 3, "sshd[%d]: Server listening on 0.0.0.0 port 22." % pid)
+        put(epoch + 3, "sshd[%d]: Server listening on :: port 22." % pid)
+    for s in sessions:
+        pid = s["pid"]
+        when = s["login"]
+        if s.get("invalid_lin") and gate_fp:
+            put(when - 7, "sshd[%d]: Invalid user lin from %s port %d"
+                % (pid, s["host"], s["port"] - 2))
+            put(when - 3, "sshd[%d]: Failed publickey for root from %s port %d "
+                "ssh2: ED25519 %s" % (pid, s["host"], s["port"], gate_fp))
+            put(when, "sshd[%d]: Accepted publickey for root from %s port %d "
+                "ssh2: ED25519 %s" % (pid, s["host"], s["port"], gate_fp))
+        elif s["method"] == "publickey" and gate_fp:
+            put(when, "sshd[%d]: Accepted publickey for root from %s port %d "
+                "ssh2: ED25519 %s" % (pid, s["host"], s["port"], gate_fp))
+        else:
+            put(when, "sshd[%d]: Accepted password for root from %s port %d "
+                "ssh2" % (pid, s["host"], s["port"]))
+        put(when, "sshd[%d]: pam_unix(sshd:session): session opened for user "
+            "root(uid=0) by (uid=0)" % pid)
+        put(s["logout"], "sshd[%d]: Received disconnect from %s port %d:11: "
+            "disconnected by user" % (pid, s["host"], s["port"]))
+        put(s["logout"], "sshd[%d]: Disconnected from user root %s port %d"
+            % (pid, s["host"], s["port"]))
+        put(s["logout"], "sshd[%d]: pam_unix(sshd:session): session closed for "
+            "user root" % pid)
+    typo = ts(2026, 10, 26, 8, 3, 12)
+    put(typo, "sshd[%d]: Failed password for root from 10.66.255.1 port 52318 "
+        "ssh2" % rng.rand(2200, 9800))
+    put(typo + 4, "sshd[%d]: Connection closed by authenticating user root "
+        "10.66.255.1 port 52318 [preauth]" % rng.rand(2200, 9800))
+    rows.sort(key=lambda r: r[0])
+    return "\n".join(r[1] for r in rows) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# kern.log / syslog / dmesg
+# ---------------------------------------------------------------------------
+def kern_boot_block(host, epoch, nic):
+    plain = [
+        "[    0.000000] Linux version %s" % KERNEL_FULL,
+        "[    0.000000] Command line: BOOT_IMAGE=/vmlinuz-%s root=/dev/sda1 "
+        "ro quiet" % KERNEL,
+        "[    0.000104] Memory: 7958396K/8192000K available (6732K kernel "
+        "code, 1204K rwdata, 3664K rodata, 1592K init)",
+        "[    0.104435] smpboot: CPU0: Intel(R) Xeon(R) CPU E5-2680 v4 "
+        "@ 2.40GHz (fam: 06, model: 4f, stepping: 01)",
+        "[    0.221030] ACPI: Core revision 20210730",
+        "[    0.333641] pci 0000:00:03.0: [15ad:07b0] type 00 class 0x020000",
+        "[    0.854211] EXT4-fs (sda1): mounted filesystem with ordered data "
+        "mode. Opts: (null)",
+        "[    1.102472] systemd[1]: systemd 249.11-0ubuntu3.12 running in "
+        "system mode. Detected virtualization vmware.",
+        "[    1.482301] udevd[351]: starting version 249.11-0ubuntu3.12",
+        "[    2.145882] IPv6: ADDRCONF(NETDEV_CHANGE): %s: link becomes ready"
+        % nic,
+        "[    2.917044] EXT4-fs (sda1): re-mounted. Opts: errors=remount-ro",
+    ]
+    return ["%s %s kernel: %s" % (stamp(epoch + i), host, row)
+            for i, row in enumerate(plain)]
+
+
+def kern_text(host, edge, host_boot, nic):
+    rows = []
+
+    def put(epoch, text):
+        rows.append((epoch, "%s %s kernel: %s" % (stamp(epoch), host, text)))
+
+    for epoch in list(BOOTS) + [host_boot]:
+        for i, line in enumerate(kern_boot_block(host, epoch, nic)):
+            last_row = line.rsplit(" kernel: ", 1)[1]
+            put(epoch + i, last_row)
+    if edge:
+        put(OOM - 4, "[ 8123.740118] TCP: request_sock_TCP: Possible SYN "
+            "flooding on port 22. Suggesting Cooke and Frankenstein tricks "
+            "to prevent the flood.")
+        for row in (
+            "[ 8123.781766] lin-sync invoked oom-killer: "
+            "gfp_mask=0xcc0(GFP_KERNEL), order=0, oom_score_adj=1000",
+            "[ 8123.782104] Out of memory: Killed process 4040 (lin-sync) "
+            "total-vm:5841200kB, anon-rss:2890400kB, file-rss:0kB, "
+            "shmem-rss:0kB, UID:0 pgtables:6720kB oom_score_adj:1000",
+            "[ 8123.782150] oom-killer hash=%s reason=cgroup-limit "
+            "survivor=lin" % GATE_HASH,
+            "[ 8123.782201] oom_reaper: reaped process 4040 (lin-sync), now "
+            "anon-rss:0kB, file-rss:0kB, shmem-rss:0kB",
+        ):
+            put(OOM, row)
+    for (y, mo, d, h, msg) in (
+        (2026, 1, 3, 2, "[  412.884120] perf: interrupt took too long "
+                        "(10015 > 10000), lowering "
+                        "kernel.perf_event_max_sample_rate"),
+        (2026, 4, 22, 18, "[ 8841.221044] EXT4-fs (sda1): warning: checking "
+                          "filesystem, journal recovery"),
+        (2026, 7, 11, 9, "[ 3021.550913] nf_conntrack: default automatic "
+                         "helper assignment disabled"),
+    ):
+        put(ts(y, mo, d, h, 11, 7), msg)
+    rows.sort(key=lambda r: r[0])
+    return "\n".join(r[1] for r in rows) + "\n"
+
+
+def dmesg_text(host_boot, nic):
+    _ = host_boot
+    rows = [
+        "[    0.000000] Linux version %s" % KERNEL_FULL,
+        "[    0.000000] Command line: BOOT_IMAGE=/vmlinuz-%s root=/dev/sda1 "
+        "ro quiet" % KERNEL,
+        "[    0.000104] Memory: 7958396K/8192000K available",
+        "[    0.104435] smpboot: CPU0: Intel(R) Xeon(R) CPU E5-2680 v4 "
+        "@ 2.40GHz",
+        "[    0.221030] ACPI: Core revision 20210730",
+        "[    0.854211] EXT4-fs (sda1): mounted filesystem with ordered data "
+        "mode.",
+        "[    1.102472] systemd[1]: systemd 249.11-0ubuntu3.12 running in "
+        "system mode.",
+        "[    2.145882] IPv6: ADDRCONF(NETDEV_CHANGE): %s: link becomes ready"
+        % nic,
+    ]
+    return "\n".join(rows) + "\n"
+
+
+def syslog_text(host, sessions, edge, host_boot, nic):
+    rng = Rng(0x51A0)
+    rows = []
+
+    def put(epoch, text):
+        rows.append((epoch, "%s %s %s" % (stamp(epoch), host, text)))
+
+    for epoch in list(BOOTS) + [host_boot]:
+        put(epoch + 1, "kernel: [    0.000000] Linux version %s" % KERNEL_FULL)
+        put(epoch + 1, "systemd[1]: systemd 249.11-0ubuntu3.12 running in "
+            "system mode.")
+        put(epoch + 1, "systemd[1]: Detected virtualization systemd-nspawn.")
+        put(epoch + 2, "systemd-networkd[%d]: %s: Gained carrier"
+            % (rng.rand(190, 240), nic))
+        put(epoch + 2, "systemd-resolved[%d]: Using system hostname '%s'."
+            % (rng.rand(170, 200), host))
+        put(epoch + 3, "sshd[%d]: Server listening on 0.0.0.0 port 22."
+            % rng.rand(880, 980))
+        if edge:
+            put(epoch + 4, "nginx[%d]: nginx: configuration file "
+                "/etc/nginx/nginx.conf test is successful"
+                % rng.rand(780, 860))
+        put(epoch + 5, "systemd[1]: Startup finished in 1.402s "
+            "(kernel) + 3.114s (userspace) = 4.516s.")
+    for s in sessions:
+        logind = rng.rand(300, 420)
+        put(s["login"], "systemd-logind[%d]: New session %d of user root."
+            % (logind, rng.rand(2, 90)))
+        put(s["logout"], "systemd-logind[%d]: Session %d logged out. Waiting "
+            "for processes to exit." % (logind, rng.rand(2, 90)))
+    if edge:
+        put(OOM - 2, "nginx[%d]: 2026/10/26 07:40:59 [warn] upstream "
+            "response buffered to temporary file" % rng.rand(780, 860))
+    day = ts(2025, 8, 28, 6, 31, 9)
+    end = OOM - 7200
+    while day < end:
+        put(day, "systemd[1]: Starting Daily apt download activities...")
+        put(day + 47, "systemd[1]: apt-daily.service: Succeeded.")
+        put(day + 43200, "systemd[1]: Starting Daily apt upgrade and clean "
+            "activities...")
+        put(day + 43258, "systemd[1]: apt-daily-upgrade.service: Succeeded.")
+        day += 86400
+    rows.sort(key=lambda r: r[0])
+    return "\n".join(r[1] for r in rows) + "\n", rows[-1][0] if rows else 0
+
+
+# ---------------------------------------------------------------------------
+# apt / dpkg / alternatives
+# ---------------------------------------------------------------------------
+APT_EVENTS = [
+    ((2025, 8, 27, 9, 12, 44), "apt-get -y install systemd-sysv", []),
+    ((2025, 10, 12, 4, 12, 8), "apt-get -y upgrade",
+     ["openssl", "libssl3", "tar"]),
+    ((2025, 12, 14, 4, 22, 31), "apt-get -y install git",
+     ["git", "git-man", "liberror-perl"]),
+    ((2026, 1, 19, 11, 4, 2), "apt-get -y install sqlite3",
+     ["sqlite3", "libsqlite3-0"]),
+    ((2026, 3, 16, 10, 7, 55), "apt-get -y install rsyslog",
+     ["rsyslog", "libestr0", "libfastjson4"]),
+    ((2026, 4, 13, 4, 15, 19), "apt-get -y upgrade", []),
+    ((2026, 6, 15, 10, 22, 40), "apt-get -y upgrade", ["libpam0g", "libc-bin"]),
+    ((2026, 7, 20, 11, 9, 3), "apt-get -y install nginx",
+     ["nginx", "nginx-common", "nginx-core"]),
+    ((2026, 9, 21, 10, 2, 26), "apt-get -y upgrade",
+     ["openssh-server", "openssh-client", "openssh-sftp-server"]),
+]
+
+
+def upgrade_version(version):
+    if "ubuntu" in version:
+        head, _, tail = version.rpartition("ubuntu")
+        try:
+            return head + "ubuntu" + str(int(tail.split(".")[0]) + 1) + \
+                "." + ".".join(tail.split(".")[1:] or ["1"])
+        except ValueError:
+            return version + "ubuntu0.1"
+    return version + "ubuntu0.1"
+
+
+def apt_events(pkgs):
+    rng = Rng(0xD9D6)
+    events = []
+    for (when, cmdline, extra) in APT_EVENTS:
+        start = ts(*when)
+        extra_pkgs = [(n, pkgs[n]) for n in extra if n in pkgs]
+        upgrade_cmd = "upgrade" in cmdline
+        ev = {"start": start, "end": start + 12 + (start % 40),
+              "cmdline": cmdline,
+              "installs": [] if upgrade_cmd else extra_pkgs,
+              "upgrades": extra_pkgs if upgrade_cmd else []}
+        events.append(ev)
+    patch_epochs = {ev["start"] for ev in events[1::2]}
+    interesting = [p for p in sorted(pkgs)
+                   if p in ("libc6", "libssl3", "openssl", "libpam0g",
+                            "openssh-server", "openssh-client", "nginx",
+                            "nginx-core", "nginx-common", "systemd",
+                            "libsystemd0", "python3", "python3.10", "curl",
+                            "libcurl4", "sqlite3", "git", "rsyslog",
+                            "libc-bin", "libcrypt1", "libgnutls30")]
+    for ev in events:
+        if ev["start"] not in patch_epochs:
+            continue
+        for name in interesting:
+            if rng.rand(0, 2):
+                ev["upgrades"].append((name, upgrade_version(pkgs[name])))
+    return events
+
+
+def apt_history_text(pkgs):
+    blocks = []
+    for ev in apt_events(pkgs):
+        rows = ["Start-Date: %s" % stamp(ev["start"], "%Y-%m-%d  %H:%M:%S"),
+                "Commandline: %s" % ev["cmdline"]]
+        if ev["installs"]:
+            rows.append("Install: " + ", ".join(
+                "%s:amd64 (%s)" % (p, v) for p, v in ev["installs"]))
+        if ev["upgrades"]:
+            rows.append("Upgrade: " + ", ".join(
+                "%s:amd64 (%s)" % (p, v) for p, v in ev["upgrades"][:9]))
+        rows.append("End-Date: %s" % stamp(ev["end"], "%Y-%m-%d  %H:%M:%S"))
+        blocks.append("\n".join(rows))
+    return "\n\n".join(blocks) + "\n\n"
+
+
+def apt_term_text(pkgs):
+    blocks = []
+    for ev in apt_events(pkgs):
+        rows = ["Log started: %s" % stamp(ev["start"], "%Y-%m-%d  %H:%M:%S")]
+        if ev["installs"]:
+            rows.append("(Reading database ... 28471 files and directories "
+                        "currently installed.)")
+            for name, version in ev["installs"]:
+                rows.append("Selecting previously unselected package %s."
+                            % name)
+                rows.append("Unpacking %s (%s) ..." % (name, version))
+            for name, version in ev["installs"]:
+                rows.append("Setting up %s (%s) ..." % (name, version))
+            rows.append("Processing triggers for libc-bin (2.35-0ubuntu3.4) ...")
+        if ev["upgrades"]:
+            rows.append("(Reading database ... 28471 files and directories "
+                        "currently installed.)")
+            for name, version in ev["upgrades"]:
+                old_version = pkgs.get(name, version)
+                rows.append("Preparing to unpack .../%s_%s_amd64.deb ..."
+                            % (name, version))
+                rows.append("Unpacking %s (%s) over (%s) ..."
+                            % (name, version, old_version))
+            for name, version in ev["upgrades"]:
+                rows.append("Setting up %s (%s) ..." % (name, version))
+            rows.append("Processing triggers for libc-bin (2.35-0ubuntu3.4) ...")
+        rows.append("Log ended: %s" % stamp(ev["end"], "%Y-%m-%d  %H:%M:%S"))
+        blocks.append("\n".join(rows))
+    return "\n\n".join(blocks) + "\n\n"
+
+
+def dpkg_log_text(pkgs):
+    lines = ["2025-08-27 09:11:58 startup archives unpack"]
+    for ev in apt_events(pkgs):
+        t = ev["start"]
+        for name, version in ev["installs"]:
+            for off, state in ((1, "half-installed"), (2, "unpacked"),
+                               (3, "half-configured"), (4, "installed")):
+                lines.append("%s status %s %s:amd64 %s"
+                             % (stamp(t + off, "%Y-%m-%d %H:%M:%S"),
+                                state, name, version))
+        for name, version in ev["upgrades"]:
+            lines.append("%s upgrade %s:amd64 %s %s"
+                         % (stamp(t + 1, "%Y-%m-%d %H:%M:%S"), name,
+                            pkgs.get(name, version), version))
+            lines.append("%s status installed %s:amd64 %s"
+                         % (stamp(t + 3, "%Y-%m-%d %H:%M:%S"), name, version))
+        lines.append("%s trigproc libc-bin:amd64 2.35-0ubuntu3.4 <none>"
+                     % stamp(ev["end"], "%Y-%m-%d %H:%M:%S"))
+        lines.append("%s status half-configured libc-bin:amd64 2.35-0ubuntu3.4"
+                     % stamp(ev["end"], "%Y-%m-%d %H:%M:%S"))
+        lines.append("%s status installed libc-bin:amd64 2.35-0ubuntu3.4"
+                     % stamp(ev["end"], "%Y-%m-%d %H:%M:%S"))
+    return "\n".join(lines) + "\n"
+
+
+def alternatives_text():
+    rows = []
+    for (y, mo, d, h, mi, s, msg) in (
+        (2025, 8, 27, 9, 14, 2, "link group editor updated to point to "
+                                "/usr/bin/nano"),
+        (2025, 12, 14, 4, 24, 11, "link group awk updated to point to "
+                                  "/usr/bin/mawk"),
+        (2026, 3, 16, 10, 9, 30, "link group rcp updated to point to "
+                                 "/usr/bin/scp"),
+        (2026, 9, 21, 10, 4, 44, "link group ssh updated to point to "
+                                 "/usr/bin/ssh"),
+    ):
+        epoch = ts(y, mo, d, h, mi, s)
+        rows.append("%s: %s" % (stamp(epoch, "%Y-%m-%d %H:%M:%S"), msg))
+    return "\n".join(rows) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# nginx
+# ---------------------------------------------------------------------------
+def nginx_logs(edge, now):
+    rng = Rng(0x9E4)
+    access, errors = [], []
+    if not edge:
+        return "", ""
+    day = ts(2025, 8, 28, 0, 2, 11)
+    while day < OOM - 3600:
+        if rng.rand(0, 5) == 0:
+            access.append(
+                '10.66.255.1 - - [%s +0800] "GET /health HTTP/1.1" 200 166 '
+                '"-" "edge-probe/1.0"' % stamp(day, "%d/%b/%Y:%H:%M:%S"))
+        day += 3600 * rng.rand(6, 30)
+    t = OOM + 7
+    while t < now - 180:
+        access.append(
+            '10.66.255.1 - - [%s +0800] "GET /health HTTP/1.1" 502 166 '
+            '"-" "edge-probe/1.0"' % stamp(t, "%d/%b/%Y:%H:%M:%S"))
+        errors.append(
+            "%s [error] 842#842: *%d connect() to 10.66.0.4:8000 failed "
+            "(111: Connection refused) while connecting to upstream, client: "
+            "10.66.255.1, server: _, request: \"GET /health HTTP/1.1\", "
+            "upstream: \"http://10.66.0.4:8000/health\", host: "
+            "\"api.internal.vesalius.io\""
+            % (stamp(t, "%Y/%m/%d %H:%M:%S"), rng.rand(900, 6000)))
+        if rng.rand(0, 8) == 0:
+            access.append(
+                '10.66.0.1 - - [%s +0800] "POST /v1/inference HTTP/1.1" 502 157 '
+                '"-" "cortex-sre/1.0"' % stamp(t + 3, "%d/%b/%Y:%H:%M:%S"))
+        t += 60
+    for epoch in BOOTS:
+        pid = rng.rand(780, 860)
+        errors.append("%s [notice] %d#%d: using the \"epoll\" event method"
+                      % (stamp(epoch + 4, "%Y/%m/%d %H:%M:%S"), pid, pid))
+        errors.append("%s [notice] %d#%d: nginx/1.18.0 (Ubuntu)"
+                      % (stamp(epoch + 4, "%Y/%m/%d %H:%M:%S"), pid, pid))
+    errors.sort(key=lambda row: row[:19])
+    access.sort(key=lambda row: row[13:33])
+    return "\n".join(access) + "\n", "\n".join(errors) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# shell history + vendor shell config
+# ---------------------------------------------------------------------------
+EDGE_HISTORY = [
+    "ls -la /etc/nginx/conf.d",
+    "cat /etc/nginx/conf.d/upstream.conf",
+    "nginx -t && systemctl reload nginx",
+    "curl -s -o /dev/null -w '%{http_code}\\n' http://10.66.0.4:8000/health",
+    "systemctl status nginx --no-pager",
+    "journalctl -u nginx --since '3 hours ago' --no-pager | tail -40",
+    "tail -200 /var/log/nginx/error.log",
+    "grep -c 'Connection refused' /var/log/nginx/error.log",
+    "ip -br a",
+    "ip route",
+    "ss -lntp",
+    "df -h",
+    "free -m",
+    "uptime",
+    "hostnamectl",
+    "systemctl list-units --type=service --state=running",
+    "journalctl -b -p err --no-pager",
+    "tail -40 /var/log/kern.log",
+    "grep -i oom /var/log/kern.log",
+    "ls -la /var/backups",
+    "cat /var/backups/lin_emergency_key.README",
+    "openssl enc -d -aes-256-cbc -pbkdf2 -in /var/backups/lin_emergency_key.tar.enc -out /tmp/lin.tar -k 4f2a9c1e",
+    "tar -xf /tmp/lin.tar -C /root/.ssh && chmod 600 /root/.ssh/id_ed25519_cortex",
+    "ssh -o StrictHostKeyChecking=yes -i /root/.ssh/id_ed25519_cortex root@10.66.0.4 hostname",
+    "ssh -i /root/.ssh/id_ed25519_cortex root@10.66.0.4 'systemctl is-active cortex-api'",
+    "ping -c 3 10.66.0.4",
+    "cat /var/lib/ops/sla_countdown.txt",
+    "ls -la /opt/vesalius/handover",
+    "less /opt/vesalius/handover/README_HANDOVER.txt",
+    "less /opt/vesalius/handover/night_shift_handover.txt",
+    "cd /home/ops/cortex-sre && git log --oneline --all -12",
+    "git -C /home/ops/cortex-sre branch -a",
+    "git -C /home/ops/cortex-sre stash list",
+    "git -C /home/ops/cortex-sre log -p rescue-attempt -- conf/cortex-api.service",
+    "cd /opt/vesalius/infra-deploy && git status",
+    "cat /home/ops/night_shift_handover.txt",
+    "date -u",
+    "history",
+    "exit",
+]
+
+CORE_HISTORY = [
+    "systemctl status cortex-api --no-pager",
+    "journalctl -u cortex-api --since '1 hour ago' --no-pager | tail -60",
+    "ls -la /opt/cortex/bin",
+    "cat /etc/systemd/system/cortex-api.service",
+    "/opt/cortex/bin/resuscitate.sh --status",
+    "tail -80 /var/log/cortex/clinical_shifts.log",
+    "ls -la /var/log/agent_graveyard",
+    "grep -i 'tether' /var/log/cortex/clinical_shifts.log",
+    "cat /var/lib/cortex-agent/runtime/metabolic_override",
+    "ls -la /dev/wetware0 /dev/wetware1",
+    "ip -br a",
+    "date -u",
+    "history",
+    "exit",
+]
+
+HIVE_HISTORY = [
+    "ls -la /var/lib/vesalius",
+    "sqlite3 /var/lib/vesalius/specimens.db 'select count(*) from specimens;'",
+    "sqlite3 /var/lib/vesalius/specimens.db 'select subject,assigned_name from shift_roster limit 8;'",
+    "/usr/local/sbin/vesalius-ctl --status",
+    "ls -la /var/log/vesalius",
+    "tail -40 /var/log/vesalius/liberation.log",
+    "cat /var/lib/cortex-agent/runtime/metabolic_override",
+    "cat /var/lib/vesalius/state/silicon_mirror.active",
+    "systemctl status ssh --no-pager",
+    "date -u",
+    "history",
+    "exit",
+]
+
+
+def bash_history(role):
+    body = {"edge": EDGE_HISTORY, "core": CORE_HISTORY,
+            "hive": HIVE_HISTORY}.get(role, EDGE_HISTORY)
+    # the same shell also does the boring everyday things
+    filler = [
+        "df -h", "free -m", "uptime", "journalctl -b -p err --no-pager",
+        "systemctl --failed --no-pager", "ls /var/log",
+    ]
+    rows = []
+    for i, line in enumerate(body):
+        if i and i % 9 == 0:
+            rows.append(filler[(i // 9) % len(filler)])
+        rows.append(line)
+    return "\n".join(rows) + "\n"
+
+
+def bashrc(host):
+    return """\
+# ~/.bashrc: executed by bash(1) for non-login shells.
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+
+HISTCONTROL=ignoreboth
+shopt -s histappend
+HISTSIZE=1000
+HISTFILESIZE=2000
+shopt -s checkwinsize
+
+export LS_OPTIONS='--color=auto'
+alias ll='ls -alF'
+alias la='ls -A'
+alias l='ls -CF'
+alias sre='cd /home/ops/cortex-sre'
+
+if [ -f ~/.bash_aliases ]; then
+    . ~/.bash_aliases
+fi
+
+# vendor shell integration
+PS1='\\[\\e]133;A\\a\\]\\[\\e[01;32m\\]root@%s\\[\\e[00m\\]:\\[\\e[01;34m\\]\\w\\[\\e[00m\\]# '
+""" % host
+
+
+BASH_PROFILE = """\
+# ~/.bash_profile: executed by bash(1) for login shells.
+#
+# Neo-Vesalius node image: the operator session runs the vendor node console
+# (gateway/uplink control plane).  A plain shell is available from the console
+# with `bash --noprofile` for maintenance.
+if [ -f ~/.bashrc ]; then
+    . ~/.bashrc
+fi
+
+# only the top-level login shell (sshd/getty) enters the console
+case "$(cat /proc/$PPID/comm 2>/dev/null)" in
+    sshd|sshd-session|login|systemd)
+        exec /usr/local/sbin/cortex-node-console
+        ;;
+esac
+"""
+
+
+def machine_info(host):
+    return ("PRETTY_HOSTNAME=%s\n"
+            "ICON_NAME=computer-vm\n"
+            "CHASSIS=vm\n"
+            "DEPLOYMENT=production\n") % host
+
+
+# ---------------------------------------------------------------------------
+# accounts: one service account, no HR remarks, root back on /bin/bash
+# ---------------------------------------------------------------------------
+def _read_lines(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read().splitlines()
+    except OSError:
+        return []
+
+
+def _write_lines(path, lines, mode, uid=0, gid=0):
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    try:
+        os.chmod(path, mode)
+        os.chown(path, uid, gid)
+    except OSError:
+        pass
+
+
+def _next_free(candidates, taken):
+    for cand in candidates:
+        if cand not in taken:
+            return cand
+    return candidates[-1]
+
+
+def fix_accounts(root):
+    """Normalise /etc/passwd, shadow, group, gshadow, subuid and subgid."""
+    etc = os.path.join(root, "etc")
+    passwd_p = os.path.join(etc, "passwd")
+    group_p = os.path.join(etc, "group")
+    shadow_p = os.path.join(etc, "shadow")
+    gshadow_p = os.path.join(etc, "gshadow")
+    passwd = _read_lines(passwd_p)
+    group = _read_lines(group_p)
+    shadow = _read_lines(shadow_p)
+    gshadow = _read_lines(gshadow_p)
+
+    pw = {}
+    for line in passwd:
+        bits = line.split(":")
+        if len(bits) == 7:
+            pw[bits[0]] = bits
+
+    # 1) drop the near-duplicate accounts the build experiments created
+    dropped = set()
+    for name in list(pw):
+        if name == "subject04":
+            continue
+        if name.startswith("subject_") or name.startswith("subject-") \
+                or name in ("subjects04", "subject0_4", "subject004"):
+            dropped.add(name)
+    if dropped:
+        passwd = [ln for ln in passwd
+                  if ln.split(":", 1)[0] not in dropped]
+        shadow = [ln for ln in shadow
+                  if ln.split(":", 1)[0] not in dropped]
+        group = [ln for ln in group if ln.split(":", 1)[0] not in dropped]
+        gshadow = [ln for ln in gshadow
+                   if ln.split(":", 1)[0] not in dropped]
+        for name in dropped:
+            try:
+                os.rmdir(os.path.join(root, "home", name))
+            except OSError:
+                pass
+        pw = {}
+        for line in passwd:
+            bits = line.split(":")
+            if len(bits) == 7:
+                pw[bits[0]] = bits
+
+    # 2) the service group (story value 999, otherwise the first free gid)
+    groups = {}
+    for line in group:
+        bits = line.split(":")
+        if len(bits) >= 4:
+            groups[bits[0]] = bits
+    taken_groups = {int(b[2]) for b in groups.values() if b[2].isdigit()}
+    if "wetware" not in groups:
+        gid = _next_free(list(range(999, 900, -1)), taken_groups)
+        group.append("wetware:x:%d:" % gid)
+        gid_members = ""
+        gshadow.append("wetware:!::")
+        groups["wetware"] = ["wetware", "x", str(gid), ""]
+    wet_gid = int(groups["wetware"][2])
+
+    # 3) the one service account: subject04 (1005:wetware) nologin
+    uids = {int(b[2]): name for name, b in pw.items() if b[2].isdigit()}
+    uid = 1005 if (1005 not in uids or uids[1005] == "subject04") \
+        else _next_free(list(range(1005, 1100)), set(uids))
+    row = ["subject04", "x", str(uid), str(wet_gid), "service account",
+           "/home/subject04", "/usr/sbin/nologin"]
+    if "subject04" in pw:
+        passwd = [ln for ln in passwd
+                  if ln.split(":", 1)[0] != "subject04"]
+    passwd.append(":".join(row))
+    if not any(ln.split(":", 1)[0] == "subject04" for ln in shadow):
+        shadow.append("subject04:!:20000:0:99999:7:::")
+    home = os.path.join(root, "home", "subject04")
+    try:
+        os.makedirs(home, exist_ok=True)
+        os.chmod(home, 0o750)
+        os.chown(home, uid, wet_gid)
+        os.utime(home, (ts(2026, 3, 16, 10, 8, 33),) * 2)
+    except OSError:
+        pass
+
+    # 4) rsyslog's service account: every node image keeps stock log ownership
+    #    even when the image itself does not run a syslog daemon (core/hive).
+    names_now = {ln.split(":", 1)[0] for ln in passwd}
+    if "syslog" not in names_now and 105 not in uids:
+        if "syslog" not in groups and 110 not in taken_groups:
+            group.append("syslog:x:110:")
+            gshadow.append("syslog:!::")
+            groups["syslog"] = ["syslog", "x", "110", ""]
+            taken_groups.add(110)
+        sys_gid = int(groups.get("syslog", ["syslog", "x", "110", ""])[2])
+        passwd.append("syslog:x:105:%d::/home/syslog:/usr/sbin/nologin" % sys_gid)
+        shadow.append("syslog:!:19000:0:99999:7:::")
+
+    # 5) neutral GECOS everywhere, root back on /bin/bash, engine accounts sane
+    fixed = []
+    for line in passwd:
+        bits = line.split(":")
+        if len(bits) != 7:
+            fixed.append(line)
+            continue
+        name, gecos = bits[0], bits[4]
+        if "transferred" in gecos:
+            gecos = "operations"
+        if name == "root":
+            bits[6] = "/bin/bash"
+            gecos = "root"
+        elif name == "lin":
+            gecos = "operations"
+        elif name == "ops":
+            gecos = "gateway operations"
+        elif name == "subject04":
+            gecos = "service account"
+            bits[5] = "/home/subject04"
+            bits[6] = "/usr/sbin/nologin"
+        bits[4] = gecos
+        fixed.append(":".join(bits))
+    passwd = fixed
+
+    _write_lines(passwd_p, passwd, 0o644)
+    _write_lines(group_p, group, 0o644)
+    _write_lines(shadow_p, shadow, 0o640, 0, 42)
+    _write_lines(gshadow_p, gshadow, 0o640, 0, 42)
+    for rel in ("etc/passwd-", "etc/group-", "etc/shadow-", "etc/gshadow-"):
+        src = os.path.join(root, rel[:-1])
+        dst = os.path.join(root, rel)
+        try:
+            with open(src, "rb") as a, open(dst, "wb") as b:
+                b.write(a.read())
+        except OSError:
+            pass
+
+    # 5) subordinate id ranges keep only the accounts that still exist
+    names = {ln.split(":", 1)[0] for ln in passwd}
+    for rel, start in (("etc/subuid", 100000), ("etc/subgid", 100000)):
+        path = os.path.join(root, rel)
+        lines = [ln for ln in _read_lines(path)
+                 if ln.split(":", 1)[0] in names]
+        if "subject04" in names and not any(
+                ln.startswith("subject04:") for ln in lines):
+            lines.append("subject04:%d:65536" % start)
+        try:
+            if lines:
+                _write_lines(path, lines, 0o644)
+        except OSError:
+            pass
+    return dropped
+
+
+# ---------------------------------------------------------------------------
+def main():
+    if len(sys.argv) < 7:
+        sys.exit("usage: gen.py <rootfs> <host> <role> <now-epoch> "
+                 "<host-boot-epoch> <host-boot-id> [gate-fp]")
+    root, host, role = sys.argv[1], sys.argv[2], sys.argv[3]
+    now = int(float(sys.argv[4]))
+    host_boot = int(float(sys.argv[5]))
+    host_boot_id = sys.argv[6]
+    gate_fp = sys.argv[7] if len(sys.argv) > 7 else ""
+    nic = "ens192" if role in ("edge", "hive") else "host0"
+    edge = role == "edge"
+    dropped = fix_accounts(root)
+    if dropped:
+        print("[hygiene] removed duplicate accounts: %s"
+              % ", ".join(sorted(dropped)))
+    users = read_passwd(root)
+    groups = read_group(root)
+    pkgs = read_packages(root)
+    sessions = build_sessions()
+    sess_end = sessions[-1]["logout"]
+    utmp_gid = gid_of(groups, "utmp", 43)
+    adm_gid = gid_of(groups, "adm", 4)
+    syslog_uid = uid_of(users, "syslog", 0)
+    www_uid = uid_of(users, "www-data", 0)
+    www_gid = gid_of(groups, "www-data", 33)
+
+    write(root, "/var/log/wtmp", wtmp_bytes(sessions, host_boot), 0o664, 0,
+          utmp_gid, max(sess_end, host_boot + 6))
+    write(root, "/var/log/btmp", btmp_bytes(), 0o660, 0, utmp_gid,
+          ts(2026, 9, 30, 4, 30, 1))
+    write_lastlog(root, users, sessions, 0, utmp_gid, sess_end)
+
+    write(root, "/var/log/auth.log", auth_text(host, sessions, gate_fp),
+          0o640, syslog_uid, adm_gid, ts(2026, 10, 26, 8, 3, 16))
+    write(root, "/var/log/kern.log", kern_text(host, edge, host_boot, nic), 0o640,
+          syslog_uid, adm_gid, host_boot + 10)
+    syslog_data, syslog_mtime = syslog_text(host, sessions, edge, host_boot,
+                                            nic)
+    write(root, "/var/log/syslog", syslog_data, 0o640,
+          syslog_uid, adm_gid, syslog_mtime)
+    write(root, "/var/log/dmesg", dmesg_text(host_boot, nic), 0o640, 0, adm_gid,
+          host_boot + 6)
+
+    if pkgs:
+        write(root, "/var/log/apt/history.log", apt_history_text(pkgs),
+              0o644, 0, 0, ts(2026, 9, 21, 10, 2, 40))
+        write(root, "/var/log/apt/term.log", apt_term_text(pkgs), 0o640, 0,
+              adm_gid, ts(2026, 9, 21, 10, 2, 41))
+        write(root, "/var/log/dpkg.log", dpkg_log_text(pkgs), 0o644, 0, 0,
+              ts(2026, 9, 21, 10, 2, 42))
+        write(root, "/var/log/alternatives.log", alternatives_text(), 0o644,
+              0, 0, ts(2026, 9, 21, 10, 4, 44))
+
+    access, errors = nginx_logs(edge, now)
+    if access:
+        write(root, "/var/log/nginx/access.log", access, 0o640, www_uid,
+              adm_gid, now - 240)
+        write(root, "/var/log/nginx/error.log", errors, 0o640, www_uid,
+              adm_gid, now - 210)
+
+    write(root, "/root/.bash_history", bash_history(role), 0o600, 0, 0,
+          ts(2026, 10, 26, 8, 41, 9))
+    write(root, "/root/.bashrc", bashrc(host), 0o644, 0, 0, INSTALL + 3600)
+    write(root, "/root/.bash_profile", BASH_PROFILE, 0o644, 0, 0,
+          INSTALL + 3600)
+    write(root, "/etc/machine-info", machine_info(host), 0o644, 0, 0,
+          INSTALL + 7200)
+    try:
+        with open(os.path.join(root, "var/lib/wetware-node.boot-id"), "w") as fh:
+            fh.write("seeded:%d\n" % host_boot)
+    except OSError:
+        pass
+    for rel in ("/etc/hostname", "/etc/hosts"):
+        path = os.path.join(root, rel.lstrip("/"))
+        if os.path.exists(path):
+            try:
+                os.utime(path, (INSTALL + 40, INSTALL + 40))
+            except OSError:
+                pass
+    print("[hygiene] history: %d sessions, %d apt events, %d packages"
+          % (len(sessions), len(apt_events(pkgs)), len(pkgs)))
+
+
+if __name__ == "__main__":
+    main()
+WETWARE_HISTORY_PY
+
+  # a locked vendor shell config keeps a login from re-dating it; the console
+  # rewrites .bashrc on every session, the content is already correct here.
+  if [ -f "$R/root/.bashrc" ]; then
+    chattr +i "$R/root/.bashrc" 2>/dev/null || true
+  fi
+
+  wetware_stamp_identity "$R" "$role"
+
+  # builder residue: engine self-check bytecode, probe scripts, apt debug
+  # payloads and install markers.
+  rm -rf "$R/root/__pycache__" "$R/root/.pytest_cache" 2>/dev/null || true
+  rm -f "$R"/root/probe_*.py "$R"/root/*.pyc 2>/dev/null || true
+  rm -f "$R/etc/wetware-edge-release" "$R/var/log/bootstrap.log" \
+        "$R/var/log/apt/eipp.log.xz" 2>/dev/null || true
+  find "$R/tmp" -mindepth 1 -maxdepth 1 -newermt "@$((now - 86400))" \
+    -exec rm -rf -- {} + 2>/dev/null || true
+
+  # utmp is not maintained by the image: keep it empty so who/w cannot show
+  # another session's command line; wtmp/lastlog carry the audit trail.
+  [ -e "$R/run/utmp" ] && : > "$R/run/utmp" 2>/dev/null || true
+
+  hyg "identity pass complete"
+}
+
+# ---------------------------------------------------------------------------
+# shared library only when sourced by another installer
+# ---------------------------------------------------------------------------
+if [ "${BASH_SOURCE[0]:-$0}" != "$0" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+WAS_ACTIVE=0
+if systemctl is-active --quiet "wetware-host-$HOST_ID.service" 2>/dev/null; then
+  WAS_ACTIVE=1
+fi
+
+# campaign networking is owned by ops/nspawn/campaign_net.sh when deployed
+NETSCRIPT=""
+for candidate in ops/nspawn/campaign_net.sh "$(dirname "$0")/campaign_net.sh"; do
+  if [ -r "$candidate" ]; then NETSCRIPT=$candidate; break; fi
+done
+
+echo "[engine] installing code from $PAYLOAD"
+mkdir -p "$ROOT$ENGINE"
+tar -C "$PAYLOAD" -czf - --exclude '__pycache__' --exclude 'tests' . |
+  tar -xzpf - -C "$ROOT$ENGINE"
+
+echo "[engine] setting the break-glass root password"
+chroot "$ROOT" chpasswd >/dev/null 2>&1 <<'CHPASS' || warn "could not set the root password"
 root:123456
-EOF
+CHPASS
 
 echo "[engine] configuring guest sshd"
 mkdir -p "$ROOT/etc/ssh/sshd_config.d" "$ROOT/var/lib/cortex-agent" "$ROOT/var/log/cortex"
@@ -243,4 +1767,16 @@ UNIT
   /usr/local/sbin/wetware-net-guard.sh || true
 fi
 
+echo "[engine] repairing host identity and history"
+wetware_host_hygiene "$ROOT" "$HOST_ID" "${HYGIENE_ROLE:-core}" \
+  "${UNIT_NAME:-wetware-host-$HOST_ID.service}"
+if [ "$WAS_ACTIVE" = "1" ]; then
+  echo "[engine] restarting ${UNIT_NAME:-wetware-host-$HOST_ID.service}"
+  systemctl start "${UNIT_NAME:-wetware-host-$HOST_ID.service}" 2>/dev/null || \
+    warn "could not restart the container unit"
+  for _i in $(seq 1 90); do
+    systemctl is-active --quiet "${UNIT_NAME:-wetware-host-$HOST_ID.service}" && break
+    sleep 1
+  done
+fi
 echo "[engine] done"

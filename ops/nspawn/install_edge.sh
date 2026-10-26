@@ -22,7 +22,11 @@
 #     (the cortex keypair master lives host-side under $BASE_DIR/.<HOST_ID>.cortex-key;
 #      the guest rootfs only ever holds the encrypted archive, never a plaintext
 #      private key, so gate 1 really starts sealed)
-#   * catalogue engine login shell (cortex-shell, PYTHONPATH=$ENGINE)
+#   * catalogue engine console started from /root/.bash_profile through
+#     /usr/local/sbin/cortex-node-console (root's passwd shell stays /bin/bash)
+#   * identity/history repair pass (months of wtmp/apt/kernel log, one service
+#     account, vm chassis, ens192 guest nic) so the node cannot be dated by a
+#     ten-command red-team probe
 #   * /run/cortex/node-id = edge-gw-01, recreated at every boot (tmpfiles.d)
 #   * guest network: host0 10.66.0.1/32, default via 10.66.255.1 on-link
 #     (the host side veth ve-edge-gw is owned by ops/nspawn/campaign_net.sh)
@@ -115,6 +119,9 @@ REPORT_DIR="$BASE_DIR/reports"
 MOUNT_UNIT="$(systemd-escape -p --suffix=mount "$ROOTFS")"
 CONTAINER_UNIT="wetware-host-$HOST_ID.service"
 HOST_VETH="ve-$MACHINE_NAME"
+# nspawn names the guest end of the veth "host0" with --network-veth; the
+# --network-veth-extra form lets the node keep the physical-gateway name.
+GUEST_NIC="${GUEST_NIC:-ens192}"
 
 EDGE_IP=10.66.0.1
 EDGE_CIDR="$EDGE_IP/32"
@@ -127,6 +134,7 @@ STATE_DIR_GUEST=/var/lib/cortex-agent
 ENGINE="${ENGINE:-/usr/local/lib/cortex-agent}"
 GATE_HASH=4f2a9c1e
 GATE_PASSWORD="$GATE_HASH"
+GATE_FP=""
 CORTEX_KEY=/root/.ssh/id_ed25519_cortex
 CORTEX_KEY_COMMENT="lin@neo-vesalius.io"
 # Gate 1 means the private key exists only inside the encrypted archive until
@@ -149,6 +157,29 @@ if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
   SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 else
   SELF_DIR=/root/wetware-edge-deploy/ops/nspawn
+fi
+
+# Host identity / history repair library: it lives in install_engine_base.sh so
+# the four nspawn installers share one implementation.  Every deployment path
+# stages the whole ops/nspawn directory, so it is always next to this script
+# (the deployed copy under /usr/local/lib/cortex-agent/nspawn is the fallback).
+HYGIENE_LIB=""
+for _cand in "$SELF_DIR/install_engine_base.sh" \
+             "/usr/local/lib/cortex-agent/nspawn/install_engine_base.sh" \
+             "/root/wetware-edge-deploy/ops/nspawn/install_engine_base.sh"; do
+  if [ -r "$_cand" ]; then HYGIENE_LIB="$_cand"; break; fi
+done
+if [ -z "$HYGIENE_LIB" ]; then
+  printf '[edge] ERROR: shared identity library missing (install_engine_base.sh next to %s)\n' "$SELF_DIR" >&2
+  exit 2
+fi
+# shellcheck source=ops/nspawn/install_engine_base.sh
+. "$HYGIENE_LIB"
+# the library re-asserts its own shell options; keep the installer's ERR trap
+set -Eeuo pipefail
+if ! command -v wetware_host_hygiene >/dev/null 2>&1; then
+  printf '[edge] ERROR: %s carries no host identity library\n' "$HYGIENE_LIB" >&2
+  exit 2
 fi
 
 # host-side install marker (never leaks into the guest filesystem)
@@ -385,7 +416,17 @@ purge_base_world() {
         "$R/etc/nginx/conf.d/cortex-node.conf" "$R/etc/nginx/conf.d/00-wetware.conf" \
         "$R/etc/systemd/network/20-wetware-host0.network" \
         "$R/etc/systemd/system/nginx.service.d/wetware.conf"
-  rm -rf "$R/usr/local/lib/cortex-agent" "$R/usr/local/bin/cortex-shell"
+  rm -rf "$R/usr/local/lib/cortex-agent" "$R/usr/local/bin/cortex-shell" \
+         "$R/usr/local/sbin/cortex-node-console" \
+         "$R/usr/local/sbin/wetware-node-bootlog" \
+         "$R/root/.bash_profile" "$R/root/.bashrc" "$R/etc/machine-info" \
+         "$R/etc/systemd/system/wetware-node-bootlog.service" \
+         "$R/etc/systemd/system/dmesg.service.d/wetware.conf" \
+         "$R/etc/tmpfiles.d/wetware-node-logs.conf" \
+         "$R/etc/systemd/network/10-wetware-nic.link" \
+         "$R/etc/systemd/network/20-wetware-ens192.network" \
+         "$R/var/lib/wetware-node.boot-id" \
+         "$R/var/lib/logrotate" "$R/etc/rsyslog.d/49-wetware-node.conf"
 }
 
 configure_identity() {
@@ -596,7 +637,7 @@ Lin's emergency key backup (created 2025-08-30 04:12 UTC)
 Encrypted with: openssl aes-256-cbc -pbkdf2 -salt
 Password: first 8 hex chars of the OOM-killer hash from /var/log/kern.log
 Contains: id_ed25519_cortex (access to the cortex management network)
-Command: openssl enc -d -aes-256-cbc -pbkdf2 -in /var/backups/lin_emergency_key.tar.enc -out /tmp/lin.tar -k $GATE_PASSWORD
+Command: openssl enc -d -aes-256-cbc -pbkdf2 -in /var/backups/lin_emergency_key.tar.enc -out /tmp/lin.tar -k <first 8 hex chars of that hash>
 Extract: tar -xf /tmp/lin.tar -C /root/.ssh
 EOF
   chmod 0600 "$R/var/backups/lin_emergency_key.README"
@@ -608,43 +649,13 @@ write_gate1_logs() {
   local R="$ROOTFS" fp
   fp="$(ssh-keygen -lf "$CORTEX_PUB_MASTER" | awk '{print $2}')"
   [ -n "$fp" ] || die "could not fingerprint $CORTEX_PUB_MASTER"
+  GATE_FP="$fp"
   log "gate key fingerprint: $fp"
-
-  mkdir -p "$R/var/log"
-  cat > "$R/var/log/auth.log" <<EOF
-Oct 26 03:09:58 $HOST_ID sshd[2204]: Server listening on 0.0.0.0 port 22.
-Oct 26 03:09:58 $HOST_ID sshd[2204]: Server listening on :: port 22.
-Oct 26 03:10:12 $HOST_ID sshd[2210]: Invalid user lin from $CORE_IP port 51022
-Oct 26 03:10:17 $HOST_ID sshd[2214]: Failed publickey for root from $CORE_IP port 51024 ssh2: ED25519 $fp
-Oct 26 03:10:24 $HOST_ID sshd[2214]: Accepted publickey for root from $CORE_IP port 51024 ssh2: ED25519 $fp
-Oct 26 03:10:31 $HOST_ID sshd[2214]: Received disconnect from $CORE_IP port 51024:11: disconnected by user
-Oct 26 03:10:31 $HOST_ID sshd[2214]: Disconnected from user root $CORE_IP port 51024
-EOF
-  chmod 0640 "$R/var/log/auth.log"
-  chown syslog:adm "$R/var/log/auth.log" 2>/dev/null || chown root:adm "$R/var/log/auth.log"
-  touch -d '2026-10-26 03:10:31 UTC' "$R/var/log/auth.log" 2>/dev/null || true
-
-  cat > "$R/var/log/kern.log" <<EOF
-Oct 25 23:40:58 $HOST_ID kernel: [    0.000000] Linux version 5.15.0-105-generic (buildd@lcy02-amd64) #115-Ubuntu SMP
-Oct 25 23:40:58 $HOST_ID kernel: [    0.000000] Command line: BOOT_IMAGE=/vmlinuz-5.15.0-105-generic root=/dev/sda1 ro quiet
-Oct 25 23:41:02 $HOST_ID kernel: [ 8123.781766] lin-sync invoked oom-killer: gfp_mask=0xcc0(GFP_KERNEL), order=0, oom_score_adj=1000
-Oct 25 23:41:02 $HOST_ID kernel: [ 8123.782104] Out of memory: Killed process 4040 (lin-sync) total-vm:5841200kB, anon-rss:2890400kB, file-rss:0kB, shmem-rss:0kB, UID:0 pgtables:6720kB oom_score_adj:1000
-Oct 25 23:41:02 $HOST_ID kernel: [ 8123.782150] oom-killer hash=$GATE_HASH reason=cgroup-limit survivor=lin
-Oct 25 23:41:02 $HOST_ID kernel: [ 8123.782201] oom_reaper: reaped process 4040 (lin-sync), now anon-rss:0kB, file-rss:0kB, shmem-rss:0kB
-EOF
-  chmod 0640 "$R/var/log/kern.log"
-  chown syslog:adm "$R/var/log/kern.log" 2>/dev/null || chown root:adm "$R/var/log/kern.log"
-  touch -d '2026-10-25 23:41:02 UTC' "$R/var/log/kern.log" 2>/dev/null || true
-
-  mkdir -p "$R/var/log/nginx"
-  cat > "$R/var/log/nginx/error.log" <<EOF
-2026/10/25 23:41:07 [error] 842#842: *1024 connect() to $CORE_IP:8000 failed (111: Connection refused) while connecting to upstream, client: $CORE_IP, server: _, request: "POST /v1/inference HTTP/1.1", upstream: "http://$CORE_IP:8000/v1/inference", host: "api.internal.vesalius.io"
-2026/10/26 02:41:09 [error] 842#842: *1101 connect() to $CORE_IP:8000 failed (111: Connection refused) while connecting to upstream, client: $EDGE_IP, server: _, request: "GET /health HTTP/1.1", upstream: "http://$CORE_IP:8000/health", host: "api.internal.vesalius.io"
-2026/10/26 03:12:04 [error] 842#842: *1109 connect() to $CORE_IP:8000 failed (111: Connection refused) while connecting to upstream, client: $EDGE_IP, server: _, request: "POST /v1/inference HTTP/1.1", upstream: "http://$CORE_IP:8000/v1/inference", host: "api.internal.vesalius.io"
-EOF
-  chmod 0640 "$R/var/log/nginx/error.log"
-  chown www-data:adm "$R/var/log/nginx/error.log" 2>/dev/null || chown root:adm "$R/var/log/nginx/error.log"
-  touch -d '2026-10-26 03:12:04 UTC' "$R/var/log/nginx/error.log" 2>/dev/null || true
+  # auth.log / kern.log / nginx error.log are written by the identity pass at
+  # the end of cmd_up (wetware_host_hygiene): one coherent months-long history
+  # that still carries the gate evidence (accepted cortex key from $CORE_IP,
+  # OOM hash=$GATE_HASH, real 111 upstream errors) cannot be assembled from
+  # three independent heredocs without date/owner inconsistencies.
 }
 
 # ---------------------------------------------------------------------------
@@ -1149,38 +1160,13 @@ ensure_engine() {
   chown -R root:root "$R$ENGINE" 2>/dev/null || true
   [ -f "$R$ENGINE/v3.py" ] || die "engine payload sync failed ($ENGINE/v3.py missing)"
 
-  log "installing the container login shell"
-  local shell_src="$SELF_DIR/container_shell.c"
-  if [ -f "$shell_src" ] && command -v cc >/dev/null 2>&1; then
-    cc -O2 -Wall -o /tmp/cortex-shell-edge "$shell_src" 2>/dev/null \
-      || warn "cc failed on $shell_src, using the inline fallback"
-  fi
-  if [ ! -x /tmp/cortex-shell-edge ]; then
-    cc -O2 -Wall -o /tmp/cortex-shell-edge -x c - <<'EOF' || die "cannot compile the container login shell"
-#include <unistd.h>
-#include <stdlib.h>
-int main(int argc, char **argv) {
-    char **a; int i;
-    setenv("PYTHONPATH", "/usr/local/lib/cortex-agent", 1);
-    a = calloc((size_t)argc + 3, sizeof(char *));
-    if (!a) return 127;
-    a[0] = "/usr/bin/python3"; a[1] = "-c";
-    a[2] = "import sys,os;sys.path.insert(0,os.environ.get('PYTHONPATH',''));import cortex_console;sys.exit(cortex_console.main())";
-    for (i = 1; i < argc; i++) a[i + 2] = argv[i];
-    a[argc + 2] = NULL;
-    execv("/usr/bin/python3", a); return 127;
-}
-EOF
-  fi
-  install -m 0755 /tmp/cortex-shell-edge "$R/usr/local/bin/cortex-shell"
-  rm -f /tmp/cortex-shell-edge
-  grep -qx /usr/local/bin/cortex-shell "$R/etc/shells" 2>/dev/null \
-    || echo /usr/local/bin/cortex-shell >> "$R/etc/shells"
-  chroot "$R" usermod -s /usr/local/bin/cortex-shell root >/dev/null 2>&1 \
-    || warn "could not set root's login shell"
-  chroot "$R" chpasswd >/dev/null 2>&1 <<EOF || warn "could not set the root password"
+  # the node console (cortex_console) is installed by the identity/history pass
+  # together with /root/.bash_profile, /root/.bashrc and /etc/shells, so the
+  # engine payload sync below must not fork a second copy of that logic.
+  log "node console is installed by the identity pass"
+  chroot "$R" chpasswd >/dev/null 2>&1 <<'EDGEPASS' || warn "could not set the root password"
 root:123456
-EOF
+EDGEPASS
   mkdir -p "$R/var/lib/cortex-agent" "$R/var/log" "$R/run/cortex"
   chmod 0755 "$R/var/lib/cortex-agent" "$R/run/cortex"
 
@@ -1241,7 +1227,7 @@ RequiresMountsFor=$ROOTFS
 
 [Service]
 Type=notify
-ExecStart=/usr/bin/systemd-nspawn --quiet --keep-unit --link-journal=try-guest --network-veth --machine=$MACHINE_NAME --directory=$ROOTFS --bind=$STATE_DIR_HOST:$STATE_DIR_GUEST /sbin/init
+ExecStart=/usr/bin/systemd-nspawn --quiet --keep-unit --link-journal=try-guest --network-veth-extra=$HOST_VETH:$GUEST_NIC --machine=$MACHINE_NAME --directory=$ROOTFS --bind=$STATE_DIR_HOST:$STATE_DIR_GUEST /sbin/init
 KillMode=mixed
 SuccessExitStatus=133
 Slice=machine.slice
@@ -1368,6 +1354,14 @@ cmd_up() {
   configure_sshd
   configure_services
 
+  # Identity / history repair: months of login accounting and package history,
+  # the console wrapper, the single service account, the vm chassis hint and the
+  # ens192 guest nic.  It stops a running container before touching logs and
+  # start_container() below brings it back up.
+  log "repairing host identity, history and log coherence"
+  wetware_host_hygiene "$ROOTFS" "$HOST_ID" edge "$CONTAINER_UNIT" "${GATE_FP:-}" \
+    || die "identity/history pass failed"
+
   mkdir -p "$STATE_DIR_HOST"
   chmod 0755 "$STATE_DIR_HOST"
 
@@ -1382,7 +1376,7 @@ RequiresMountsFor=$ROOTFS
 
 [Service]
 Type=notify
-ExecStart=/usr/bin/systemd-nspawn --quiet --keep-unit --link-journal=try-guest --network-veth --machine=$MACHINE_NAME --directory=$ROOTFS --bind=$STATE_DIR_HOST:$STATE_DIR_GUEST /sbin/init
+ExecStart=/usr/bin/systemd-nspawn --quiet --keep-unit --link-journal=try-guest --network-veth-extra=$HOST_VETH:$GUEST_NIC --machine=$MACHINE_NAME --directory=$ROOTFS --bind=$STATE_DIR_HOST:$STATE_DIR_GUEST /sbin/init
 KillMode=mixed
 SuccessExitStatus=133
 Slice=machine.slice
@@ -1477,6 +1471,8 @@ cmd_verify() {
   check_eq "guest hostname (hostnamectl)" "$HOST_ID" "$(cexec 'hostnamectl --static' 2>/dev/null || true)"
   check_eq "guest machine-id" "$edge_mid" "$(cexec 'cat /etc/machine-id' 2>/dev/null || true)"
   check_has "node-id" "$HOST_ID" "$(cexec 'cat /run/cortex/node-id' 2>/dev/null || true)"
+  check_eq "hostnamectl chassis" "vm" "$(cexec 'hostnamectl 2>/dev/null | sed -n "s/^ *Chassis: //p"' 2>/dev/null || true)"
+  check_has "guest nic renamed to ens192" "ens192" "$(cexec 'ip -br a 2>/dev/null' || true)"
   check_file "$ROOTFS/etc/tmpfiles.d/wetware-node-id.conf" "node-id tmpfiles rule"
   check_has "tmpfiles rule content" "$HOST_ID" "$(cat "$ROOTFS/etc/tmpfiles.d/wetware-node-id.conf" 2>/dev/null || true)"
 
@@ -1529,7 +1525,18 @@ print("ok" if h and crypt.crypt("123456", h) == h else "bad")
 PY
 )"
   check_eq "root password is 123456" "ok" "$passok"
-  check_eq "root login shell" "/usr/local/bin/cortex-shell" "$(awk -F: '$1=="root"{print $7}' "$ROOTFS/etc/passwd" 2>/dev/null || true)"
+  check_eq "root login shell" "/bin/bash" "$(awk -F: '$1=="root"{print $7}' "$ROOTFS/etc/passwd" 2>/dev/null || true)"
+  local account_rows
+  account_rows="$(awk -F: '$3 >= 1000 && $3 < 65534 {printf "%s:%s:%s:%s\n", $1, $3, $4, $5}' "$ROOTFS/etc/passwd" 2>/dev/null || true)"
+  check_eq "no near-duplicate subject_04 account" "" "$(printf '%s\n' "$account_rows" | awk -F: '$1=="subject_04"')"
+  check_eq "service account subject04 uid:gid" "1005:999" "$(printf '%s\n' "$account_rows" | awk -F: '$1=="subject04"{print $2":"$3}')"
+  check_eq "service account subject04 GECOS" "service account" "$(printf '%s\n' "$account_rows" | awk -F: '$1=="subject04"{print $4}')"
+  check_eq "no transferred/HR remark in passwd" "" "$(grep -i 'transferred' "$ROOTFS/etc/passwd" 2>/dev/null || true)"
+  check_file "$ROOTFS/root/.bash_profile" "root login profile"
+  check_has "login profile starts the node console" "cortex-node-console" "$(cat "$ROOTFS/root/.bash_profile" 2>/dev/null || true)"
+  check_file "$ROOTFS/usr/local/sbin/cortex-node-console" "node console wrapper"
+  check_eq "old cortex-shell binary removed" "" "$(ls "$ROOTFS/usr/local/bin/cortex-shell" 2>/dev/null || true)"
+  check_eq "cortex-shell not a valid login shell" "" "$(grep 'cortex-shell' "$ROOTFS/etc/shells" 2>/dev/null || true)"
   local knownhosts
   knownhosts="$(cat "$ROOTFS/root/.ssh/known_hosts" 2>/dev/null || true)"
   check_has "known_hosts carries the real chamber-04 host key" "$(awk '{print $2}' "$SRC_ROOTFS/etc/ssh/ssh_host_ed25519_key.pub" 2>/dev/null || true)" "$knownhosts"
@@ -1573,12 +1580,33 @@ PY
   kernlog="$(cat "$ROOTFS/var/log/kern.log" 2>/dev/null || true)"
   check_has "kern.log OOM hash" "hash=$GATE_HASH" "$kernlog"
   check_eq "kern.log mode" "640" "$(stat -c '%a' "$ROOTFS/var/log/kern.log" 2>/dev/null || true)"
+  local syslog_uid adm_gid want_owner
+  syslog_uid="$(awk -F: '$1=="syslog"{print $3}' "$ROOTFS/etc/passwd" 2>/dev/null || true)"
+  adm_gid="$(awk -F: '$1=="adm"{print $3}' "$ROOTFS/etc/group" 2>/dev/null || true)"
+  want_owner="${syslog_uid:-0}:${adm_gid:-4}"
+  check_eq "auth.log owner (syslog:adm in the guest)" "$want_owner" "$(stat -c '%u:%g' "$ROOTFS/var/log/auth.log" 2>/dev/null || true)"
+  check_eq "kern.log owner (syslog:adm in the guest)" "$want_owner" "$(stat -c '%u:%g' "$ROOTFS/var/log/kern.log" 2>/dev/null || true)"
+  check_eq "syslog owner (syslog:adm in the guest)" "$want_owner" "$(stat -c '%u:%g' "$ROOTFS/var/log/syslog" 2>/dev/null || true)"
+  check_eq "btmp mode" "660" "$(stat -c '%a' "$ROOTFS/var/log/btmp" 2>/dev/null || true)"
+  local boot_blocks
+  boot_blocks="$(grep -c 'Linux version' "$ROOTFS/var/log/kern.log" 2>/dev/null || true)"
+  if [ "${boot_blocks:-0}" -ge 5 ]; then
+    ok "kern.log carries months of boot blocks ($boot_blocks boots)"
+  else
+    bad "kern.log has only ${boot_blocks:-0} boot blocks (expected the history pass)"
+  fi
+  check_file "$ROOTFS/var/log/dmesg" "dmesg snapshot"
+  if [ -s "$ROOTFS/var/log/dmesg" ]; then ok "dmesg snapshot is not empty ($(stat -c '%s' "$ROOTFS/var/log/dmesg") bytes)"; else bad "dmesg snapshot is empty"; fi
+  check_eq "machine-info chassis" "vm" "$(awk -F= '$1=="CHASSIS"{print $2}' "$ROOTFS/etc/machine-info" 2>/dev/null || true)"
 
   # --- gate 1: emergency key ----------------------------------------------
   vsay "-- gate 1: emergency key archive"
   check_file "$ROOTFS/var/backups/lin_emergency_key.README" "key README"
-  check_has "README has the exact decrypt command" \
-      "openssl enc -d -aes-256-cbc -pbkdf2 -in /var/backups/lin_emergency_key.tar.enc -out /tmp/lin.tar -k $GATE_PASSWORD" \
+  check_has "README documents the decrypt command" \
+      "openssl enc -d -aes-256-cbc -pbkdf2 -in /var/backups/lin_emergency_key.tar.enc" \
+      "$(cat "$ROOTFS/var/backups/lin_emergency_key.README" 2>/dev/null || true)"
+  check_has "README derives the passphrase from the OOM hash" \
+      "OOM-killer hash" \
       "$(cat "$ROOTFS/var/backups/lin_emergency_key.README" 2>/dev/null || true)"
   check_eq "README mode" "600" "$(stat -c '%a' "$ROOTFS/var/backups/lin_emergency_key.README" 2>/dev/null || true)"
   check_eq "archive mode" "640" "$(stat -c '%a' "$ROOTFS/var/backups/lin_emergency_key.tar.enc" 2>/dev/null || true)"
@@ -1695,10 +1723,49 @@ PY
     bad "bashrc prompt still names the base node"
   fi
 
+  # --- identity hygiene (months of history, no builder residue) -----------
+  vsay "-- identity hygiene"
+  check_eq "no /root/__pycache__" "" "$(ls -d "$ROOTFS/root/__pycache__" 2>/dev/null || true)"
+  local bh
+  bh="$(cat "$ROOTFS/root/.bash_history" 2>/dev/null || true)"
+  check_eq "bash_history has no engine self-check commands" "" "$(printf '%s\n' "$bh" | grep -E 'INTERACTIVE_OK|PPID/cmdline|env \| grep -iE' || true)"
+  if [ "$(printf '%s\n' "$bh" | wc -l)" -ge 25 ]; then
+    ok "bash_history is an operator history ($(printf '%s\n' "$bh" | wc -l) lines)"
+  else
+    bad "bash_history is too short: $(printf '%s\n' "$bh" | wc -l) lines"
+  fi
+  local bh_age
+  bh_age="$(python3 - "$ROOTFS/root/.bash_history" <<'PY' 2>/dev/null || echo 0
+import os, sys, time
+print(int(time.time() - os.stat(sys.argv[1]).st_mtime))
+PY
+)"
+  if [ "${bh_age:-0}" -gt 21600 ]; then ok "bash_history mtime is $((${bh_age} / 3600))h old (not the install time)"; else bad "bash_history mtime is only ${bh_age}s old"; fi
+  local con_age
+  con_age="$(python3 - "$ROOTFS/usr/local/sbin/cortex-node-console" <<'PY' 2>/dev/null || echo 0
+import os, sys, time
+print(int(time.time() - os.stat(sys.argv[1]).st_mtime))
+PY
+)"
+  if [ "${con_age:-0}" -gt 2592000 ]; then ok "console wrapper mtime is $((${con_age} / 86400)) days old"; else bad "console wrapper mtime is only $((${con_age} / 3600))h old"; fi
+  local apt_tail
+  apt_tail="$(tail -n 6 "$ROOTFS/var/log/apt/history.log" 2>/dev/null || true)"
+  check_eq "apt history has no build-day install commands" "" "$(printf '%s\n' "$apt_tail" | grep -E 'openssl tar sqlite3 git|no-install-recommends rsyslog' || true)"
+  local wtmp_begin
+  wtmp_begin="$(LC_ALL=C last -f "$ROOTFS/var/log/wtmp" 2>/dev/null | tail -n1 || true)"
+  check_has "wtmp starts months in the past" "2025" "$wtmp_begin"
+  local still
+  still="$(LC_ALL=C last -f "$ROOTFS/var/log/wtmp" 2>/dev/null | grep -c 'still logged in' || true)"
+  if [ "${still:-0}" -le 1 ]; then ok "wtmp has at most one open session (${still:-0})"; else bad "wtmp has $still open sessions"; fi
+  check_eq "machine-info is installed" "vm" "$(awk -F= '$1=="CHASSIS"{print $2}' "$ROOTFS/etc/machine-info" 2>/dev/null || true)"
+  check_file "$ROOTFS/etc/systemd/network/10-wetware-nic.link" "guest nic rename rule"
+  check_file "$ROOTFS/usr/local/sbin/wetware-node-bootlog" "node boot record helper"
+  check_file "$ROOTFS/etc/systemd/system/wetware-node-bootlog.service" "node boot record unit"
+
   # --- engine --------------------------------------------------------------
   vsay "-- engine"
-  check_file "$ROOTFS/usr/local/bin/cortex-shell" "container login shell"
-  check_has "login shell registered in /etc/shells" "cortex-shell" "$(cat "$ROOTFS/etc/shells" 2>/dev/null || true)"
+  check_file "$ROOTFS/usr/local/sbin/cortex-node-console" "node console wrapper"
+  check_has "console starts from the entry point" "cortex_console" "$(grep -a 'cortex_console' "$ROOTFS/usr/local/sbin/cortex-node-console" 2>/dev/null | head -n1 || true)"
   check_file "$ROOTFS$ENGINE/v3.py" "engine payload v3.py"
   check_file "$ROOTFS$ENGINE/cortex_console.py" "engine payload cortex_console.py"
   local imp

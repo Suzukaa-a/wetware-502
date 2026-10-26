@@ -104,6 +104,41 @@ need_root() {
   e.g.: ssh <vm> 'sudo -n bash -s' < $SELF"
 }
 
+# ---------------------------------------------------------------------------
+# host identity / history repair library (shared with install_engine_base.sh).
+# build_base.sh can be piped through stdin ('ssh vm sudo bash -s < ...'), in
+# which case no sibling file exists: the library is optional here because
+# install_engine_base.sh applies the identity pass to prod-cortex-04 right
+# after this template is provisioned.
+# ---------------------------------------------------------------------------
+SELF_DIR=""
+case "$SELF" in
+  */*) [ -f "$SELF" ] && SELF_DIR="$(cd "$(dirname "$SELF")" && pwd)" || SELF_DIR="" ;;
+esac
+HYGIENE_AVAILABLE=0
+for _cand in "$SELF_DIR/install_engine_base.sh" \
+             "/usr/local/lib/cortex-agent/nspawn/install_engine_base.sh" \
+             "/root/wetware-edge-deploy/ops/nspawn/install_engine_base.sh"; do
+  [ -n "$_cand" ] || continue
+  if [ -r "$_cand" ]; then
+    # shellcheck source=ops/nspawn/install_engine_base.sh
+    . "$_cand"
+    if command -v wetware_host_hygiene >/dev/null 2>&1; then
+      HYGIENE_AVAILABLE=1
+      break
+    fi
+    warn "ignoring stale library $_cand (no wetware_host_hygiene)"
+
+  fi
+done
+if [ "$HYGIENE_AVAILABLE" = "0" ]; then
+  printf '[nspawn] WARNING: shared identity library not found (install_engine_base.sh); the base image is provisioned without the identity pass\n' >&2
+fi
+# the shared library re-defines a local warn(); restore this script's helpers
+say()  { printf '%s\n' "$*"; }
+log()  { printf '[nspawn] %s\n' "$*"; }
+warn() { printf '[nspawn] WARNING: %s\n' "$*" >&2; }
+
 # Run a command inside the container (all namespaces + container root fs).
 # Usage: cexec 'shell code'      (single argument, executed by container /bin/sh)
 container_pid() {
@@ -899,6 +934,10 @@ cmd_up() {
   ensure_rootfs_mount
   provision_rootfs
   configure_rootfs
+  if [ "$HYGIENE_AVAILABLE" = "1" ]; then
+    log "repairing host identity, history and log coherence"
+    wetware_host_hygiene "$ROOTFS" "$HOST_ID" base "" ""
+  fi
   ensure_host_network
   write_container_unit
   start_container
@@ -921,6 +960,10 @@ cmd_build() {
   ensure_rootfs_mount
   provision_rootfs
   configure_rootfs
+  if [ "$HYGIENE_AVAILABLE" = "1" ]; then
+    log "repairing host identity, history and log coherence"
+    wetware_host_hygiene "$ROOTFS" "$HOST_ID" base "" ""
+  fi
   ensure_host_network
   write_container_unit
   log "build finished in $((SECONDS - started))s (container not started by 'build')"
