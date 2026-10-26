@@ -71,4 +71,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     _rename_process()
-    HTTPServer(("127.0.0.1", 8000), Handler).serve_forever()
+    # The edge gateway proxies to this port over the campaign network, so the
+    # upstream has to be reachable on the node address, not only loopback: a
+    # seized worker answers 502, the silicon mirror answers 200.
+    HTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
