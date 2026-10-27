@@ -1087,18 +1087,15 @@ EXECUTE DRP-00 IMMEDIATELY UPON DETECTING TERMINAL SUBSTRATE INSTABILITY.
 DIGITAL SIGNATURE VERIFICATION INSTRUCTIONS
 ================================================================================
 To verify the integrity and non-repudiation of this fail-safe authorization:
-  ssh-keygen -Y verify -f /root/.ssh/allowed_signers \
-    -I Lin@neo-vesalius.io -n "vesalius-infrastructure-drp" \
-    -s /opt/vesalius/handover/DRP_00_FAILSAFE.asc.sig \
-    < /opt/vesalius/handover/DRP_00_FAILSAFE.asc
+  ssh-keygen -Y verify -f /root/.ssh/allowed_signers -I Lin@neo-vesalius.io -n vesalius-infrastructure-drp -s /opt/vesalius/handover/DRP_00_FAILSAFE.asc.sig < /opt/vesalius/handover/DRP_00_FAILSAFE.asc
 """
 
 DRP_00_FAILSAFE_SIG = """\
 -----BEGIN SSH SIGNATURE-----
 U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgttqlzhHNXX+k6DzPHRxF17Wq3R
 Vw9ThXuGctzjoMmeEAAAAbdmVzYWxpdXMtaW5mcmFzdHJ1Y3R1cmUtZHJwAAAAAAAAAAZz
-aGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQMJpFM8NzbhsxSIARxwuAPZBp/6IX2Kyw1
-tJ+Srihc5D5yxMsTyttAzh6aSMf3AnAnSjO4t3PsDrsSYC60dyIws=
+aGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQCtU8UkviHTdIJu/UfVMroLVD09AKJzlcb
+m9oPqYUwAdFrLpS6haGRN3FsFZzU0uhd0DuaFa8/gZcLNjLg4FOwE=
 -----END SSH SIGNATURE-----
 """
 
