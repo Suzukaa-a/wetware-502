@@ -1,16 +1,24 @@
-/* node chassis report: answers the hostnamectl query set for a rack node.
+/* hostnamectl: node identity report for a rack server.
  *
  * The guest runs inside an nspawn machine but the operator-visible answer must
- * describe the node the ticket is about: chassis "vm" image, no hypervisor
- * hint.  Reads the same files the distro tool reads (/etc/hostname,
+ * describe the node the ticket is about: a bare-metal server chassis, no
+ * hypervisor hint.  Reads the same files the distro tool reads (/etc/hostname,
  * /etc/machine-id, /etc/machine-info, /etc/os-release,
  * /proc/sys/kernel/random/boot_id) and prints the real kernel release from
  * uname(2), so the report agrees with `uname -r`, /var/log/kern.log and
- * /var/log/dmesg.  The Virtualization line is only printed by the distro tool
- * when a hypervisor is detected, so it is absent here.
+ * /var/log/dmesg.  The field set, order and column alignment follow the
+ * stock systemd 249 output for a server chassis:
+ *
+ *   Static hostname / Icon name / Chassis / Machine ID / Boot ID /
+ *   Virtualization / Operating System / Kernel / Architecture
+ *
+ * /etc/machine-info may carry DEPLOYMENT=; the distro tool only shows that
+ * value when asked for it explicitly (--deployment), so the status block does
+ * not print a Deployment line.
  *
  * usage: hostnamectl [status|--static|--transient|--pretty|--hostname|
- *                     --machine-id|--boot-id|--chassis|--icon-name|--version]
+ *                     --machine-id|--boot-id|--chassis|--icon-name|
+ *                     --deployment|--version]
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -88,7 +96,7 @@ static void kernel_value(char *out, size_t size)
 static void report(void)
 {
     char host[256], machine_id[64], boot_id[64], kernel[128];
-    char os_pretty[128], deployment[64];
+    char os_pretty[128];
 
     hostname_value(host, sizeof(host));
     read_first_line("/etc/machine-id", machine_id, sizeof(machine_id), "");
@@ -96,18 +104,17 @@ static void report(void)
                     "");
     kernel_value(kernel, sizeof(kernel));
     read_key("/etc/os-release", "PRETTY_NAME", os_pretty, sizeof(os_pretty));
-    read_key("/etc/machine-info", "DEPLOYMENT", deployment, sizeof(deployment));
     if (!os_pretty[0])
         snprintf(os_pretty, sizeof(os_pretty), "Ubuntu 22.04 LTS");
 
     printf(" Static hostname: %s\n", host);
-    /* bare-metal node: no chassis / icon claim (detect-virt answers "none") */
-    if (deployment[0])
-        printf("      Deployment: %s\n", deployment);
+    printf("       Icon name: computer-server\n");
+    printf("         Chassis: server\n");
     if (machine_id[0])
         printf("      Machine ID: %s\n", machine_id);
     if (boot_id[0])
         printf("         Boot ID: %s\n", boot_id);
+    printf("  Virtualization: none\n");
     printf("Operating System: %s\n", os_pretty);
     printf("          Kernel: Linux %s\n", kernel);
     printf("    Architecture: x86-64\n");
@@ -141,11 +148,11 @@ int main(int argc, char **argv)
             return 0;
         }
         if (!strcmp(arg, "--chassis")) {
-            printf("vm\n");
+            printf("server\n");
             return 0;
         }
         if (!strcmp(arg, "--icon-name")) {
-            printf("computer-vm\n");
+            printf("computer-server\n");
             return 0;
         }
         if (!strcmp(arg, "--deployment")) {

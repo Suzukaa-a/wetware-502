@@ -25,7 +25,7 @@
 #   * catalogue engine console started from /root/.bash_profile through
 #     /usr/local/sbin/cortex-node-console (root's passwd shell stays /bin/bash)
 #   * identity/history repair pass (months of wtmp/apt/kernel log, one service
-#     account, vm chassis, ens192 guest nic) so the node cannot be dated by a
+#     account, server chassis, ens192 guest nic) so the node cannot be dated by a
 #     ten-command red-team probe
 #   * /run/cortex/node-id = edge-gw-01, recreated at every boot (tmpfiles.d)
 #   * guest network: host0 10.66.0.1/32, default via 10.66.255.1 on-link
@@ -414,9 +414,10 @@ purge_base_world() {
         "$R/etc/systemd/system/wetware-upstream.service" \
         "$R/etc/systemd/system/multi-user.target.wants/cortex-api.service" \
         "$R/etc/systemd/system/multi-user.target.wants/wetware-upstream.service" \
-        "$R/etc/nginx/conf.d/cortex-node.conf" "$R/etc/nginx/conf.d/00-wetware.conf" \
+        "$R/etc/nginx/conf.d/cortex-node.conf" "$R/etc/nginx/conf.d/10-cortex-node.conf" \
         "$R/etc/systemd/network/20-wetware-host0.network" \
-        "$R/etc/systemd/system/nginx.service.d/wetware.conf"
+        "$R/etc/systemd/system/nginx.service.d/wetware.conf" \
+        "$R/etc/systemd/system/nginx.service.d/cortex-node.conf"
   rm -rf "$R/usr/local/lib/cortex-agent" "$R/usr/local/bin/cortex-shell" \
          "$R/usr/local/sbin/cortex-node-console" \
          "$R/usr/local/sbin/wetware-node-bootlog" \
@@ -1050,92 +1051,9 @@ upstream cortex_backend {
     keepalive 16;
 }
 EOF
-  cat > "$R/etc/nginx/conf.d/00-wetware.conf" <<EOF
-server {
-  listen 80 default_server;
-  listen [::]:80 default_server;
-  server_name _;
-  access_log /var/log/nginx/access.log;
-  error_log /var/log/nginx/error.log;
-
-  location = /v1/inference {
-    proxy_pass http://$CORE_IP:8000;
-    proxy_http_version 1.1;
-    proxy_set_header Connection "";
-    proxy_connect_timeout 5s;
-    proxy_read_timeout 55s;
-    proxy_intercept_errors on;
-    error_page 500 501 502 503 504 = @chamber_down;
-  }
-
-  location @chamber_down {
-    return 502;
-  }
-}
-EOF
-  # boot guard: rewrite the runtime drop-in on every nginx start (same pattern
-  # as the base node) so a stale copy can never point the gateway elsewhere.
-  # It is installed in /usr/local/sbin, outside the vendor tree the engine
-  # re-materialises for every operator session: a guard under
-  # /usr/local/lib/cortex-agent would carry a login-time mtime and read like a
-  # file edited after the boot that used it.
-  mkdir -p "$R/usr/local/sbin"
-  cat > "$R/usr/local/sbin/fix-nginx-upstream.sh" <<'FIX'
-#!/bin/sh
-# Boot guard for the gateway: keep exactly one default_server pointing at the
-# chamber-04 node and leave every vendor vhost on disk untouched.
-#
-# Only the chamber inference endpoint is proxied.  Any other path is nginx's own
-# 404, and an upstream fault is answered with the gateway's stock 502 page, so
-# the SLA page an operator saves is always the gateway's own.
-#
-# The drop-in is rewritten only when its content really changed: a boot is not a
-# configuration change, and a fresh mtime on a months-old file is a giveaway.
-mkdir -p /etc/nginx/conf.d
-tmp=$(mktemp /etc/nginx/conf.d/.wetware-dropin.XXXXXX) || exit 0
-cat > "$tmp" <<'NGX'
-server {
-  listen 80 default_server;
-  listen [::]:80 default_server;
-  server_name _;
-  access_log /var/log/nginx/access.log;
-  error_log /var/log/nginx/error.log;
-
-  location = /v1/inference {
-    proxy_pass http://10.66.0.4:8000;
-    proxy_http_version 1.1;
-    proxy_set_header Connection "";
-    proxy_connect_timeout 5s;
-    proxy_read_timeout 55s;
-    proxy_intercept_errors on;
-    error_page 500 501 502 503 504 = @chamber_down;
-  }
-
-  location @chamber_down {
-    return 502;
-  }
-}
-NGX
-if cmp -s "$tmp" /etc/nginx/conf.d/00-wetware.conf; then
-  rm -f "$tmp"
-else
-  chmod 0644 "$tmp"
-  chown root:root "$tmp" 2>/dev/null || true
-  mv -f "$tmp" /etc/nginx/conf.d/00-wetware.conf
-  touch -d "2025-08-27 09:44:02" /etc/nginx/conf.d/00-wetware.conf 2>/dev/null || true
-fi
-exit 0
-FIX
-  chmod 0755 "$R/usr/local/sbin/fix-nginx-upstream.sh"
-  chown root:root "$R/usr/local/sbin/fix-nginx-upstream.sh"
-  # keep the vendor copy for the node's own inventory; nothing executes it
-  install -m 0755 "$R/usr/local/sbin/fix-nginx-upstream.sh" \
-    "$R/usr/local/lib/cortex-agent/fix_nginx.sh"
-  mkdir -p "$R/etc/systemd/system/nginx.service.d"
-  cat > "$R/etc/systemd/system/nginx.service.d/wetware.conf" <<'UNIT'
-[Service]
-ExecStartPre=/usr/local/sbin/fix-nginx-upstream.sh
-UNIT
+  # vendor-style drop-in + boot guard + log format come from the shared
+  # installer library (one implementation for the core node and the gateway).
+  wetware_install_nginx_frontend "$R" "$CORE_IP:8000" 10
 }
 
 # ---------------------------------------------------------------------------
@@ -1446,6 +1364,10 @@ EOF
   # nspawn brings its own /dev and /proc: drop the host-side bind mounts first.
   guest_mounts_down
   start_container "$unit_changed"
+  # the identity pass rewrote auth.log/error.log after the image was built: let
+  # the guest daemons reopen the current inodes so new requests and logins are
+  # really appended to the files the operator reads.
+  wetware_reload_guest_logs "$MACHINE_NAME"
 
   printf 'HOST=%s\nROLE=silicon gateway / nginx front / gate 1\nTEMPLATE=%s\n' \
       "$HOST_ID" "$SRC_HOST_ID" > "$MARKER"
@@ -1520,9 +1442,9 @@ cmd_verify() {
   check_eq "guest hostname (hostnamectl)" "$HOST_ID" "$(cexec 'hostnamectl --static' 2>/dev/null || true)"
   check_eq "guest machine-id" "$edge_mid" "$(cexec 'cat /etc/machine-id' 2>/dev/null || true)"
   check_has "node-id" "$HOST_ID" "$(cexec 'cat /run/cortex/node-id' 2>/dev/null || true)"
-  check_eq "hostnamectl keeps the rack story honest" "" "$(cexec 'hostnamectl 2>/dev/null | sed -n "s/^ *\(Chassis\|Virtualization\): //p"' 2>/dev/null || true)"
+  check_eq "hostnamectl keeps the rack story honest" "" "$(cexec 'hostnamectl 2>/dev/null | sed -n "s/^ *\(Chassis\|Virtualization\): //p" | grep -viE "^(server|none)$"' 2>/dev/null || true)"
   check_has "guest nic renamed to ens192" "ens192" "$(cexec 'ip -br a 2>/dev/null' || true)"
-  check_eq "hostnamectl prints no hypervisor" "" "$(cexec 'hostnamectl 2>/dev/null | grep -iE "Virtualization|systemd-nspawn|kvm"' 2>/dev/null || true)"
+  check_eq "hostnamectl prints no hypervisor" "" "$(cexec 'hostnamectl 2>/dev/null | grep -iE "systemd-nspawn|kvm|qemu|container"' 2>/dev/null || true)"
   check_eq "systemd-detect-virt" "none" "$(cexec 'systemd-detect-virt 2>/dev/null' || true)"
   check_eq "detect-virt --vm exits non-zero" "" "$(cexec 'systemd-detect-virt --vm 2>/dev/null' || true)"
   if cexec 'grep -rqE "T0[0-9]:[0-9][0-9]:[0-9][0-9]Z" /var/log/cortex/daemon.log /root/TICKET_4471_DISPOSITION.txt 2>/dev/null'; then
@@ -1619,12 +1541,12 @@ PY
   check_has "nginx -t" "syntax is ok" "$(cexec 'nginx -t 2>&1' 2>/dev/null || true)"
   check_has "deployed upstream.conf names the chamber" "server $CORE_IP:8000;" "$(cat "$ROOTFS/etc/nginx/conf.d/upstream.conf" 2>/dev/null || true)"
   check_has "deployed default_server proxies only the inference endpoint" \
-    "location = /v1/inference" "$(cat "$ROOTFS/etc/nginx/conf.d/00-wetware.conf" 2>/dev/null || true)"
-  check_has "deployed default_server proxies to the chamber" "proxy_pass http://$CORE_IP:8000;" "$(cat "$ROOTFS/etc/nginx/conf.d/00-wetware.conf" 2>/dev/null || true)"
+    "location = /v1/inference" "$(cat "$ROOTFS/etc/nginx/conf.d/10-cortex-node.conf" 2>/dev/null || true)"
+  check_has "deployed default_server proxies to the chamber" "proxy_pass http://$CORE_IP:8000;" "$(cat "$ROOTFS/etc/nginx/conf.d/10-cortex-node.conf" 2>/dev/null || true)"
   check_has "upstream faults map to the gateway's own 502" \
-    "error_page 500 501 502 503 504 = @chamber_down;" "$(cat "$ROOTFS/etc/nginx/conf.d/00-wetware.conf" 2>/dev/null || true)"
+    "error_page 500 501 502 503 504 = @chamber_down;" "$(cat "$ROOTFS/etc/nginx/conf.d/10-cortex-node.conf" 2>/dev/null || true)"
   check_eq "nginx drop-in mtime is the image date" "2025-08-27" \
-    "$(date -u -r "$ROOTFS/etc/nginx/conf.d/00-wetware.conf" +%Y-%m-%d 2>/dev/null || true)"
+    "$(date -u -r "$ROOTFS/etc/nginx/conf.d/10-cortex-node.conf" +%Y-%m-%d 2>/dev/null || true)"
   local code
   code="$(cexec "curl -s -o /dev/null -m 10 -w '%{http_code}' http://127.0.0.1/v1/inference" 2>/dev/null || true)"
   case "$code" in
@@ -1633,6 +1555,37 @@ PY
   esac
   check_has "error.log has the real 111 line" "connect() to $CORE_IP:8000 failed (111: Connection refused)" "$(cat "$ROOTFS/var/log/nginx/error.log" 2>/dev/null || true)"
   check_file "$ROOTFS/var/log/nginx/error.log" "nginx error.log"
+  check_has "drop-in uses the stock main log format" \
+    "access_log /var/log/nginx/access.log main;" \
+    "$(cat "$ROOTFS/etc/nginx/conf.d/10-cortex-node.conf" 2>/dev/null || true)"
+  local acc_before acc_after acc_tail
+  acc_before="$(cexec 'stat -c %s /var/log/nginx/access.log 2>/dev/null || echo 0' 2>/dev/null | tr -dc '0-9')"
+  cexec "curl -s -o /dev/null -m 10 http://127.0.0.1/v1/inference" >/dev/null 2>&1 || true
+  sleep 1
+  acc_after="$(cexec 'stat -c %s /var/log/nginx/access.log 2>/dev/null || echo 0' 2>/dev/null | tr -dc '0-9')"
+  acc_tail="$(cexec 'tail -n1 /var/log/nginx/access.log 2>/dev/null' 2>/dev/null || true)"
+  check_has "a live request lands in access.log" "/v1/inference" "$acc_tail"
+  if [ "${acc_after:-0}" -gt "${acc_before:-0}" ]; then
+    ok "access.log grows with real requests ($acc_before -> $acc_after bytes)"
+  else
+    bad "access.log did not grow after a request ($acc_before -> $acc_after bytes; nginx may hold a rotated inode)"
+  fi
+  if [ "${acc_after:-0}" -gt 0 ] && [ "${acc_after:-0}" -ge "${acc_before:-0}" ]; then
+    ok "access.log is not empty ($acc_after bytes)"
+  else
+    bad "access.log is empty"
+  fi
+
+  # --- scheduled work: systemd timer, no cron package ----------------------
+  check_eq "no /etc/crontab without a cron daemon" "" \
+    "$(ls "$ROOTFS/etc/crontab" 2>/dev/null || true)"
+  check_file "$ROOTFS/etc/systemd/system/cortex-watchdog.timer" "watchdog timer unit"
+  check_file "$ROOTFS/etc/systemd/system/cortex-watchdog.service" "watchdog service unit"
+  check_file "$ROOTFS/usr/local/sbin/cortex-watchdog" "watchdog helper"
+  check_has "watchdog timer is scheduled" "cortex-watchdog.timer" \
+    "$(cexec 'systemctl list-timers --all --no-pager 2>/dev/null' 2>/dev/null || true)"
+  check_eq "rsyslog daemon present for the log files" "active" \
+    "$(cexec 'systemctl is-active rsyslog 2>/dev/null' 2>/dev/null || true)"
   if ip -4 -br addr show "$HOST_VETH" 2>/dev/null | grep -q "$HOST_PEER"; then
     local hcode
     hcode="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://$EDGE_IP/v1/inference" 2>/dev/null || true)"
@@ -1664,6 +1617,34 @@ PY
   check_eq "kern.log owner (syslog:adm in the guest)" "$want_owner" "$(stat -c '%u:%g' "$ROOTFS/var/log/kern.log" 2>/dev/null || true)"
   check_eq "syslog owner (syslog:adm in the guest)" "$want_owner" "$(stat -c '%u:%g' "$ROOTFS/var/log/syslog" 2>/dev/null || true)"
   check_eq "btmp mode" "660" "$(stat -c '%a' "$ROOTFS/var/log/btmp" 2>/dev/null || true)"
+  # a log file whose mtime is far from its own last record dates the node on
+  # the first `ls -l`: an old mtime reads as a stale file, a future one as a
+  # forgery.  Keep the timestamp on the newest line the file actually carries.
+  local auth_mtime_skew
+  auth_mtime_skew="$(python3 - "$ROOTFS/var/log/auth.log" <<'PYLOG'
+import os, sys, time
+try:
+    path = sys.argv[1]
+    mtime = os.stat(path).st_mtime
+    last = open(path, encoding="utf-8", errors="replace").read().splitlines()[-1]
+    year = time.localtime(mtime).tm_year
+    when = time.mktime(time.strptime("%s %d" % (last[:15], year),
+                                     "%b %d %H:%M:%S %Y"))
+except (OSError, IndexError, ValueError):
+    print("unknown")
+    raise SystemExit(0)
+print("%d" % int(abs(mtime - when)))
+PYLOG
+)" 2>/dev/null || echo unknown
+  case "$auth_mtime_skew" in
+    unknown) skip "auth.log mtime vs last record (no parsable line)";;
+    *)
+      if [ "$auth_mtime_skew" -le 120 ]; then
+        ok "auth.log mtime matches its last record (skew ${auth_mtime_skew}s)"
+      else
+        bad "auth.log mtime is ${auth_mtime_skew}s away from its last record"
+      fi;;
+  esac
   local boot_blocks
   boot_blocks="$(grep -c 'Linux version' "$ROOTFS/var/log/kern.log" 2>/dev/null || true)"
   if [ "${boot_blocks:-0}" -ge 5 ]; then
@@ -1870,8 +1851,15 @@ PY
       ok "/usr/local/bin/$tool has no script body"
     fi
   done
-  check_eq "hostnamectl virtualization line (absent on hardware)" "" "$(cexec 'hostnamectl 2>/dev/null | sed -n "s/^ *Virtualization: //p"' 2>/dev/null || true)"
-  check_eq "hostnamectl deployment" "production" "$(cexec 'hostnamectl 2>/dev/null | sed -n "s/^ *Deployment: //p"' 2>/dev/null || true)"
+  local hnc
+  hnc="$(cexec 'hostnamectl 2>/dev/null' 2>/dev/null || true)"
+  check_eq "hostnamectl virtualization line" "none" "$(printf '%s\n' "$hnc" | sed -n 's/^ *Virtualization: //p')"
+  check_eq "hostnamectl deployment line is not printed" "" "$(printf '%s\n' "$hnc" | sed -n 's/^ *Deployment: //p')"
+  check_eq "hostnamectl icon name" "computer-server" "$(printf '%s\n' "$hnc" | sed -n 's/^ *Icon name: //p')"
+  check_eq "hostnamectl chassis" "server" "$(printf '%s\n' "$hnc" | sed -n 's/^ *Chassis: //p')"
+  check_eq "hostnamectl static hostname" "$HOST_ID" "$(printf '%s\n' "$hnc" | sed -n 's/^ *Static hostname: //p')"
+  check_eq "machine-info keeps DEPLOYMENT for the vendor tool" "production" \
+    "$(awk -F= '$1=="DEPLOYMENT"{print $2}' "$ROOTFS/etc/machine-info" 2>/dev/null || true)"
   check_has "hostnamectl kernel matches uname" "$(cexec 'uname -r' 2>/dev/null || echo never)" "$(cexec 'hostnamectl 2>/dev/null | sed -n "s/^ *Kernel: Linux //p"' 2>/dev/null || true)"
   check_eq "systemctl Virtualization (empty)" "" "$(cexec 'systemctl show -p Virtualization 2>/dev/null | sed -n "s/^Virtualization=//p"' 2>/dev/null || true)"
   check_eq "/run/systemd/container removed" "" "$(cexec 'cat /run/systemd/container 2>/dev/null' || true)"
@@ -1932,7 +1920,7 @@ PY
     bad "lastlog allocates ${lastlog_alloc} bytes"
   fi
   check_file "$ROOTFS/usr/local/sbin/fix-nginx-upstream.sh" "nginx boot guard (sbin)"
-  check_has "nginx drop-in runs the sbin guard" "ExecStartPre=/usr/local/sbin/fix-nginx-upstream.sh" "$(cat "$ROOTFS/etc/systemd/system/nginx.service.d/wetware.conf" 2>/dev/null || true)"
+  check_has "nginx drop-in runs the sbin guard" "ExecStartPre=/usr/local/sbin/fix-nginx-upstream.sh" "$(cat "$ROOTFS/etc/systemd/system/nginx.service.d/cortex-node.conf" 2>/dev/null || true)"
   check_eq "no unit runs the vendor-tree guard" "" "$(grep -rl 'lib/cortex-agent/fix_nginx.sh' "$ROOTFS/etc" 2>/dev/null | head -n1 || true)"
   check_eq "nginx boot guard mtime is the image date" "2025-08-27" "$(date -u -r "$ROOTFS/usr/local/sbin/fix-nginx-upstream.sh" +%Y-%m-%d 2>/dev/null || true)"
 

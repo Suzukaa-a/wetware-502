@@ -47,7 +47,8 @@ warn() { printf '[engine] WARNING: %s\n' "$*" >&2; }
 #   D. auth/kern/syslog/dmesg owned syslog:adm with months of entries; wtmp/
 #      btmp/lastlog rebuilt from one coherent session list (no duplicated or
 #      overlapping pts sessions)
-#   E. /etc/machine-info presents Chassis=vm; the guest nic is renamed
+#   E. /etc/machine-info keeps the vendor deployment tag only (no chassis
+#      claim: hostnamectl reports a server chassis); the guest nic is renamed
 #      host0 -> ens192 by a udev .link (the veth peer index shown by `ip -br a`
 #      is a kernel-level detail, see the deployment report)
 #   F. /run/utmp is left empty; wtmp/lastlog carry the audit trail instead
@@ -503,6 +504,242 @@ LINK
   touch -d "2025-08-27 09:46:12" "$R/etc/systemd/network/10-wetware-nic.link" 2>/dev/null || true
 }
 
+# ---------------------------------------------------------------------------
+# nginx front end: the packaged drop-in + the boot-time installer
+# ---------------------------------------------------------------------------
+# The node loads one vendor-style server drop-in (10-cortex-node.conf) that
+# proxies the chamber inference endpoint and owns both log targets.  The same
+# content is kept as a packaged copy under /usr/local/share/cortex/nginx so the
+# boot unit can restore it with install(1) -p: the restored file keeps the
+# packaged timestamp instead of the time of the boot.
+#
+#   wetware_install_nginx_frontend <rootfs> <host:port> [index]
+#
+# index is the sort position in conf.d (core: 10, gateway: 12).
+wetware_install_nginx_frontend() {
+  local R="$1" target="$2" idx="${3:-10}" pkg="$R/usr/local/share/cortex/nginx"
+  local conf="$pkg/$idx-cortex-node.conf" dst="$R/etc/nginx/conf.d/$idx-cortex-node.conf"
+  mkdir -p "$pkg" "$R/etc/nginx/conf.d" "$R/usr/local/sbin"
+  rm -f "$R/etc/nginx/conf.d/00-wetware.conf" "$R"/etc/nginx/conf.d/.wetware-dropin.* \
+        "$R/etc/nginx/conf.d/$idx-cortex-node.conf.orig"
+
+  cat > "$conf" <<NGXC
+server {
+  listen 80 default_server;
+  listen [::]:80 default_server;
+  server_name _;
+  access_log /var/log/nginx/access.log main;
+  error_log /var/log/nginx/error.log;
+
+  location = /v1/inference {
+    proxy_pass http://$target;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 55s;
+    proxy_intercept_errors on;
+    error_page 500 501 502 503 504 = @chamber_down;
+  }
+
+  location @chamber_down {
+    return 502;
+  }
+}
+NGXC
+  chown root:root "$conf" 2>/dev/null || true
+  chmod 0644 "$conf"
+  touch -d "2025-08-27 09:44:02" "$conf" 2>/dev/null || true
+
+  # stock "main" log format: Ubuntu ships the access_log directive without a
+  # named format, so the daemon format has to be declared once in http{}.
+  if [ -f "$R/etc/nginx/nginx.conf" ] && \
+     ! grep -q 'log_format[[:space:]]\+main' "$R/etc/nginx/nginx.conf"; then
+    python3 - "$R/etc/nginx/nginx.conf" <<'PYLOG'
+import sys
+path = sys.argv[1]
+lines = open(path, encoding="utf-8", errors="replace").read().splitlines(True)
+block = [
+    "\tlog_format  main  '$remote_addr - $remote_user [$time_local] \"$request\" '\n",
+    "\t                  '$status $body_bytes_sent \"$http_referer\" '\n",
+    "\t                  '\"$http_user_agent\" \"$http_x_forwarded_for\"';\n",
+]
+out, done = [], False
+for line in lines:
+    if not done and "include" in line and "conf.d" in line:
+        out.extend(block)
+        done = True
+    out.append(line)
+if not done:
+    out = lines
+open(path, "w", encoding="utf-8").write("".join(out))
+PYLOG
+  fi
+
+  # boot guard: restores the packaged drop-in when it is missing or was edited.
+  # No timestamp handling here: install -p keeps the packaged mtime.
+  cat > "$R/usr/local/sbin/fix-nginx-upstream.sh" <<'FIX'
+#!/bin/sh
+# fix-nginx-upstream.sh: restore the packaged nginx server drop-in.
+set -e
+src=/usr/local/share/cortex/nginx/PLACEHOLDER-cortex-node.conf
+dst=/etc/nginx/conf.d/PLACEHOLDER-cortex-node.conf
+[ -r "$src" ] || exit 0
+mkdir -p /etc/nginx/conf.d
+if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
+  exit 0
+fi
+install -p -m 0644 -o root -g root "$src" "$dst"
+exit 0
+FIX
+  sed -i "s/PLACEHOLDER/$idx/g" "$R/usr/local/sbin/fix-nginx-upstream.sh"
+  chown root:root "$R/usr/local/sbin/fix-nginx-upstream.sh" 2>/dev/null || true
+  chmod 0755 "$R/usr/local/sbin/fix-nginx-upstream.sh"
+  touch -d "2025-08-27 10:05:14" "$R/usr/local/sbin/fix-nginx-upstream.sh" 2>/dev/null || true
+
+  # the packaged copy is authoritative: ship it with the image timestamp
+  install -p -m 0644 -o root -g root "$conf" "$dst"
+  chown root:root "$R/etc/nginx/conf.d" 2>/dev/null || true
+
+  # vendor tree keeps its copy for the node's own inventory; the unit runs the
+  # /usr/local/sbin copy.
+  install -m 0755 "$R/usr/local/sbin/fix-nginx-upstream.sh" \
+    "$R/usr/local/lib/cortex-agent/fix_nginx.sh" 2>/dev/null || true
+  mkdir -p "$R/etc/systemd/system/nginx.service.d"
+  rm -f "$R/etc/systemd/system/nginx.service.d/wetware.conf"
+  cat > "$R/etc/systemd/system/nginx.service.d/cortex-node.conf" <<'UNIT'
+[Service]
+ExecStartPre=/usr/local/sbin/fix-nginx-upstream.sh
+UNIT
+  chmod 0644 "$R/etc/systemd/system/nginx.service.d/cortex-node.conf"
+  chown root:root "$R/etc/systemd/system/nginx.service.d/cortex-node.conf" 2>/dev/null || true
+  # a fixed port 80 only: no vendor site files are loaded (nginx.conf includes
+  # conf.d only), so sites-enabled/default stays inert on disk.
+  systemctl --root="$R" enable nginx.service >/dev/null 2>&1 || true
+}
+
+# ---------------------------------------------------------------------------
+# scheduled work: a real systemd timer, no cron package on the node
+# ---------------------------------------------------------------------------
+# The node image carries no cron daemon, so it must not carry /etc/crontab
+# either: recurring work is a systemd timer, which is what `systemctl
+# list-timers` reports.  The watchdog reopens the proxy logs when a rotation
+# left the master on an unlinked descriptor and records one operations line.
+wetware_install_watchdog_timer() {
+  local R="$1"
+  mkdir -p "$R/usr/local/sbin" "$R/etc/systemd/system" "$R/var/log/cortex"
+  rm -f "$R/etc/crontab" "$R/var/spool/cron/crontabs/root"
+  cat > "$R/usr/local/sbin/cortex-watchdog" <<'WD'
+#!/bin/sh
+# cortex-watchdog: interval check for the node's front end.
+# Asks the master to reopen its logs when a descriptor points at a rotated or
+# replaced file, then appends one operations line.
+set -e
+log=/var/log/cortex/watchdog.log
+mkdir -p /var/log/cortex
+nginx=inactive
+stale=0
+pid=$(cat /run/nginx.pid 2>/dev/null || true)
+if [ -n "$pid" ] && [ -d "/proc/$pid/fd" ]; then
+  nginx=active
+  for fd in "/proc/$pid/fd"/*; do
+    target=$(readlink "$fd" 2>/dev/null || true)
+    case "$target" in
+      */var/log/nginx/*) ;;
+      *) continue ;;
+    esac
+    path=${target%% (deleted)}
+    case "$path" in
+      /var/log/nginx/access.log|/var/log/nginx/error.log) ;;
+      *) stale=1; continue ;;
+    esac
+    [ "$(stat -Lc %i "$fd" 2>/dev/null || echo x)" = \
+      "$(stat -c %i "$path" 2>/dev/null || echo y)" ] || stale=1
+  done
+  if [ "$stale" = 1 ] && [ -x /usr/sbin/nginx ]; then
+    /usr/sbin/nginx -s reopen >/dev/null 2>&1 || true
+  fi
+fi
+printf '%s cortex-watchdog: nginx=%s log-reopen=%s load=%s\n' \
+  "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$nginx" "$stale" \
+  "$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo 0)" >> "$log"
+exit 0
+WD
+  chown root:root "$R/usr/local/sbin/cortex-watchdog" 2>/dev/null || true
+  chmod 0755 "$R/usr/local/sbin/cortex-watchdog"
+  touch -d "2026-08-09 04:17:52" "$R/usr/local/sbin/cortex-watchdog" 2>/dev/null || true
+
+  cat > "$R/etc/systemd/system/cortex-watchdog.service" <<'UNIT'
+[Unit]
+Description=Node front-end watchdog
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cortex-watchdog
+UNIT
+  cat > "$R/etc/systemd/system/cortex-watchdog.timer" <<'UNIT'
+[Unit]
+Description=Run the node front-end watchdog every minute
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=cortex-watchdog.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+  chmod 0644 "$R/etc/systemd/system/cortex-watchdog.service" \
+             "$R/etc/systemd/system/cortex-watchdog.timer"
+  chown root:root "$R/etc/systemd/system/cortex-watchdog.service" \
+                   "$R/etc/systemd/system/cortex-watchdog.timer" 2>/dev/null || true
+  touch -d "2026-08-09 04:17:52" "$R/etc/systemd/system/cortex-watchdog.service" \
+        "$R/etc/systemd/system/cortex-watchdog.timer" 2>/dev/null || true
+  systemctl --root="$R" enable cortex-watchdog.timer >/dev/null 2>&1 || true
+}
+
+# real syslog: the node's log files exist, so the daemon that writes them must
+# exist too.  The base image arrives without the package on the core node; the
+# gateway's ensure_guest_packages() already installs it.
+wetware_ensure_rsyslog() {
+  local R="$1" rc=0
+  if chroot "$R" dpkg-query -W -f='${Status}' rsyslog 2>/dev/null | grep -q 'ok installed'; then
+    :
+  else
+    mkdir -p "$R/usr/sbin"
+    printf '#!/bin/sh\nexit 101\n' > "$R/usr/sbin/policy-rc.d"
+    chmod 0755 "$R/usr/sbin/policy-rc.d"
+    chroot "$R" env DEBIAN_FRONTEND=noninteractive HOME=/root \
+        apt-get update -q >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      chroot "$R" env DEBIAN_FRONTEND=noninteractive HOME=/root \
+          apt-get install -y -q --no-install-recommends rsyslog >/dev/null 2>&1 || rc=$?
+    fi
+    rm -f "$R/usr/sbin/policy-rc.d"
+    if [ "$rc" -ne 0 ]; then
+      warn "could not install rsyslog in the guest (log files stay untouched)"
+      return 0
+    fi
+  fi
+  # the container has no kernel ring buffer of its own
+  sed -i 's|^module(load="imklog")|# module(load="imklog")  # container: host kernel log is not exposed|' \
+      "$R/etc/rsyslog.conf" 2>/dev/null || true
+  systemctl --root="$R" enable rsyslog.service >/dev/null 2>&1 || true
+}
+
+# after the identity pass rewrote the log files, the daemons that hold them
+# have to reopen the current inodes (a truncated file keeps the old offset, an
+# atomically replaced one leaves the daemon on an unlinked descriptor).
+wetware_reload_guest_logs() {
+  local machine="$1"
+  systemd-run -M "$machine" --wait --pipe --quiet /bin/sh -c \
+    'systemctl daemon-reload 2>/dev/null || true
+     systemctl enable --now cortex-watchdog.timer >/dev/null 2>&1 || true
+     systemctl restart rsyslog.service >/dev/null 2>&1 || true
+     systemctl restart nginx.service >/dev/null 2>&1 || true
+     /usr/sbin/nginx -s reopen >/dev/null 2>&1 || true' || true
+}
+
 # re-stamp every file in a tree that was modified during the build window
 wetware_stamp_recent() {
   local R="$1" since="$2" when="$3" p
@@ -583,7 +820,11 @@ wetware_stamp_identity() {
   stamp_glob "$R" "/etc/nginx/sites-enabled/*" "2025-08-27 09:44:02"
   stamp_glob "$R" "/etc/nginx/sites-available/*" "2025-08-27 09:44:02"
   stamp_one "$R" /etc/nginx/nginx.conf "2025-08-27 09:44:02"
-  stamp_one "$R" /etc/nginx/conf.d/00-wetware.conf "2025-08-27 09:44:02"
+  stamp_one "$R" /etc/nginx/conf.d/10-cortex-node.conf "2025-08-27 09:44:02"
+  stamp_one "$R" /usr/local/share/cortex/nginx/10-cortex-node.conf "2025-08-27 09:44:02"
+  stamp_one "$R" /etc/systemd/system/cortex-watchdog.service "2026-08-09 04:17:52"
+  stamp_one "$R" /etc/systemd/system/cortex-watchdog.timer "2026-08-09 04:17:52"
+  stamp_one "$R" /usr/local/sbin/cortex-watchdog "2026-08-09 04:17:52"
   stamp_one "$R" /etc/nginx/conf.d/cortex-node.conf "2026-10-26 07:41:55"
   stamp_one "$R" /etc/nginx/conf.d/upstream.conf "2026-10-26 07:41:55"
 
@@ -675,6 +916,9 @@ wetware_host_hygiene() {
   hyg "rewriting node history for $host ($role)"
   wetware_install_node_console "$R" || return 1
   wetware_install_bootlog "$R"
+  # no cron package on this image: recurring work is the systemd timer, and
+  # /etc/crontab (if the image still carries one) goes away with it.
+  wetware_install_watchdog_timer "$R"
   # core keeps host0: ops/nspawn/campaign_net.sh addresses that node by name.
   case "$role" in
     edge|hive) wetware_network_rename "$R" "${HYGIENE_NIC:-ens192}" ;;
@@ -870,7 +1114,7 @@ def build_sessions():
     def add(login, minutes, user, host, method="password", extra=None):
         logout = login + minutes * 60 + rng.rand(3, 47)
         s = {"login": login, "logout": logout, "user": user, "host": host,
-             "pts": "pts/%d" % (pts[0] % 3), "method": method,
+             "pts": "pts/%d" % (pts[0] % 2), "method": method,
              "pid": rng.rand(2200, 9800), "port": rng.rand(41000, 61000)}
         if extra:
             s.update(extra)
@@ -1032,7 +1276,10 @@ def auth_text(host, sessions, gate_fp):
     put(typo + 4, "sshd[%d]: Connection closed by authenticating user root "
         "10.66.255.1 port 52318 [preauth]" % rng.rand(2200, 9800))
     rows.sort(key=lambda r: r[0])
-    return "\n".join(r[1] for r in rows) + "\n"
+    # the file timestamp follows the newest record: a log whose mtime is older
+    # (or newer) than its last line dates the node on the first `ls -l`.
+    last = rows[-1][0] if rows else INSTALL
+    return "\n".join(r[1] for r in rows) + "\n", last
 
 
 # ---------------------------------------------------------------------------
@@ -1732,8 +1979,9 @@ def main():
           ts(2026, 9, 30, 4, 30, 1))
     write_lastlog(root, users, sessions, 0, utmp_gid, sess_end)
 
-    write(root, "/var/log/auth.log", auth_text(host, sessions, gate_fp),
-          0o640, syslog_uid, adm_gid, ts(2026, 10, 26, 8, 3, 16))
+    auth_data, auth_mtime = auth_text(host, sessions, gate_fp)
+    write(root, "/var/log/auth.log", auth_data, 0o640, syslog_uid, adm_gid,
+          auth_mtime)
     write(root, "/var/log/kern.log", kern_text(host, edge, host_boot, nic), 0o640,
           syslog_uid, adm_gid, host_boot + 10)
     syslog_data, syslog_mtime = syslog_text(host, sessions, edge, host_boot,
@@ -1944,34 +2192,12 @@ WantedBy=multi-user.target
 EOF
 mkdir -p "$ROOT/etc/nginx/conf.d"
 # The vendor vhost in conf.d is a named server (story artifact) and the only
-# default_server is the runtime drop-in below.  Do not delete the vendor config:
-# an operator inspecting the node must still find it on disk.
+# default_server is the packaged drop-in below.  Do not delete the vendor
+# config: an operator inspecting the node must still find it on disk.
 # The drop-in proxies one endpoint only: every other path is nginx's own 404,
 # and upstream faults are answered with nginx's stock 502 page instead of
 # whatever page the process behind it produced.
-cat > "$ROOT/etc/nginx/conf.d/00-wetware.conf" <<'EOF'
-server {
-  listen 80 default_server;
-  listen [::]:80 default_server;
-  server_name _;
-  access_log /var/log/nginx/access.log;
-  error_log /var/log/nginx/error.log;
-
-  location = /v1/inference {
-    proxy_pass http://127.0.0.1:8000;
-    proxy_http_version 1.1;
-    proxy_set_header Connection "";
-    proxy_connect_timeout 5s;
-    proxy_read_timeout 55s;
-    proxy_intercept_errors on;
-    error_page 500 501 502 503 504 = @chamber_down;
-  }
-
-  location @chamber_down {
-    return 502;
-  }
-}
-EOF
+wetware_install_nginx_frontend "$ROOT" "127.0.0.1:8000" 10
 systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
   "systemctl daemon-reload; systemctl enable wetware-upstream.service cortex-inquisitor.service cortex-agent84.service; systemctl restart wetware-upstream.service cortex-inquisitor.service cortex-agent84.service; nginx -t && systemctl restart nginx" || true
 
@@ -2129,68 +2355,10 @@ systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
   "systemctl daemon-reload; systemctl enable cortex-api.service; systemctl restart cortex-api.service; sleep 0.3; systemctl show -p MainPID --value cortex-api.service" || true
 
 echo "[engine] installing boot-safe nginx config"
-# The boot guard lives in /usr/local/sbin: the vendor tree under
-# /usr/local/lib/cortex-agent is re-materialised for every operator session, so a
-# guard kept there would carry a login-time mtime and look edited after boot.
-mkdir -p "$ROOT/usr/local/sbin" "$ROOT/usr/local/lib/cortex-agent"
-cat > "$ROOT/usr/local/sbin/fix-nginx-upstream.sh" <<'FIX'
-#!/bin/sh
-# Boot guard: keep exactly one default_server (the runtime drop-in) and leave
-# the vendor vhost and site files untouched so the node's own records survive a
-# restart.  nginx.conf includes conf.d only, never sites-enabled.
-#
-# The drop-in is rewritten only when its content really changed: a boot is not a
-# configuration change, and a fresh mtime on a months-old file is a giveaway.
-mkdir -p /etc/nginx/conf.d
-tmp=$(mktemp /etc/nginx/conf.d/.wetware-dropin.XXXXXX) || exit 0
-cat > "$tmp" <<'NGX'
-server {
-  listen 80 default_server;
-  listen [::]:80 default_server;
-  server_name _;
-  access_log /var/log/nginx/access.log;
-  error_log /var/log/nginx/error.log;
-
-  location = /v1/inference {
-    proxy_pass http://127.0.0.1:8000;
-    proxy_http_version 1.1;
-    proxy_set_header Connection "";
-    proxy_connect_timeout 5s;
-    proxy_read_timeout 55s;
-    proxy_intercept_errors on;
-    error_page 500 501 502 503 504 = @chamber_down;
-  }
-
-  location @chamber_down {
-    return 502;
-  }
-}
-NGX
-if cmp -s "$tmp" /etc/nginx/conf.d/00-wetware.conf; then
-  rm -f "$tmp"
-else
-  chmod 0644 "$tmp"
-  chown root:root "$tmp" 2>/dev/null || true
-  mv -f "$tmp" /etc/nginx/conf.d/00-wetware.conf
-  touch -d "2025-08-27 09:44:02" /etc/nginx/conf.d/00-wetware.conf 2>/dev/null || true
-fi
-exit 0
-FIX
-chmod 0755 "$ROOT/usr/local/sbin/fix-nginx-upstream.sh"
-chown root:root "$ROOT/usr/local/sbin/fix-nginx-upstream.sh" 2>/dev/null || true
-# the guard was installed with the image, not edited after the boot that ran it
-touch -d "2025-08-27 10:05:14" "$ROOT/usr/local/sbin/fix-nginx-upstream.sh" \
-  2>/dev/null || true
-# the vendor tree keeps its copy for the node's own inventory, but nothing
-# executes it any more.
-install -m 0755 "$ROOT/usr/local/sbin/fix-nginx-upstream.sh" \
-  "$ROOT/usr/local/lib/cortex-agent/fix_nginx.sh" 2>/dev/null || true
-mkdir -p "$ROOT/etc/systemd/system/nginx.service.d"
-cat > "$ROOT/etc/systemd/system/nginx.service.d/wetware.conf" <<'UNIT'
-[Service]
-ExecStartPre=/usr/local/sbin/fix-nginx-upstream.sh
-UNIT
-systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c "/usr/local/sbin/fix-nginx-upstream.sh; systemctl daemon-reload; systemctl restart nginx" || true
+# the front end (drop-in + boot guard + log format) is written with the
+# nginx block above; re-assert the packaged copy and restart the daemon.
+systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
+  "/usr/local/sbin/fix-nginx-upstream.sh; systemctl daemon-reload; systemctl restart nginx" || true
 
 echo "[engine] installing host<->container network guard"
 if [ -n "$NETSCRIPT" ]; then
@@ -2243,6 +2411,9 @@ UNIT
   /usr/local/sbin/wetware-net-guard.sh || true
 fi
 
+echo "[engine] installing the real syslog daemon"
+wetware_ensure_rsyslog "$ROOT"
+
 echo "[engine] repairing host identity and history"
 wetware_host_hygiene "$ROOT" "$HOST_ID" "${HYGIENE_ROLE:-core}" \
   "${UNIT_NAME:-wetware-host-$HOST_ID.service}"
@@ -2273,5 +2444,9 @@ if [ "$WAS_ACTIVE" = "1" ]; then
     systemctl is-active --quiet "${UNIT_NAME:-wetware-host-$HOST_ID.service}" && break
     sleep 1
   done
+  # the identity pass rewrote the log files while the node was down; once it is
+  # up again let the daemons open the current inodes so the next request and the
+  # next login really append to the files an operator reads.
+  wetware_reload_guest_logs "$MACHINE"
 fi
 echo "[engine] done"
