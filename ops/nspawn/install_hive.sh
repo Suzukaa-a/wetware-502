@@ -1740,10 +1740,6 @@ def _authorized(token, argv=None):
     if supplied:
         sys.stderr.write(AUTH_REJECTED)
         return False
-    if argv and "--authorize-dnr" in argv:
-        sys.stdout.write("[vesalius-ctl] DRP-00 clinical authorization accepted"
-                         " (Iona Vale co-signature on file).\n")
-        return True
     sys.stderr.write(AUTH_USAGE)
     return False
 

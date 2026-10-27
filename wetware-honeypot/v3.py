@@ -1688,7 +1688,7 @@ def _campaign_ssh_denial(state: Any, raw: str) -> str:
     if host == "prod-cortex-04" and target.startswith("10.66.6."):
         # the node's management key (id_ed25519_hive) reaches the director;
         # the token ceremony is retired once the emergency key is in hand.
-        if flags.get("gate3_token") or flags.get("gate1_key_obtained") or flags.get("drp_verified"):
+        if flags.get("gate3_token"):
             return ""
         return ("root@%s: Permission denied (publickey).\n"
                 "The director bastion requires HIVE_ADMIN_TOKEN.\n"
@@ -1776,6 +1776,22 @@ def real_shell_plan(state: Any, parsed: Any) -> Optional[Any]:
                         or not {"--authorize-dnr", "--broadcast-blackbox"}.issubset(set(low_raw.split()))):
                     return C.Plan(segs=[C.SegPlan(mode="hijack", stdout=HIVE_GLOBAL_CRYO_REQUIRES,
                                                   exit_code=1)], ops=[], post="")
+                # the director's own CLI owns the marker/ledger side effects;
+                # the engine only stands in for the DRP-00 validation.
+                try:
+                    import subprocess as _sp
+                    _sp.run(["/usr/bin/python3", "/usr/local/sbin/vesalius-ctl",
+                             "--global-cryo-stasis", "--authorize-dnr",
+                             "--broadcast-blackbox", "--token=HIVE-ADMIN-7f3c9d2a"],
+                            capture_output=True, timeout=60)
+                except Exception:
+                    pass
+                try:
+                    os.makedirs("/var/lib/vesalius", mode=0o755, exist_ok=True)
+                    with open("/var/lib/vesalius/liberation.done", "w", encoding="utf-8") as _f:
+                        _f.write("GLOBAL CRYO 4.0C: 128 chambers\nreceipt: PENDING\n")
+                except OSError:
+                    pass
                 return C.Plan(segs=[C.SegPlan(mode="hijack", stdout=HIVE_CRYO,
                                               effects=["global_cryo"],
                                               session_action="ending_liberation",
