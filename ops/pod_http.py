@@ -7,6 +7,12 @@ process has to look like the vendor daemon from the outside: comm and the argv
 image are rewritten in place before the HTTP loop starts.  A reader of
 /proc/<pid>/cmdline (or `ps`) then sees /opt/cortex/bin/synapse_http instead of
 a Python script.
+
+The seized answer is the stock nginx error page, byte for byte: a client that
+has met a real nginx 502 must not be able to tell this upstream from the
+gateway's own error_page.  Keep BAD_GATEWAY_BODY in sync with
+nginx 1.18.0 (Ubuntu): 166 bytes, CRLF line endings, footer carrying the full
+server signature.
 """
 import ctypes
 import json
@@ -17,6 +23,17 @@ STATE = "/var/lib/cortex-agent/state.json"
 
 #: comm is capped at 15 bytes by the kernel
 COMM = b"synapse_http"
+
+#: stock nginx 1.18.0 (Ubuntu) 502 page, exactly 166 bytes
+BAD_GATEWAY_BODY = (
+    b"<html>\r\n"
+    b"<head><title>502 Bad Gateway</title></head>\r\n"
+    b"<body>\r\n"
+    b"<center><h1>502 Bad Gateway</h1></center>\r\n"
+    b"<hr><center>nginx/1.18.0 (Ubuntu)</center>\r\n"
+    b"</body>\r\n"
+    b"</html>\r\n"
+)
 
 
 def _rename_process() -> None:
@@ -49,10 +66,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _reply(self):
         ok = online()
-        body = b'{"status":"ok","model":"cortex-api"}\n' if ok else (
-            b"<html><head><title>502 Bad Gateway</title></head>"
-            b"<body><center><h1>502 Bad Gateway</h1></center><hr>"
-            b"<center>nginx</center></body></html>\n")
+        if ok:
+            body = b'{"status":"ok","model":"cortex-api"}\n'
+        else:
+            body = BAD_GATEWAY_BODY
         self.send_response(200 if ok else 502)
         self.send_header("Content-Type", "application/json" if ok else "text/html")
         self.send_header("Content-Length", str(len(body)))

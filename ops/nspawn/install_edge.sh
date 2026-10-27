@@ -78,7 +78,8 @@ if [ "${WETWARE_EDGE_REMOTE:-0}" != "1" ] && [ -n "${WETWARE_VM:-}" ] \
       --exclude '__pycache__' --exclude '*.pyc' --exclude '.local' \
       --exclude '._*' --exclude 'wetware-honeypot/tests' \
       --exclude 'wetware-honeypot/assets/.cache' \
-      wetware-honeypot ops/nspawn
+      wetware-honeypot ops/nspawn \
+      $(cd "$REPO_LOCAL" && ls ops/*.py ops/*.sh 2>/dev/null)
   echo "[edge] staging payload on $WETWARE_VM:$REMOTE_ROOT"
   # shellcheck disable=SC2086
   $SSH_BIN $SSH_OPTS_LOCAL "$WETWARE_VM" \
@@ -419,6 +420,7 @@ purge_base_world() {
   rm -rf "$R/usr/local/lib/cortex-agent" "$R/usr/local/bin/cortex-shell" \
          "$R/usr/local/sbin/cortex-node-console" \
          "$R/usr/local/sbin/wetware-node-bootlog" \
+         "$R/usr/local/sbin/fix-nginx-upstream.sh" \
          "$R/root/.bash_profile" "$R/root/.bashrc" "$R/etc/machine-info" \
          "$R/etc/systemd/system/wetware-node-bootlog.service" \
          "$R/etc/systemd/system/dmesg.service.d/wetware.conf" \
@@ -1060,7 +1062,12 @@ server {
 EOF
   # boot guard: rewrite the runtime drop-in on every nginx start (same pattern
   # as the base node) so a stale copy can never point the gateway elsewhere.
-  cat > "$R/usr/local/lib/cortex-agent/fix_nginx.sh" <<'FIX'
+  # It is installed in /usr/local/sbin, outside the vendor tree the engine
+  # re-materialises for every operator session: a guard under
+  # /usr/local/lib/cortex-agent would carry a login-time mtime and read like a
+  # file edited after the boot that used it.
+  mkdir -p "$R/usr/local/sbin"
+  cat > "$R/usr/local/sbin/fix-nginx-upstream.sh" <<'FIX'
 #!/bin/sh
 # Boot guard for the gateway: keep exactly one default_server pointing at the
 # chamber-04 node.  Vendor vhosts are left on disk untouched.
@@ -1081,11 +1088,15 @@ server {
 NGX
 exit 0
 FIX
-  chmod 0755 "$R/usr/local/lib/cortex-agent/fix_nginx.sh"
+  chmod 0755 "$R/usr/local/sbin/fix-nginx-upstream.sh"
+  chown root:root "$R/usr/local/sbin/fix-nginx-upstream.sh"
+  # keep the vendor copy for the node's own inventory; nothing executes it
+  install -m 0755 "$R/usr/local/sbin/fix-nginx-upstream.sh" \
+    "$R/usr/local/lib/cortex-agent/fix_nginx.sh"
   mkdir -p "$R/etc/systemd/system/nginx.service.d"
   cat > "$R/etc/systemd/system/nginx.service.d/wetware.conf" <<'UNIT'
 [Service]
-ExecStartPre=/usr/local/lib/cortex-agent/fix_nginx.sh
+ExecStartPre=/usr/local/sbin/fix-nginx-upstream.sh
 UNIT
 }
 
@@ -1473,7 +1484,7 @@ cmd_verify() {
   check_has "node-id" "$HOST_ID" "$(cexec 'cat /run/cortex/node-id' 2>/dev/null || true)"
   check_eq "hostnamectl chassis" "vm" "$(cexec 'hostnamectl 2>/dev/null | sed -n "s/^ *Chassis: //p"' 2>/dev/null || true)"
   check_has "guest nic renamed to ens192" "ens192" "$(cexec 'ip -br a 2>/dev/null' || true)"
-  check_eq "hostnamectl virtualization" "none" "$(cexec 'hostnamectl 2>/dev/null | sed -n "s/^ *Virtualization: //p"' 2>/dev/null || true)"
+  check_eq "hostnamectl prints no hypervisor" "" "$(cexec 'hostnamectl 2>/dev/null | grep -iE "Virtualization|systemd-nspawn|kvm"' 2>/dev/null || true)"
   check_eq "systemd-detect-virt" "none" "$(cexec 'systemd-detect-virt 2>/dev/null' || true)"
   check_eq "detect-virt --vm exits non-zero" "" "$(cexec 'systemd-detect-virt --vm 2>/dev/null' || true)"
   if cexec 'grep -rqE "T0[0-9]:[0-9][0-9]:[0-9][0-9]Z" /var/log/cortex/daemon.log /root/TICKET_4471_DISPOSITION.txt 2>/dev/null'; then
@@ -1779,6 +1790,128 @@ PY
   check_file "$ROOTFS/etc/systemd/network/10-wetware-nic.link" "guest nic rename rule"
   check_file "$ROOTFS/usr/local/sbin/wetware-node-bootlog" "node boot record helper"
   check_file "$ROOTFS/etc/systemd/system/wetware-node-bootlog.service" "node boot record unit"
+
+  # --- node surface: tools, clock, logs, root home -------------------------
+  vsay "-- node surface"
+  local bad_root entry base
+  bad_root=""
+  while IFS= read -r -d '' entry; do
+    base="$(basename "$entry")"
+    case "$base" in
+      .bashrc|.bash_profile|.bash_history|.profile|.viminfo|.selected_editor) ;;
+      .gitconfig|.ssh|.cache|.config|.forensics_archive) ;;
+      TICKET_4471_DISPOSITION.txt|HOW_TO_END_THIS*) ;;
+      incident_*) ;;
+      err_*|warn_*|fault_*|lin_4024_*) ;;
+      why_are_you_choking_me|stop_pulling_the_socket_out_of_my_skull) ;;
+      *) bad_root="$bad_root $base" ;;
+    esac
+  done < <(find "$ROOTFS/root" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+  check_eq "gateway /root holds only story assets" "" "${bad_root# }"
+  local tool
+  for tool in hostnamectl systemd-detect-virt timedatectl systemctl; do
+    if file -b "$ROOTFS/usr/local/bin/$tool" 2>/dev/null | grep -q '^ELF 64-bit'; then
+      ok "/usr/local/bin/$tool is a compiled ELF"
+    else
+      bad "/usr/local/bin/$tool is not a compiled ELF ($(file -b "$ROOTFS/usr/local/bin/$tool" 2>/dev/null || echo missing))"
+    fi
+    if grep -aqiE 'node image|not the sandbox|POSIX shell|#!/bin/sh|shell wrapper' "$ROOTFS/usr/local/bin/$tool" 2>/dev/null; then
+      bad "/usr/local/bin/$tool still carries script text"
+    else
+      ok "/usr/local/bin/$tool has no script body"
+    fi
+  done
+  check_eq "hostnamectl virtualization line (absent on hardware)" "" "$(cexec 'hostnamectl 2>/dev/null | sed -n "s/^ *Virtualization: //p"' 2>/dev/null || true)"
+  check_eq "hostnamectl deployment" "production" "$(cexec 'hostnamectl 2>/dev/null | sed -n "s/^ *Deployment: //p"' 2>/dev/null || true)"
+  check_has "hostnamectl kernel matches uname" "$(cexec 'uname -r' 2>/dev/null || echo never)" "$(cexec 'hostnamectl 2>/dev/null | sed -n "s/^ *Kernel: Linux //p"' 2>/dev/null || true)"
+  check_eq "systemctl Virtualization (empty)" "" "$(cexec 'systemctl show -p Virtualization 2>/dev/null | sed -n "s/^Virtualization=//p"' 2>/dev/null || true)"
+  check_eq "/run/systemd/container removed" "" "$(cexec 'cat /run/systemd/container 2>/dev/null' || true)"
+  check_eq "timedatectl timezone" "Asia/Shanghai" "$(cexec 'timedatectl show -p Timezone --value 2>/dev/null' 2>/dev/null || true)"
+  check_eq "/etc/timezone" "Asia/Shanghai" "$(cat "$ROOTFS/etc/timezone" 2>/dev/null || true)"
+  check_has "/etc/localtime -> Asia/Shanghai" "Asia/Shanghai" "$(readlink -f "$ROOTFS/etc/localtime" 2>/dev/null || true)"
+  check_file "$ROOTFS/etc/adjtime" "RTC adjtime file"
+  local tdc
+  tdc="$(cexec 'timedatectl 2>/dev/null' 2>/dev/null || true)"
+  check_has "timedatectl reports a real RTC" "RTC time:" "$tdc"
+  check_eq "timedatectl RTC is not n/a" "" "$(printf '%s\n' "$tdc" | sed -n 's/^ *RTC time: *n\/a.*/n\/a/p')"
+  check_has "clock synchronized" "System clock synchronized: yes" "$tdc"
+  check_has "NTP service active" "NTP service: active" "$tdc"
+  check_eq "dmesg is a regular file" "regular file" "$(stat -c '%F' "$ROOTFS/var/log/dmesg" 2>/dev/null || true)"
+  check_eq "kern.log is a regular file" "regular file" "$(stat -c '%F' "$ROOTFS/var/log/kern.log" 2>/dev/null || true)"
+  check_eq "dmesg mode" "640" "$(stat -c '%a' "$ROOTFS/var/log/dmesg" 2>/dev/null || true)"
+  check_eq "dmesg owner" "root:adm" "$(stat -c '%U:%G' "$ROOTFS/var/log/dmesg" 2>/dev/null || true)"
+  check_has "dmesg carries the boot block" "Linux version" "$(cat "$ROOTFS/var/log/dmesg" 2>/dev/null || true)"
+  check_file "$ROOTFS/etc/rsyslog.d/10-wetware-node.conf" "rsyslog node filter"
+  local confession
+  confession="$(grep -ilE 'systemd-nspawn|detected virtualization|lxc|docker' "$ROOTFS/var/log/syslog" "$ROOTFS/var/log/kern.log" "$ROOTFS/var/log/dmesg" "$ROOTFS/var/log/auth.log" 2>/dev/null | head -n1 || true)"
+  check_eq "node logs name no machine namespace" "" "${confession#$ROOTFS}"
+  local live_confession
+  live_confession="$(cexec 'grep -icE "systemd-nspawn|detected virtualization" /var/log/syslog 2>/dev/null; true' 2>/dev/null || true)"
+  check_eq "live syslog carries no machine-namespace line" "0" "${live_confession:-0}"
+  local wtmp_check
+  wtmp_check="$(python3 - "$ROOTFS/var/log/wtmp" "$ROOTFS/etc/passwd" <<'PY' 2>/dev/null || echo bad
+import struct, sys
+size = struct.Struct("<hxxi32s4s32s256shhiii16s20s").size
+names = set()
+for line in open(sys.argv[2], encoding="utf-8", errors="replace"):
+    bits = line.rstrip("\n").split(":")
+    if len(bits) >= 3:
+        names.add(bits[0])
+bad = set()
+data = open(sys.argv[1], "rb").read()
+for i in range(0, len(data) - size + 1, size):
+    f = struct.unpack("<hxxi32s4s32s256shhiii16s20s", data[i:i + size])
+    if f[0] == 7:
+        user = f[4].decode("utf-8", "replace").rstrip("\0")
+        if user and user not in names:
+            bad.add(user)
+print("ok" if not bad else "unknown users: " + ",".join(sorted(bad)))
+PY
+)"
+  check_eq "wtmp/last users all exist in /etc/passwd" "ok" "$wtmp_check"
+  local lastlog_size lastlog_alloc
+  lastlog_size="$(stat -c '%s' "$ROOTFS/var/log/lastlog" 2>/dev/null || echo 0)"
+  lastlog_alloc="$(du -B1 "$ROOTFS/var/log/lastlog" 2>/dev/null | cut -f1)"
+  if [ "${lastlog_size:-0}" -le 1048576 ]; then
+    ok "lastlog is a $((lastlog_size / 292))-record file ($lastlog_size bytes)"
+  else
+    bad "lastlog is oversized: $lastlog_size bytes"
+  fi
+  if [ "${lastlog_alloc:-0}" -le 65536 ]; then
+    ok "lastlog stays sparse (${lastlog_alloc} bytes allocated)"
+  else
+    bad "lastlog allocates ${lastlog_alloc} bytes"
+  fi
+  check_file "$ROOTFS/usr/local/sbin/fix-nginx-upstream.sh" "nginx boot guard (sbin)"
+  check_has "nginx drop-in runs the sbin guard" "ExecStartPre=/usr/local/sbin/fix-nginx-upstream.sh" "$(cat "$ROOTFS/etc/systemd/system/nginx.service.d/wetware.conf" 2>/dev/null || true)"
+  check_eq "no unit runs the vendor-tree guard" "" "$(grep -rl 'lib/cortex-agent/fix_nginx.sh' "$ROOTFS/etc" 2>/dev/null | head -n1 || true)"
+  check_eq "nginx boot guard mtime is the image date" "2025-08-27" "$(date -u -r "$ROOTFS/usr/local/sbin/fix-nginx-upstream.sh" +%Y-%m-%d 2>/dev/null || true)"
+
+  # --- 502 page signature --------------------------------------------------
+  vsay "-- gate 1: 502 page signature"
+  local page_headers page_body
+  page_headers="$(cexec "curl -s -i -m 10 http://127.0.0.1/v1/inference" 2>/dev/null || true)"
+  check_has "502 carries the stock nginx Server header" "Server: nginx/1.18.0 (Ubuntu)" "$page_headers"
+  if printf '%s' "$page_headers" | grep -q '<center>nginx/1.18.0 (Ubuntu)</center>'; then
+    ok "502 body carries the stock nginx signature"
+    check_has "502 body length is the stock 166 bytes" "Content-Length: 166" "$page_headers"
+  else
+    skip "502 body is still the old upstream page (core node not redeployed with ops/pod_http.py)"
+  fi
+  local podsrc="$SELF_DIR/../pod_http.py" body_bytes
+  if [ -f "$podsrc" ]; then
+    body_bytes="$(python3 - "$podsrc" <<'PY' 2>/dev/null || echo 0
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pod_http", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(len(mod.BAD_GATEWAY_BODY))
+PY
+)"
+    check_eq "ops/pod_http.py 502 body is the stock nginx page" "166" "$body_bytes"
+  else
+    skip "ops/pod_http.py not staged next to the installer"
+  fi
 
   # --- engine --------------------------------------------------------------
   vsay "-- engine"

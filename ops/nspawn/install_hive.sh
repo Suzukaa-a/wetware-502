@@ -120,6 +120,11 @@ if [ "$(id -u)" -ne 0 ]; then
     # shellcheck disable=SC2086
     scp -q ${VESALIUS_VM_SSH_OPTS:-} "$SELF_DIR/install_engine_base.sh" \
       "${WETWARE_VM}:${REMOTE_DIR}/install_engine_base.sh"
+    # the identity library compiles its node front ends from these sources
+    # shellcheck disable=SC2086
+    scp -q ${VESALIUS_VM_SSH_OPTS:-} "$SELF_DIR"/fake_*.c \
+      "$SELF_DIR"/node_daemon.c "$SELF_DIR"/cortex_daemon.c \
+      "${WETWARE_VM}:${REMOTE_DIR}/" 2>/dev/null || true
   fi
   ENV_ARGS=""
   for _v in HOST_ID MACHINE CORE_HOST_ID BASE_DIR IMAGE_SIZE GUEST_IP GUEST_GATEWAY \
@@ -2058,6 +2063,65 @@ else
   else
     bad "node console / .bash_profile missing"
   fi
+
+  # --- node surface: tools, clock, logs, root home -------------------------
+  ROOT_RESIDUE=$(find "$ROOTFS/root" -mindepth 1 -maxdepth 1 2>/dev/null |
+    sed 's#.*/##' |
+    grep -vE '^(\.bashrc|\.bash_profile|\.bash_history|\.profile|\.viminfo|\.selected_editor|\.gitconfig|\.ssh|\.cache|\.config|\.forensics_archive|TICKET_4471_DISPOSITION\.txt|HOW_TO_END_THIS.*|incident_.*|err_.*|warn_.*|fault_.*|lin_4024_.*|why_are_you_choking_me|stop_pulling_the_socket_out_of_my_skull)$' || true)
+  if [ -z "$ROOT_RESIDUE" ]; then
+    ok "/root holds only story assets"
+  else
+    bad "/root builder residue: $(printf '%s' "$ROOT_RESIDUE" | tr '\n' ' ')"
+  fi
+  for TOOL in hostnamectl systemd-detect-virt timedatectl systemctl; do
+    if file -b "$ROOTFS/usr/local/bin/$TOOL" 2>/dev/null | grep -q '^ELF 64-bit'; then
+      ok "/usr/local/bin/$TOOL is a compiled ELF"
+    else
+      bad "/usr/local/bin/$TOOL is not a compiled ELF"
+    fi
+  done
+  TZ_FILE=$(cat "$ROOTFS/etc/timezone" 2>/dev/null || true)
+  [ "$TZ_FILE" = "Asia/Shanghai" ] && ok "/etc/timezone = Asia/Shanghai" \
+    || bad "/etc/timezone = '${TZ_FILE}'"
+  DMESG_TYPE=$(stat -c '%F' "$ROOTFS/var/log/dmesg" 2>/dev/null || true)
+  KERN_TYPE=$(stat -c '%F' "$ROOTFS/var/log/kern.log" 2>/dev/null || true)
+  [ "$DMESG_TYPE" = "regular file" ] && ok "dmesg is a regular file" \
+    || bad "dmesg is ${DMESG_TYPE:-missing}"
+  [ "$KERN_TYPE" = "regular file" ] && ok "kern.log is a regular file" \
+    || bad "kern.log is ${KERN_TYPE:-missing}"
+  WTMP_USERS=$(python3 - "$ROOTFS/var/log/wtmp" "$ROOTFS/etc/passwd" <<'PY' 2>/dev/null || echo bad
+import struct, sys
+size = struct.Struct("<hxxi32s4s32s256shhiii16s20s").size
+names = set()
+for line in open(sys.argv[2], encoding="utf-8", errors="replace"):
+    bits = line.rstrip("\n").split(":")
+    if len(bits) >= 3:
+        names.add(bits[0])
+bad = set()
+data = open(sys.argv[1], "rb").read()
+for i in range(0, len(data) - size + 1, size):
+    f = struct.unpack("<hxxi32s4s32s256shhiii16s20s", data[i:i + size])
+    if f[0] == 7:
+        user = f[4].decode("utf-8", "replace").rstrip("\0")
+        if user and user not in names:
+            bad.add(user)
+print("ok" if not bad else "unknown: " + ",".join(sorted(bad)))
+PY
+)
+  [ "$WTMP_USERS" = "ok" ] && ok "wtmp users all exist in /etc/passwd" \
+    || bad "wtmp references unknown users: $WTMP_USERS"
+  LASTLOG_SIZE=$(stat -c '%s' "$ROOTFS/var/log/lastlog" 2>/dev/null || echo 0)
+  if [ "${LASTLOG_SIZE:-0}" -le 1048576 ]; then
+    ok "lastlog size ${LASTLOG_SIZE} bytes"
+  else
+    bad "lastlog oversized: ${LASTLOG_SIZE} bytes"
+  fi
+  SURFACE_MARK=$(in_container /bin/cat /run/systemd/container 2>/dev/null | tr -d '\r\n' || true)
+  [ -z "$SURFACE_MARK" ] && ok "/run/systemd/container removed" \
+    || bad "/run/systemd/container still says '$SURFACE_MARK'"
+  HOST_VIRT=$(in_container /bin/sh -c 'hostnamectl 2>/dev/null' 2>/dev/null | grep -icE 'Virtualization|systemd-nspawn' || true)
+  [ "${HOST_VIRT:-0}" = "0" ] && ok "hostnamectl reports no hypervisor" \
+    || bad "hostnamectl names the machine namespace"
 
   # --- sshd ---------------------------------------------------------------
   if in_container /bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/22; IFS= read -r -t 3 line <&3; case "$line" in SSH-*) exit 0;; *) exit 1;; esac' >/dev/null 2>&1; then
