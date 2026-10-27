@@ -1760,7 +1760,7 @@ def real_shell_plan(state: Any, parsed: Any) -> Optional[Any]:
                 _tok = ""
                 _m = re.search(r"--token(?:=|\s+)(\S+)", low_raw)
                 if _m:
-                    _tok = _m.group(1).strip()
+                    _tok = _m.group(1).strip().strip("\"'`;)").lower()
                 if not _tok:
                     return C.Plan(segs=[C.SegPlan(mode="hijack",
                                                   stdout="[auth] cluster token required\n",
