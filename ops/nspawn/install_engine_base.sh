@@ -642,6 +642,7 @@ Description=SEC/OSHA regulatory telemetry relay
 ListenStream=/run/vesalius/regulatory_relay.sock
 SocketMode=0660
 DirectoryMode=0755
+Accept=yes
 
 [Install]
 WantedBy=sockets.target
