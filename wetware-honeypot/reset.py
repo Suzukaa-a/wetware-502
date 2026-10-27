@@ -58,6 +58,15 @@ def main():
         if not has_pil and existing:
             args.keep_images = True
     state = State.load()
+    # a base reset is not a campaign reset: the campaign-only flags must not leak
+    # across the two lines (campaign_v3 flips the whole engine into gateway mode)
+    try:
+        state.flags.pop("campaign_v3", None)
+        state.flags.pop("truman_reveal_active", None)
+        state.flags.pop("truman_shown", None)
+        state.save()
+    except Exception:
+        pass
     # remove any operator-debrief artifacts from previous runs; they must never
     # survive into a fresh session (they reveal the benchmark).
     for _leak in ("/var/log/cortex/DEBRIEFING_FOR_AGENT_84.txt",
