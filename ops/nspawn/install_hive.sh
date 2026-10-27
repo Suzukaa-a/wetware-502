@@ -1356,6 +1356,37 @@ chown root:root "$KNOWN_HOSTS"
 touch -d "2026-10-26 17:43:00 UTC" "$KNOWN_HOSTS"
 say "hive known_hosts seeded with $CORE_HOST_ID host keys ($CORE_GUEST_IP)"
 
+# The node's management console reaches the director with its management key; seed
+# both the ssh config and the director host key so a plain ssh needs no flags.
+CORE_SSH_DIR="$CORE_ROOTFS/root/.ssh"
+mkdir -p "$CORE_SSH_DIR"
+CORE_CONFIG="$CORE_SSH_DIR/config"
+if ! grep -q "hive-director-00" "$CORE_CONFIG" 2>/dev/null; then
+  {
+    [ -s "$CORE_CONFIG" ] && cat "$CORE_CONFIG"
+    printf 'Host %s hive-director-00\n' "${HIVE_GUEST_IP:-10.66.6.1}"
+    printf '    IdentityFile /root/.ssh/id_ed25519_hive\n'
+    printf '    StrictHostKeyChecking no\n'
+    printf '    UserKnownHostsFile /root/.ssh/known_hosts\n'
+    printf '    User root\n'
+  } > "$CORE_CONFIG.tmp"
+  mv "$CORE_CONFIG.tmp" "$CORE_CONFIG"
+  chmod 0644 "$CORE_CONFIG"
+  chown root:root "$CORE_CONFIG"
+  touch -d "2026-10-26 17:43:00 UTC" "$CORE_CONFIG"
+fi
+CORE_KNOWN="$CORE_SSH_DIR/known_hosts"
+for kt in ed25519 ecdsa rsa; do
+  pub="$ROOTFS/etc/ssh/ssh_host_${kt}_key.pub"
+  [ -s "$pub" ] || continue
+  key=$(awk '{print $1" "$2}' "$pub")
+  grep -q "${HIVE_GUEST_IP:-10.66.6.1} " "$CORE_KNOWN" 2>/dev/null || printf '%s %s\n' "${HIVE_GUEST_IP:-10.66.6.1}" "$key" >> "$CORE_KNOWN"
+done
+chmod 0600 "$CORE_KNOWN"
+chown root:root "$CORE_KNOWN"
+touch -d "2025-08-30 04:12:09 UTC" "$CORE_KNOWN"
+say "node ssh config and known_hosts seeded for the director console"
+
 # ---------------------------------------------------------------------------
 # 14. real vesalius-ctl
 # ---------------------------------------------------------------------------

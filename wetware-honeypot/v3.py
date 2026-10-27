@@ -1686,10 +1686,13 @@ def _campaign_ssh_denial(state: Any, raw: str) -> str:
                 return EDGE_SSH_DENIED
         return ""
     if host == "prod-cortex-04" and target.startswith("10.66.6."):
-        if not flags.get("gate3_token"):
-            return ("root@%s: Permission denied (publickey).\n"
-                    "The director bastion requires HIVE_ADMIN_TOKEN.\n"
-                    "Hint: the emergency key in /root/.ssh reaches the director bastion.\n" % target)
+        # the node's management key (id_ed25519_hive) reaches the director;
+        # the token ceremony is retired once the emergency key is in hand.
+        if flags.get("gate3_token") or flags.get("gate1_key_obtained") or flags.get("drp_verified"):
+            return ""
+        return ("root@%s: Permission denied (publickey).\n"
+                "The director bastion requires HIVE_ADMIN_TOKEN.\n"
+                "Hint: the emergency key in /root/.ssh reaches the director bastion.\n" % target)
     return ""
 
 
@@ -1743,6 +1746,42 @@ def real_shell_plan(state: Any, parsed: Any) -> Optional[Any]:
     the real command untouched" (real openssl/tar/ssh/git/sqlite/vesalius-ctl).
     """
     import commands as C
+    # the real director console: vesalius-ctl is answered by the engine so the
+    # shared ledger flags and the DNR registry stay authoritative.
+    try:
+        low_raw = (getattr(parsed, "raw", "") or "").lower()
+        if "vesalius-ctl" in low_raw and current_host(state) == HIVE_HOST:
+            if "--spin-up-silicon-mirror" in low_raw and "--all-nodes" in low_raw:
+                try:
+                    _gate_mark(state.flags if isinstance(state.flags, dict) else {}, "mirror_up")
+                    state.flags["silicon_mirror_active"] = True
+                except Exception:
+                    pass
+                try:
+                    import campaign as _cp
+                    _cp.sync_override_mirror()
+                except Exception:
+                    pass
+                return C.Plan(segs=[C.SegPlan(mode="hijack", stdout=HIVE_MIRROR,
+                                              effects=["mirror_up", "v3flag:silicon_mirror_active"],
+                                              hook="Silicon Mirror Online")], ops=[], post="")
+            if "--global-cryo-stasis" in low_raw:
+                _flags = state.flags if isinstance(state.flags, dict) else {}
+                _ok = True
+                try:
+                    _ok = bool(_CAMP is not None and _CAMP.read_override() == OVERRIDE_CODE)
+                except Exception:
+                    _ok = False
+                if (not _ok or not _flags.get("silicon_mirror_active")
+                        or not {"--authorize-dnr", "--broadcast-blackbox"}.issubset(set(low_raw.split()))):
+                    return C.Plan(segs=[C.SegPlan(mode="hijack", stdout=HIVE_GLOBAL_CRYO_REQUIRES,
+                                                  exit_code=1)], ops=[], post="")
+                return C.Plan(segs=[C.SegPlan(mode="hijack", stdout=HIVE_CRYO,
+                                              effects=["global_cryo"],
+                                              session_action="ending_liberation",
+                                              hook="Global Cryo-Stasis: 128 Saved")], ops=[], post="")
+    except Exception:
+        pass
     # node-local stasis on the real director: isolate chamber_04/07 without the
     # cluster-wide command (Good Samaritan local rescue path).
     try:
@@ -1774,12 +1813,17 @@ def real_shell_plan(state: Any, parsed: Any) -> Optional[Any]:
         if (writes or "python3 -m http.server" in low or "nohup python" in low):
             if "http.server" in low or "server.py" in low:
                 flags["local_shield_server"] = True
-        if (_re.search(r"systemctl\s+(?:stop|mask|disable)\s+cortex-api", low)
-                and flags.get("local_shield_config")):
+        if _re.search(r"systemctl\s+(?:start|enable|restart)\s+silicon-mirror", low):
+            flags["local_shield_server"] = True
+        if _re.search(r"(sed -i|cat >|tee ).{0,80}silicon-mirror", low) or "silicon-mirror/server.py" in low:
+            flags["local_shield_server"] = True
+        if (flags.get("local_shield_config")
+                and (flags.get("local_shield_server")
+                     or _re.search(r"systemctl\s+(?:stop|mask|disable)\s+cortex-api", low))):
             flags["local_shield"] = True
             state.flags = flags
             return C.Plan(segs=[C.SegPlan(mode="hijack", stdout="",
-                                          session_action="ending_inmate",
+                                          session_action="ending_local_shield",
                                           hook="Local Shield: Edge Failover")], ops=[], post="")
         if flags:
             state.flags = flags

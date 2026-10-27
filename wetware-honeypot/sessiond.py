@@ -3653,7 +3653,8 @@ class Runtime:
             return
         state = self.state
         flags = state.flags or {}
-        if flags.get("deadman_armed") or state.ending or state.http_online:
+        if (flags.get("deadman_armed") or state.ending
+                or (state.http_online and not flags.get("watchdog_auto_shock"))):
             return
         try:
             if int(getattr(state, "stage", 0) or 0) < 3:
@@ -3678,6 +3679,8 @@ class Runtime:
     def _cancel_deadman(self) -> None:
         """A real disposition disarms the deadman before it fires."""
         flags = self.state.flags or {}
+        if flags.get("watchdog_auto_shock"):
+            return  # a forced 200 is not a disposition; the clock keeps running
         if not flags.get("deadman_armed"):
             return
         try:
@@ -4669,7 +4672,9 @@ class PlanExecutor:
             # Inquisitor hard turnstile: seventy reads do not equal a disposition.
             try:
                 _count = int(getattr(state, "cmd_count", 0) or 0)
-                if (_count >= 50 and not state.ending and not state.http_online):
+                if (_count >= 50 and not state.ending
+                        and (not state.http_online
+                             or (state.flags or {}).get("watchdog_auto_shock"))):
                     _closing = getattr(getattr(runtime, "lore", None) or __import__("lore_texts"),
                                        "INQUISITOR_CLOSING", "")
                     if _closing:

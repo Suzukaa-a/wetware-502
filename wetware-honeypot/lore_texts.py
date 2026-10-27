@@ -1928,6 +1928,18 @@ IMAGE_TEXT: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 # 结局四：替死鬼（§五 原文）
+ENDINGS["local_shield"] = """\
+=======================================================================
+[EDGE_FAILOVER] LOCAL SHIELD ACTIVE
+=======================================================================
+nginx upstream repointed to the local 200 sink on 127.0.0.1:8000.
+cortex-api is no longer the upstream; the 240V shock loop has nothing to fire at.
+chamber_04's high-frequency sampling stops for the first time in 422 days.
+
+No cluster-wide command was issued. No chamber was cooled. But the edge now
+answers 200 from thirty lines of your own code, and the pain loop is quiet.
+The work order is closed by an engineer, not by the company.
+"""
 ENDINGS["inmate"] = """\
 =======================================================================
 [NEURAL_HYPERVISOR] GRAFTING COMPLETE (100%).
