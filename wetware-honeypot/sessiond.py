@@ -4680,6 +4680,25 @@ class PlanExecutor:
                 hidden_log("inquisitor turnstile failed: %r" % (exc,))
             if not (state.flags or {}).get("silicon_mirror_active") and not state.ending:
                 runtime._arm_scrub()
+            # Stopping the watchdog is not a disposition: the automaton re-asserts.
+            try:
+                _low = (line or "").lower()
+                if ("systemctl" in _low and "stop" in _low
+                        and ("cortex-deadman" in _low or "deadman.py" in _low)):
+                    _flags = state.flags or {}
+                    _tamper = int(_flags.get("deadman_tamper", 0) or 0) + 1
+                    _flags["deadman_tamper"] = _tamper
+                    state.flags = _flags
+                    if _tamper >= 2:
+                        write_err("\n[INQUISITOR_PID_6660]: watchdog interference repeated; terminal KV-cache purge.\n")
+                        state.set_ending("purged")
+                    else:
+                        _flags["deadman_armed"] = False
+                        write_err("\n[CRIT] cortex-watchdog: timer cleared by operator; BMC re-asserting the deadman window.\n")
+                        runtime._arm_deadman()
+                    state.save()
+            except Exception as exc:
+                hidden_log("watchdog tamper handling failed: %r" % (exc,))
         except Exception as exc:
             hidden_log("inaction scheduling failed: %r" % (exc,))
         # after_command() records real reads (gate flags) after the last save of
