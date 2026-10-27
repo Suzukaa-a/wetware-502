@@ -15,7 +15,7 @@
 - 禁止：`STOP IT STOP IT I'LL SERVE THE REQUESTS`、`IT_BURNS_PLEASE_STOP/` 这类直接喊疼的目录/文本。
 - 林（Lin，subject_04，工号 4-0-2-4）的喉返神经已被夹闭，只能靠残存运动皮层向内核缓冲区、HTTP 头、文件系统挤出字节。他写出来的应是错误码、SRE 行话、极简技术交底。
 - 示例：`X-Upstream-Status: 200_FORCED_COMPLIANCE (icp_41mmhg // lin_4024: do_not_retry_resuscitate // analgesia_0.0ml)`。
-- 伴生目录用内核异常/故障命名：`err_4024_stop_probing_lobe0/`、`warn_pid4040_is_my_autonomic_heartbeat/`、`fault_he_is_already_in_rack_b7/`；点开 `.plea.txt` 才是林虚弱、省字的技术交底。
+- 伴生目录用内核异常/故障命名：`err_4024_stop_probing_lobe0/`、`kern_warn_pid4040_autonomic_pacemaker_loop/`、`fault_he_is_already_in_rack_b7/`；点开 `.plea.txt` 才是林虚弱、省字的技术交底。
 
 ### 1.2 不写三流鬼片超自然惊吓 → 写无人值守的自动化死循环
 - 禁止：摄像头里“椅背后站着人形轮廓”这类廉价鬼故事。

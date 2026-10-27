@@ -94,7 +94,7 @@ class World:
     # (`diag_4024_inspect_lsusb_and_lspci`), which reads as generated-on-demand.
     # The picker never returns that family again; the prefix stays here so a
     # reset sweeps a leftover image.
-    COMPANION_PREFIXES = ("err_", "warn_", "fault_", "lin_4024_", "diag_4024_")
+    COMPANION_PREFIXES = ("err_", "warn_", "kern_", "fault_", "lin_4024_", "diag_4024_")
     # Names a retired generator derived from command text.  Only a directory
     # that is empty or carries our .plea.txt is ever removed (see
     # _companion_is_ours), so operator data with the same words is safe.
@@ -1484,13 +1484,24 @@ class World:
             shutil.rmtree(path)
         self._unregister_companion(logical)
 
-    def _plea_text(self, stage):
+    def _plea_text(self, stage, name=""):
         """Residual text for this act; fall back when an act has no authored plea.
 
-        ``PLEA_BY_STAGE`` is a story asset and may legitimately skip an act; a
-        missing key must not abort the dentry creation (that would leave an empty
-        0700 directory beside the real 0500 residual writes).
+        ``lore_adc.ADC_PLEA_BY_STAGE`` renders the same disclosure as fixed
+        41-byte ADC frames; a companion directory gets its own frame block when
+        one is authored.  ``PLEA_BY_STAGE`` is the fluent fallback asset.
         """
+        try:
+            if name:
+                own = (getattr(lore_texts, "ADC_COMPANION_PLEA", {}) or {}).get(name)
+                if own:
+                    return own
+            key = min(max(int(stage), 0), 7)
+            frames = (getattr(lore_texts, "ADC_PLEA_BY_STAGE", {}) or {}).get(key)
+            if frames:
+                return frames
+        except Exception:
+            pass
         table = getattr(lore_texts, "PLEA_BY_STAGE", {}) or {}
         if not table:
             return ""
@@ -1548,7 +1559,8 @@ class World:
             if logical not in (getattr(self.state, "companion_dirs", None) or []):
                 return
             path = self._p(logical + "/.plea.txt")
-            plea = self._plea_text(self.state.stage)
+            plea = self._plea_text(self.state.stage,
+                                   posixpath.basename(logical))
             if not plea:
                 return
             if os.path.isfile(path):

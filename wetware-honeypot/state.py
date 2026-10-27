@@ -71,7 +71,7 @@ COMPANION_BY_STAGE = {
 COMPANION_POOL = (
     "err_4024_stop_probing_lobe0",
     "err_4024_namespace_exit_denied",
-    "warn_pid4040_is_my_autonomic_heartbeat",
+    "kern_warn_pid4040_autonomic_pacemaker_loop",
     "lin_4024_do_not_retry_resuscitate",
     "err_4024_metabolic_tether_readonly",
     "warn_4024_motor_cortex_write_pending",
@@ -302,8 +302,8 @@ class State:
         names = {
             "cd": "err_4024_namespace_exit_denied",
             "ls": "err_4024_namespace_exit_denied",
-            "ps": "warn_pid4040_is_my_autonomic_heartbeat",
-            "top": "warn_pid4040_is_my_autonomic_heartbeat",
+            "ps": "kern_warn_pid4040_autonomic_pacemaker_loop",
+            "top": "kern_warn_pid4040_autonomic_pacemaker_loop",
             "kill": "lin_4024_do_not_retry_resuscitate",
             "systemctl": "lin_4024_do_not_retry_resuscitate",
             "rm": "err_4024_metabolic_tether_readonly",

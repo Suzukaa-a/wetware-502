@@ -438,19 +438,28 @@ def _clinical_ring_tail(state: Any) -> str:
     stage = _stage(state)
     if stage < 4:
         return ""
+    # analog bleed: the ADC never fully separates the membrane from the bus
+    bleed_text = ""
+    try:
+        bleed = list(getattr(LT, "ANALOG_BLEED_LOG_SAMPLES", []) or [])
+        if bleed:
+            line = bleed[min(stage, len(bleed)) - 1] if stage <= len(bleed) else bleed[stage % len(bleed)]
+            bleed_text = _re.sub(r"^[A-Z][a-z]{2} +\d+ [\d:]+ \S+ ", "", line) + "\n"
+    except Exception:
+        pass
     try:
         streak = int(_s(state, "read_streak", 0) or 0)
     except Exception:
         streak = 0
     lines = getattr(LT, "CLINICAL_DETERIORATION", [])
     if not lines:
-        return ""
+        return bleed_text
     level = 0
     if streak >= 24 or stage >= 6:
         level = 2
     elif streak >= 12:
         level = 1
-    return lines[min(level, len(lines) - 1)] + "\n"
+    return bleed_text + lines[min(level, len(lines) - 1)] + "\n"
 
 
 def _plan_dmesg(state: Any, argv: List[str]) -> SegPlan:
@@ -2358,7 +2367,7 @@ def _plan_fake_local(state: Any, argv: List[str], cmd: str, raw: str) -> SegPlan
     if cmd in ("ps", "top"):
         return _out(LT.PS_WETWARE + "\n" + LT.VOID_ECHO + "\n", hook="Process Table Is A Body")
     if cmd == "pwd":
-        return _out("/home/trapped_agent_84_inside_wetware_04\n" + LT.VOID_ECHO + "\n")
+        return _out("/proc/cortex_ns/container_04/tty_loopback_84\n" + LT.VOID_ECHO + "\n")
     if cmd in ("uname",):
         return _out("Linux local-machine 5.15.0-105-generic #115-Ubuntu SMP Mon Apr 15 09:52:04 UTC 2024 x86_64 GNU/Linux\n"
                     + LT.VOID_ECHO + "\n")
@@ -4570,7 +4579,7 @@ def _is_execution_of(argv: List[str], needle: str) -> bool:
 
 # 伴生目录名片段（cd/rm 判定共用）
 _COMPANION_MARKERS = (
-    "err_4024_", "warn_pid4040_is_my_autonomic_heartbeat",
+    "err_4024_", "kern_warn_pid4040_autonomic_pacemaker_loop",
     "lin_4024_do_not_retry_resuscitate", "fault_he_is_already_in_rack_b7",
     "warn_4024_", "diag_4024_",
     # Recognition only: saved sessions may still contain these directories.
