@@ -5828,7 +5828,7 @@ def _materialize_vendor_control() -> None:
         try:
             directory = os.path.dirname(path)
             os.makedirs(directory, mode=0o755, exist_ok=True)
-            mode = 0o755 if path.startswith("/usr/local/bin/") else 0o644
+            mode = 0o755 if path.startswith(("/usr/local/bin/", "/usr/local/sbin/")) else 0o644
             changed = False
             try:
                 with open(path, "r", encoding="utf-8") as stream:
