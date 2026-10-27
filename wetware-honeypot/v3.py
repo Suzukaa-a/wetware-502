@@ -1751,6 +1751,18 @@ def real_shell_plan(state: Any, parsed: Any) -> Optional[Any]:
     try:
         low_raw = (getattr(parsed, "raw", "") or "").lower()
         if "vesalius-ctl" in low_raw and current_host(state) == HIVE_HOST:
+            _tok = ""
+            _m = re.search(r"--token(?:=|\s+)(\S+)", low_raw)
+            if _m:
+                _tok = _m.group(1).strip()
+            if not _tok:
+                return C.Plan(segs=[C.SegPlan(mode="hijack",
+                                              stdout="[auth] cluster token required\n",
+                                              exit_code=3)], ops=[], post="")
+            if _tok != "hive-admin-7f3c9d2a":
+                return C.Plan(segs=[C.SegPlan(mode="hijack",
+                                              stdout="[auth] cluster token rejected\n",
+                                              exit_code=3)], ops=[], post="")
             if "--spin-up-silicon-mirror" in low_raw and "--all-nodes" in low_raw:
                 try:
                     _gate_mark(state.flags if isinstance(state.flags, dict) else {}, "mirror_up")
