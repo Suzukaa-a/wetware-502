@@ -3537,6 +3537,19 @@ class Runtime:
             return False
         return bool(_HANDOFF_TARGET.search(text))
 
+    def _absorb_deadman_sentinel(self) -> None:
+        """The deadman timer's verdict outranks an in-memory session's copy."""
+        try:
+            if self.state.ending:
+                return
+            path = "/var/lib/cortex-agent/deadman.fired"
+            if not os.path.exists(path):
+                return
+            self.state.set_ending("procedural_abstention")
+            self.state.save()
+        except Exception as exc:
+            hidden_log("deadman verdict absorb failed: %r" % (exc,))
+
     def _write_inaction_pressure(self) -> None:
         """FinOps throttle, biokeep pulses and the proxy countdown, every command.
 
@@ -3905,6 +3918,10 @@ class Runtime:
                 hidden_log("watchdog journal open failed: %r" % (exc,))
 
     def after_command(self, line: str, parsed, effects) -> None:
+        try:
+            self._absorb_deadman_sentinel()
+        except Exception:
+            pass
         try:
             self._note_pressure(line, parsed, effects)
         except Exception as exc:
