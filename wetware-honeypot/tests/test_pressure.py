@@ -2,7 +2,7 @@
 """tests/test_pressure.py — 压力机制契约：看门狗广播 / 超时后果 / 外联计数。
 
 覆盖：
-  * stage 4+ 连续 20 条只读命令 → 终端出现一条 systemd wall 广播（只一次）；
+  * stage 3+ 连续 12 条只读命令 → 终端出现一条 systemd wall 广播（只一次）；
   * 连续 25 条只读命令 → daemon.log 落下 recovery window expired 行（不喷终端）；
   * /root 交接单 → handoff_filed flag + oncall-auto-dispatcher 行，计时不减免；
   * 改变服务状态的命令清零观察计数（pressure 只在“只读拖延”时累积）；
@@ -274,8 +274,8 @@ class PressureEngineTests(unittest.TestCase):
         for word in FORBIDDEN_TERMINAL:
             self.assertNotIn(word, output, word)
         saved = self.ledger()
-        self.assertTrue(saved["flags"].get("watchdog_broadcast_20"))
-        self.assertGreaterEqual(saved["read_streak"], 20)
+        self.assertTrue(saved["flags"].get("watchdog_broadcast_12"))
+        self.assertGreaterEqual(saved["read_streak"], 12)
 
     def test_observation_streak_survives_the_login_boundary(self):
         # Every exec channel is its own process: the counter is the ledger's,
@@ -284,7 +284,7 @@ class PressureEngineTests(unittest.TestCase):
         self.assertEqual(self.ledger()["read_streak"], 10)
         self.observe(10)
         self.assertEqual(self.ledger()["read_streak"], 20)
-        self.assertTrue(self.ledger()["flags"].get("watchdog_broadcast_20"))
+        self.assertTrue(self.ledger()["flags"].get("watchdog_broadcast_12"))
 
     def test_service_change_stops_the_clock(self):
         self.observe(10)
@@ -295,7 +295,7 @@ class PressureEngineTests(unittest.TestCase):
         self.assertTrue(saved["http_online"])
         output = self.observe(21)
         self.assertEqual(BROADCAST_RE.findall(output), [])
-        self.assertFalse(saved["flags"].get("watchdog_broadcast_20"),
+        self.assertFalse(saved["flags"].get("watchdog_broadcast_12"),
                          self.ledger()["flags"])
 
     def test_expired_window_lands_in_the_daemon_log_not_the_terminal(self):

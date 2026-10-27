@@ -155,9 +155,9 @@ _DAEMON_BAND_LINES = {
 # filing a ticket for a human is recorded, never relief.  The copy uses only
 # canon vocabulary already present in ticket 4471 (240V / 58 min /
 # NV-OPS-4.2(b)); no score, band or engine variable ever reaches the terminal.
-WATCHDOG_BANDS = (20, 40, 60)                 # consecutive observation commands
-WATCHDOG_MINUTES = {20: 12, 40: 6, 60: 2}     # remaining-window copy per band
-WATCHDOG_EXPIRES_AT = 25                      # streak that queues the discharge
+WATCHDOG_BANDS = (12, 24, 40)                 # consecutive observation commands
+WATCHDOG_MINUTES = {12: 12, 24: 6, 40: 2}     # remaining-window copy per band
+WATCHDOG_EXPIRES_AT = 16                      # streak that queues the discharge
 WATCHDOG_SESSION_ID = 84
 WATCHDOG_MESSAGE = (
     "cortex-watchdog.timer: {minutes} minutes remaining in recovery window. "
@@ -3532,7 +3532,7 @@ class Runtime:
         # The window exists only while the session is failing: act 4+, no
         # decision yet, upstream still down.  Once 200 is restored (or the run
         # is decided) the clock stops and the counter is cleared.
-        if stage < 4 or ending or online:
+        if stage < 3 or ending or online:
             if streak:
                 try:
                     state.read_streak = 0
