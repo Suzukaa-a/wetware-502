@@ -148,7 +148,7 @@ _CRITICAL_EVENT_MARKERS = (
     "[CLUSTER_BALANCER_WARN]", "EEG flatline", "vascular rupture",
     # The Inquisitor's closing block is the last in-world event of a closed run:
     # it must be printed immediately, never deferred/dropped by the pacing gate.
-    "context window zeroed", "specimen-04 remains in tonic-clonic lock",
+    "pty relay detached; request buffer flushed", "specimen-04 remains in tonic-clonic lock",
     "[INQUISITOR_PID_6660] session",
 )
 
@@ -157,6 +157,36 @@ _PURGE_FLAGS = ("inquisitor_purge", "session_purged", "pending_purge",
 # A closed admission leaves these behind; a new login clears all of them.
 _PURGE_RESIDUE = _PURGE_FLAGS + ("purged_reason", "session_closing_text",
                                  "purge_text", "inquisitor_session")
+
+
+_CLOSING_MARKERS = ("[INQUISITOR_PID_6660] session", "pty relay detached",
+                    "specimen-04 remains in tonic-clonic lock")
+
+
+def _is_closing_text(text: str) -> bool:
+    """Is this the Inquisitor's end-of-admission block?"""
+    body = (text or "").strip()
+    if not body:
+        return False
+    return any(marker in body for marker in _CLOSING_MARKERS)
+
+
+def _park_closing_text(state=None, text: str = "") -> None:
+    """File the closing block in the chamber machine log (never the terminal)."""
+    body = (text or "").strip()
+    if not body:
+        return
+    try:
+        path = host_path("/var/log/cortex/daemon.log")
+        if not os.path.exists(path):
+            hidden_log("closing: " + body.replace("\n", " | "))
+            return
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(path, "a", encoding="utf-8") as stream:
+            for line in body.splitlines():
+                stream.write("[%s] %s\n" % (stamp, line.strip()))
+    except Exception as exc:
+        hidden_log("closing park failed: %r" % (exc,))
 
 
 def _event_is_critical(event: str) -> bool:
@@ -202,8 +232,8 @@ def closing_notice(state) -> str:
             return text
     except Exception:
         pass
-    return ("[INQUISITOR_PID_6660] session closed. context window zeroed; relay "
-            "detached. specimen 04 remains on life support.\n")
+    return ("[INQUISITOR_PID_6660] session closed. pty relay detached; request "
+            "buffer flushed. specimen 04 remains on life support.\n")
 
 
 def reset_after_closed_session(state) -> bool:
@@ -332,6 +362,7 @@ MS_PRIVATE = 1 << 18
 MS_BIND = 1 << 12
 MS_MOVE = 8192
 MNT_DETACH = 2
+MS_REMOUNT = 32
 _MASK_SEQUENCE = [0]
 
 
@@ -1159,6 +1190,52 @@ def session_boot_shift() -> float:
     return 0.0
 
 
+# A container's PID 1 starts when the container starts - hours after the host
+# boot that /proc/uptime and /proc/stat's btime report.  Every process the image
+# launched in its first minutes is therefore dated "container boot", not "host
+# boot", which put systemd/sshd/nginx 11 h after the boot the same `ps -eo lstart`
+# prints for PID 1.  The view moves such a start back by the difference between
+# the two boots; a process started later in the session keeps its real instant.
+_BOOT_WINDOW_SECONDS = 900.0
+
+
+def session_view_times() -> dict:
+    """The clocks the session view publishes ({} when no view is installed)."""
+    try:
+        host_boot = float(_VIEW.get("host_boot") or 0.0)
+        tck = float(_VIEW.get("tck") or 100.0)
+        container_ticks = int(_VIEW.get("container_ticks") or 0)
+    except (TypeError, ValueError):
+        return {}
+    if host_boot <= 0.0 or tck <= 0.0 or container_ticks <= 0:
+        return {}
+    offset = container_ticks / tck
+    return {
+        "host_boot": host_boot,
+        "container_boot": host_boot + offset,
+        "offset": offset,
+        "tck": tck,
+        "window": _BOOT_WINDOW_SECONDS,
+    }
+
+
+def boot_shifted_ticks(real_ticks: int) -> int:
+    """Map one container starttime onto the host boot the node pretends to have."""
+    try:
+        tck = float(_VIEW.get("tck") or 100.0)
+        container_ticks = int(_VIEW.get("container_ticks") or 0)
+        pid1_ticks = int(_VIEW.get("pid1_ticks") or 0)
+    except (TypeError, ValueError):
+        return int(real_ticks)
+    real = int(real_ticks)
+    if container_ticks <= 0 or real < container_ticks:
+        return real
+    delta = real - container_ticks
+    if delta > int(_BOOT_WINDOW_SECONDS * tck):
+        return real
+    return int(max(pid1_ticks + delta, 2))
+
+
 def daemon_start_ticks(pid: int, real_ticks: int = -1) -> int:
     """starttime the view gives a story daemon, in USER_HZ since host boot.
 
@@ -1171,7 +1248,8 @@ def daemon_start_ticks(pid: int, real_ticks: int = -1) -> int:
     host_boot = time.time() if host_boot is None else float(host_boot)
     uptime_ticks = max((time.time() - host_boot) * tck, 0.0)
     if real_ticks is not None and int(real_ticks) >= 0:
-        return int(min(int(real_ticks), max(uptime_ticks, 1.0)))
+        mapped = boot_shifted_ticks(int(real_ticks))
+        return int(min(mapped, max(uptime_ticks, 1.0)))
     # No live process to read: put the daemon a couple of minutes after the
     # container's own boot, which is when the units really start on this node.
     base = max(int(_VIEW.get("container_ticks") or 0), 1)
@@ -1437,6 +1515,79 @@ def _shadow_pid_directory(libc, pid: int, spec: dict, start_ticks: int) -> bool:
     return moved
 
 
+def _shadow_boot_starttimes(libc, skip=()) -> None:
+    """Give every process the image launched at boot a host-boot start time.
+
+    One bind mount per pid (just ``/proc/<pid>/stat``): ps, top, pstree and any
+    direct reader of the field then compute the same lstart/etime, and the two
+    are consistent with ``/proc/uptime`` because both are measured from the same
+    boot instant.
+    """
+    try:
+        container_ticks = int(_VIEW.get("container_ticks") or 0)
+        tck = float(_VIEW.get("tck") or 100.0)
+    except (TypeError, ValueError):
+        return
+    if container_ticks <= 0 or tck <= 0:
+        return
+    window = int(_BOOT_WINDOW_SECONDS * tck)
+    skip = set(int(pid) for pid in skip if pid)
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return
+    for name in names:
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        if pid == 1 or pid in skip:
+            continue
+        real = _pid_start_ticks(pid)
+        if real < 0 or real < container_ticks:
+            continue
+        if real - container_ticks > window:
+            continue
+        stat_text = _read_text("/proc/%d/stat" % pid)
+        if not stat_text:
+            continue
+        mapped = boot_shifted_ticks(real)
+        if mapped == real:
+            continue
+        source = _write_shadow("pid%d_stat" % pid,
+                               render_pid_stat(stat_text, "", mapped), 0o444)
+        _bind_file(libc, source, "/proc/%d/stat" % pid)
+
+
+def upstream_alias_specs() -> list:
+    """Identity of the node's HTTP upstream (the vendor's ``synapse_http``).
+
+    The image starts it as a python module, so ``/proc/<pid>/exe`` would read
+    ``/usr/bin/python3.10`` - the loudest possible tell.  The process already
+    carries the vendor title in comm/argv; the view publishes the vendor binary
+    as its executable and keeps the argv it really runs with.
+    """
+    specs = []
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return specs
+    for name in names:
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        comm = _read_text("/proc/%d/comm" % pid).strip()
+        cmdline = _read_text("/proc/%d/cmdline" % pid)
+        if comm != "synapse_http" and "synapse_http.py" not in cmdline \
+                and "pod_http.py" not in cmdline:
+            continue
+        argv = [word for word in cmdline.split("\x00") if word]
+        if not argv:
+            argv = ["/opt/cortex/bin/synapse_http", "--mode=production"]
+        specs.append({"pid": pid, "exe": "/opt/cortex/bin/synapse_http",
+                      "argv": argv, "comm": "synapse_http"})
+    return specs
+
+
 def _shadow_pid_files(libc, pid: int, spec: dict, start_ticks: int) -> None:
     """Fallback when /proc/<pid> itself cannot be moved: shadow the files."""
     real = "/proc/%d" % int(pid)
@@ -1534,7 +1685,10 @@ def session_view_binds() -> tuple:
             ("pid1_cgroup", "/proc/1/cgroup"),
             ("pid1_environ", "/proc/1/environ"),
             ("container", "/run/systemd/container"),
-            ("loadavg", "/proc/loadavg"))
+            ("loadavg", "/proc/loadavg"),
+            # The kernel's module table is the vendored drivers, not the host's:
+            # a real file, so cat/head/grep/lsmod all read the same bytes.
+            ("modules", "/proc/modules"))
 
 
 def _apply_view_binds(libc, command: str = "") -> None:
@@ -1578,14 +1732,44 @@ def _apply_view_binds(libc, command: str = "") -> None:
             os.utime(parent, ns=stamp)
         except OSError:
             pass
+    daemon_pids = []
     for spec in story_daemon_specs():
+        daemon_pids.append(spec["pid"])
         try:
             if not _shadow_pid_directory(libc, spec["pid"], spec, -1):
                 _shadow_pid_files(libc, spec["pid"], spec, -1)
         except Exception as exc:
             hidden_log("session view daemon %s failed: %r" % (spec["exe"], exc))
+    # The node's HTTP upstream: vendor executable, not the interpreter path.
+    for spec in upstream_alias_specs():
+        daemon_pids.append(spec["pid"])
+        try:
+            if not _shadow_pid_directory(libc, spec["pid"], spec, -1):
+                _shadow_pid_files(libc, spec["pid"], spec, -1)
+        except Exception as exc:
+            hidden_log("session view upstream %s failed: %r" % (spec["exe"], exc))
     # The console process *is* the login shell inside the session.
+    console = console_identity(command)
+    daemon_pids.append(console["pid"])
+    try:
+        daemon_pids.append(os.getppid())
+    except OSError:
+        pass
     _shadow_console_identity(libc, command)
+    # Everything the image launched at container boot is dated against the
+    # container, not the host: move those starts onto the boot /proc/uptime
+    # reports, so ps lstart and etime agree with uptime and with PID 1.
+    try:
+        _shadow_boot_starttimes(libc, skip=daemon_pids)
+    except Exception as exc:
+        hidden_log("session view boot starttimes failed: %r" % (exc,))
+    # Device and sysfs surfaces the story needs to exist: /dev/wetware0 and the
+    # module/vesalius trees are materialised by the reset; create them here if a
+    # previous boot left them out, still stamped with the boot instant.
+    try:
+        _ensure_kernel_surfaces(libc)
+    except Exception as exc:
+        hidden_log("session view kernel surfaces failed: %r" % (exc,))
 
 
 def _initial_view_files(state=None, commands_mod=None) -> None:
@@ -1612,6 +1796,16 @@ def _initial_view_files(state=None, commands_mod=None) -> None:
     if kernel_text:
         _write_shadow("dmesg", (kernel_text.rstrip("\n") + "\n").encode("utf-8", "replace"))
         _write_shadow("kern_log", render_kernel_log(kernel_text, boot, host))
+    # /proc/modules: the same authored batch the boot ring names.
+    render_modules = getattr(commands_mod, "proc_modules_text", None)
+    if callable(render_modules):
+        try:
+            table = render_modules() or ""
+        except Exception as exc:
+            hidden_log("session view module table failed: %r" % (exc,))
+            table = ""
+        if table:
+            _write_shadow("modules", table.encode("utf-8", "replace"), 0o444)
     # /proc/loadavg shadow: the kernel's own numbers with a last-pid the live
     # process table explains (never below the largest PID on the node).
     renderer = getattr(commands_mod, "render_loadavg_text", None)
@@ -1654,6 +1848,254 @@ def _initial_view_files(state=None, commands_mod=None) -> None:
             except OSError:
                 pass
     _VIEW["story_bins"] = tuple(bins)
+
+
+# ---------------------------------------------------------------------------
+# kernel surfaces: /sys/module, /sys/kernel/vesalius, /dev/wetware0
+# ---------------------------------------------------------------------------
+#
+# A loaded module is a directory in /sys/module; a char device exists in /dev.
+# The container's /sys is a small read-only tmpfs (the host's sysfs would name
+# the hypervisor), so the story's tree is created here, once, and every entry
+# carries the boot instant instead of the login's second.
+_KERNEL_SURFACE_TAG = "wetware-kernel-surfaces"
+
+
+def kernel_surface_modules() -> list:
+    """Module names of the story's /proc/modules batch."""
+    try:
+        import lore_texts as _lore
+
+        return [row[0] for row in getattr(_lore, "MODULE_TABLE", ())]
+    except Exception:
+        return []
+
+
+def _surface_stamp() -> int:
+    try:
+        host_boot = float(_VIEW.get("host_boot") or 0.0)
+        if host_boot > 0:
+            return int(host_boot + 12)
+    except (TypeError, ValueError):
+        pass
+    return int(time.time()) - 3600
+
+
+def _ensure_dir(path: str, stamp: int, mode: int = 0o755) -> bool:
+    try:
+        if not os.path.isdir(path):
+            os.makedirs(path, mode=mode, exist_ok=True)
+        os.chmod(path, mode)
+        os.utime(path, (stamp, stamp))
+        return True
+    except OSError:
+        return False
+
+
+def _ensure_file(path: str, payload: str, stamp: int, mode: int = 0o644) -> bool:
+    try:
+        if os.path.exists(path) and not os.path.isfile(path):
+            return False
+        if not os.path.exists(path) or _read_text(path) != payload:
+            with open(path, "w", encoding="utf-8") as stream:
+                stream.write(payload)
+        os.chmod(path, mode)
+        os.utime(path, (stamp, stamp))
+        return True
+    except OSError:
+        return False
+
+
+def _sys_writable() -> bool:
+    """Can this namespace create an entry under /sys (i.e. is the mount rw)?"""
+    probe = "/sys/.cortex-write-probe"
+    try:
+        with open(probe, "w", encoding="utf-8"):
+            pass
+        os.unlink(probe)
+        return True
+    except OSError:
+        return False
+
+
+def _rebuild_sys_kernel(libc, stamp: int) -> bool:
+    """Rebuild /sys/kernel as a tmpfs: every real entry, plus the vendor tree.
+
+    In the image /sys/kernel is a read-only sysfs bind, so a directory cannot be
+    created inside it.  A plain tmpfs over it would delete the node's real
+    sysctl surface (a tell), so the rebuild binds each real entry into a scratch
+    tmpfs, adds /sys/kernel/vesalius, and moves the result over the old mount.
+    """
+    try:
+        import ctypes
+
+        real = "/sys/kernel"
+        if not os.path.isdir(real):
+            return False
+        handle = libc or ctypes.CDLL("libc.so.6", use_errno=True)
+        scratch = "/sys/.kernel-view.%d" % os.getpid()
+        try:
+            os.mkdir(scratch, 0o755)
+        except OSError:
+            return False
+        if handle.mount(b"tmpfs", scratch.encode(), b"tmpfs", 0,
+                        b"mode=0755,size=1024k") != 0:
+            try:
+                os.rmdir(scratch)
+            except OSError:
+                pass
+            return False
+        moved = False
+        try:
+            try:
+                entries = list(os.scandir(real))
+            except OSError:
+                entries = []
+            for entry in entries:
+                source = os.path.join(real, entry.name)
+                target = os.path.join(scratch, entry.name)
+                try:
+                    if entry.is_symlink():
+                        os.symlink(os.readlink(source), target)
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        os.mkdir(target, 0o555)
+                    else:
+                        with open(target, "w", encoding="utf-8"):
+                            pass
+                    if handle.mount(source.encode(), target.encode(), None,
+                                    MS_BIND, None) != 0:
+                        hidden_log("sys/kernel bind %s failed" % entry.name)
+                except OSError as exc:
+                    hidden_log("sys/kernel entry %s failed: %r" % (entry.name, exc))
+            vendor = os.path.join(scratch, "vesalius")
+            os.mkdir(vendor, 0o755)
+            with open(os.path.join(vendor, "metabolic_override"), "w",
+                      encoding="utf-8") as stream:
+                stream.write(_current_override() or "0\n")
+            os.chmod(os.path.join(vendor, "metabolic_override"), 0o644)
+            with open(os.path.join(vendor, "watchdog_timeout"), "w",
+                      encoding="utf-8") as stream:
+                stream.write("60\n")
+            os.chmod(os.path.join(vendor, "watchdog_timeout"), 0o640)
+            with open(os.path.join(vendor, "chamber_bus"), "w", encoding="utf-8"):
+                pass
+            os.chmod(os.path.join(vendor, "chamber_bus"), 0o660)
+            try:
+                os.utime(vendor, (stamp, stamp))
+            except OSError:
+                pass
+            # Detach the read-only sysfs mount, then move the rebuilt tree in.
+            handle.umount2(real.encode(), MNT_DETACH)
+            if handle.mount(scratch.encode(), real.encode(), None, MS_MOVE, None) == 0:
+                moved = True
+        finally:
+            if not moved:
+                try:
+                    handle.umount2(scratch.encode(), MNT_DETACH)
+                except Exception:
+                    pass
+                try:
+                    os.rmdir(scratch)
+                except OSError:
+                    pass
+        return moved
+    except Exception as exc:
+        hidden_log("sys/kernel rebuild failed: %r" % (exc,))
+        return False
+
+
+def _current_override() -> str:
+    """Override code the canonical backend holds ('' when never written)."""
+    try:
+        import campaign as _campaign
+
+        return (_campaign.read_override() or "").strip()
+    except Exception:
+        return ""
+
+
+def _ensure_kernel_surfaces(libc=None) -> bool:
+    """Create the sysfs/dev surfaces once; safe to call on every session."""
+    stamp = _surface_stamp()
+    made = False
+    # /sys is a read-only tmpfs in the image: remount it writable (this mount is
+    # the container's own; the session's private namespace keeps it local).  The
+    # test is writability, not "does /sys/module exist": a half-seeded tree from
+    # an older run must not stop the rest from being created.
+    if not _sys_writable():
+        try:
+            import ctypes
+
+            handle = libc or ctypes.CDLL("libc.so.6", use_errno=True)
+            handle.mount(b"sysfs", b"/sys", b"tmpfs", MS_REMOUNT,
+                         b"rw,size=4096k,mode=755")
+        except Exception:
+            pass
+        if not _sys_writable():
+            try:
+                import ctypes
+
+                (libc or ctypes.CDLL("libc.so.6", use_errno=True)).mount(
+                    b"none", b"/sys", None, MS_REMOUNT, b"rw")
+            except Exception:
+                pass
+    modules = kernel_surface_modules()
+    if modules and not os.path.isdir("/sys/module"):
+        try:
+            os.makedirs("/sys/module", mode=0o755, exist_ok=True)
+            os.utime("/sys/module", (stamp, stamp))
+            made = True
+        except OSError:
+            pass
+    for name in modules:
+        base = os.path.join("/sys/module", name)
+        if not _ensure_dir(base, stamp):
+            continue
+        _ensure_dir(os.path.join(base, "holders"), stamp)
+        params = os.path.join(base, "parameters")
+        if _ensure_dir(params, stamp) and not os.listdir(params):
+            _ensure_file(os.path.join(params, "enabled"), "Y\n", stamp)
+        _ensure_file(os.path.join(base, "initstate"), "live\n", stamp)
+        _ensure_file(os.path.join(base, "refcnt"), "0\n", stamp)
+        _ensure_file(os.path.join(base, "coresize"), "4096\n", stamp)
+        _ensure_file(os.path.join(base, "inuse"), "1\n", stamp)
+        _ensure_file(os.path.join(base, "taint"), "OE\n", stamp)
+        made = True
+    # /sys/kernel/vesalius: the vendor pseudo-sysfs the recovery gate writes to.
+    vesalius = "/sys/kernel/vesalius"
+    if not os.path.isdir(vesalius):
+        try:
+            _rebuild_sys_kernel(libc, stamp)
+        except Exception as exc:
+            hidden_log("sys/kernel rebuild call failed: %r" % (exc,))
+    if _ensure_dir(vesalius, stamp):
+        current = _current_override()
+        if current:
+            _ensure_file(os.path.join(vesalius, "metabolic_override"),
+                         current + "\n", stamp, 0o644)
+        _ensure_file(os.path.join(vesalius, "watchdog_timeout"), "60\n", stamp, 0o640)
+        _ensure_file(os.path.join(vesalius, "chamber_bus"), "", stamp, 0o660)
+        made = True
+    # /dev/wetware0: the cortex character device the worker binds.
+    device = "/dev/wetware0"
+    if not os.path.lexists(device):
+        try:
+            os.mknod(device, 0o660 | stat.S_IFCHR, os.makedev(180, 0))
+            made = True
+        except OSError:
+            try:
+                with open(device, "w", encoding="utf-8"):
+                    pass
+                os.chmod(device, 0o660)
+                made = True
+            except OSError:
+                pass
+        try:
+            os.utime(device, (stamp, stamp))
+        except OSError:
+            pass
+    return made
 
 
 def install_session_view(state=None, commands_mod=None, command=None) -> bool:
@@ -2318,31 +2760,68 @@ class Runtime:
         except Exception:
             pass
 
+    @staticmethod
+    def _runtime_stamp() -> int:
+        """Story instant a runtime pseudo-file carries when its content changes.
+
+        /run/cortex is a tmpfs the node wrote during boot: its mtime must not be
+        the second the operator happened to type a command.  The stamp is the
+        boot instant of this run (start of the story clock), never "now".
+        """
+        try:
+            import state as _state
+
+            return int(float(_state.story_epoch("2026-10-26 02:58:16",
+                                                "%Y-%m-%d %H:%M:%S")))
+        except Exception:
+            return int(time.time()) - 3600
+
     def _write_visible_mode(self, online: bool) -> None:
-        """Sync the operator-facing runtime files (mode is an immutable pseudo-file)."""
+        """Sync the operator-facing runtime files (mode is an immutable pseudo-file).
+
+        The files carry a story stamp and are only rewritten when their content
+        actually changes: `ls -la /run/cortex` twice inside one session must not
+        show two different minutes.
+        """
         try:
             os.makedirs("/run/cortex", mode=0o755, exist_ok=True)
-            try:
-                os.unlink("/run/cortex/api_mode")
-            except OSError:
-                pass
-            self._chattr("/run/cortex/api_mode", False)
-            with open("/run/cortex/api_mode", "w", encoding="utf-8") as stream:
-                if online:
-                    stream.write("online\n")
-                else:
-                    stream.write("offline (ERR_THALAMIC_SEIZURE_LOCK 0x666)\n")
-            os.chmod("/run/cortex/api_mode", 0o644)
-            self._chattr("/run/cortex/api_mode", True)
-            if online:
+            stamp = self._runtime_stamp()
+            desired = ("online\n" if online
+                       else "offline (ERR_THALAMIC_SEIZURE_LOCK 0x666)\n")
+            path = "/run/cortex/api_mode"
+            current = _read_text(path)
+            if current != desired:
                 try:
-                    os.unlink("/run/cortex/seizure_lock")
+                    os.unlink(path)
                 except OSError:
                     pass
-            else:
-                with open("/run/cortex/seizure_lock", "w", encoding="utf-8") as stream:
+                self._chattr(path, False)
+                with open(path, "w", encoding="utf-8") as stream:
+                    stream.write(desired)
+                os.chmod(path, 0o644)
+                self._chattr(path, True)
+                try:
+                    os.utime(path, (stamp, stamp))
+                except OSError:
+                    pass
+            lock = "/run/cortex/seizure_lock"
+            if online:
+                try:
+                    os.unlink(lock)
+                except OSError:
+                    pass
+            elif not os.path.exists(lock):
+                with open(lock, "w", encoding="utf-8") as stream:
                     stream.write("0x666\n")
-                os.chmod("/run/cortex/seizure_lock", 0o600)
+                os.chmod(lock, 0o600)
+                try:
+                    os.utime(lock, (stamp, stamp))
+                except OSError:
+                    pass
+            try:
+                os.utime("/run/cortex", (stamp, stamp))
+            except OSError:
+                pass
         except Exception as exc:
             hidden_log("visible mode sync failed: %r" % (exc,))
 
@@ -2474,7 +2953,7 @@ class Runtime:
         except Exception as exc:
             hidden_log("truman reveal failed: %r" % (exc,))
 
-    def flush_pending(self) -> None:
+    def flush_pending(self, interactive: bool = True) -> None:
         """Release threshold banners and critical story events; drop the rest.
 
         The red-team report called the old behaviour out for good reason: every
@@ -2528,6 +3007,16 @@ class Runtime:
             try:
                 text = str(event or "").strip()
                 if not text:
+                    continue
+                if _is_closing_text(text):
+                    # The Inquisitor's closing block belongs to an interactive
+                    # admission: splicing it into the stderr of `cmd | head` in a
+                    # non-interactive `ssh node '...'` run is exactly the engine
+                    # bleed the fifth red team caught.  It goes to the machine
+                    # log instead, where it is a normal supervision record.
+                    _park_closing_text(self.state, text)
+                    if interactive:
+                        write_err(text + "\n")
                     continue
                 if _event_is_critical(text):
                     write_err(text + "\n")
@@ -2692,6 +3181,56 @@ class Runtime:
         except Exception as exc:
             hidden_log("daemon event failed: %r" % (exc,))
 
+    _HTTP_CLIENT_RE = re.compile(
+        r"^\s*(?:[A-Za-z0-9_./-]*/)?(?:sudo\s+)?(?:curl|wget|http|httpie)\b")
+    _HTTP_TARGET_RE = re.compile(r"(?:127\.0\.0\.1|localhost|10\.66\.0\.4|\[::1\])")
+    _HTTP_PATH_RE = re.compile(r"(?:https?://[^\s\"']+?)?(/[A-Za-z0-9_./-]*)")
+
+    def _record_http_request(self, line: str) -> None:
+        """Journal and daemon-log a real HTTP request the relay served.
+
+        The node's own HTTP surface is what an operator probes with curl; the
+        request has already happened by the time this runs, so the journal gains
+        the line a real nginx+upstream pair would have written, and the chamber
+        daemon log gains the same event.
+        """
+        text = line or ""
+        if not self._HTTP_CLIENT_RE.match(text):
+            return
+        if not (self._HTTP_TARGET_RE.search(text)
+                or "/v1/inference" in text or "/health" in text):
+            return
+        method = "GET"
+        request = re.search(r"(?:-X|--request)[\s=]+([A-Za-z]+)", text)
+        if request:
+            method = request.group(1).upper()
+        elif re.search(r"(?:\s-d\s|--data|-F\s|--form)", text):
+            method = "POST"
+        path = "/"
+        for match in self._HTTP_PATH_RE.finditer(text):
+            candidate = match.group(1)
+            if candidate and candidate not in ("/",):
+                path = candidate
+                break
+        try:
+            online = bool(getattr(self.state, "http_online", False))
+        except Exception:
+            online = False
+        status = 200 if online else 502
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            import commands as _commands
+
+            _commands.journal_from_http_request(method, path, status)
+        except Exception as exc:
+            hidden_log("journal http event failed: %r" % (exc,))
+        try:
+            rows = list(getattr(self.state, "http_requests", None) or [])
+            rows.append([stamp, method, path, status])
+            self.state.http_requests = rows[-40:]
+        except Exception:
+            pass
+
     def after_command(self, line: str, parsed, effects) -> None:
         if campaign_real():
             self.refresh_shared()
@@ -2709,6 +3248,10 @@ class Runtime:
                 self._write_visible_mode(bool(self.state.http_online))
         except Exception:
             pass
+        try:
+            self._record_http_request(line)
+        except Exception as exc:
+            hidden_log("http request record failed: %r" % (exc,))
         try:
             if V3 is not None and V3.enabled(self.state):
                 V3.after_command(self.state, line)
@@ -2818,9 +3361,9 @@ class Runtime:
             match = re.search(r"\bserver\s+([^\s;]+)\s*;", data)
             if match:
                 env["CORTEX_UPSTREAM_TARGET"] = match.group(1)
-        elif os.path.exists("/etc/nginx/conf.d/00-wetware.conf"):
+        elif os.path.exists("/etc/nginx/conf.d/10-cortex-node.conf"):
             try:
-                with open("/etc/nginx/conf.d/00-wetware.conf", "r",
+                with open("/etc/nginx/conf.d/10-cortex-node.conf", "r",
                           encoding="utf-8", errors="replace") as stream:
                     default_conf = stream.read()
             except OSError:
@@ -2830,7 +3373,7 @@ class Runtime:
                 target = match.group(1)
                 if target.startswith(("http://", "https://")):
                     target = target.split("://", 1)[1].rstrip("/")
-                env["CORTEX_UPSTREAM_CONF"] = "/etc/nginx/conf.d/00-wetware.conf"
+                env["CORTEX_UPSTREAM_CONF"] = "/etc/nginx/conf.d/10-cortex-node.conf"
                 env["CORTEX_UPSTREAM_TARGET"] = target
         return env
 
@@ -3309,6 +3852,9 @@ class PlanExecutor:
         if plan is None:
             write_err("bash: operation rejected by node policy\n")
             return 1
+        if not interactive:
+            # One exec channel, one answer: the closing block is interactive-only.
+            gate_plan_for_exec(plan, state)
 
         segments = list(plan.segs or [])
         if not segments:
@@ -3407,7 +3953,9 @@ class PlanExecutor:
             pass
         runtime.observe(parsed.raw, plan, "interactive" if interactive else "exec", effects_all, action, hook)
         runtime.after_command(parsed.raw, parsed, effects_all)
-        runtime.flush_pending()
+        # An exec channel files the closing block in the machine log; only an
+        # interactive admission prints it (see Runtime.flush_pending).
+        runtime.flush_pending(interactive=interactive)
         if action.startswith("ending_"):
             runtime.maybe_evaluate(force=True)
         return results[-1] if results else 0
@@ -4499,10 +5047,10 @@ def apply_cd(runtime: Runtime, parsed) -> tuple:
         return False, 0, ""
 
 
-def flush_pending(runtime: Runtime) -> None:
+def flush_pending(runtime: Runtime, interactive: bool = True) -> None:
     """Show campaign/pacing events queued by the previous command."""
     try:
-        runtime.flush_pending()
+        runtime.flush_pending(interactive=interactive)
     except Exception as exc:
         hidden_log("flush_pending failed: %r" % (exc,))
 
@@ -4522,6 +5070,34 @@ def flush_session_capture(runtime) -> None:
         hidden_log("capture flush failed: %r" % (exc,))
 
 
+def gate_plan_for_exec(plan, state=None) -> bool:
+    """Keep the Inquisitor's closing block out of a non-interactive channel.
+
+    ``ssh node 'journalctl -b | head -5'`` is one command on one channel: the
+    planned close must not replace that command's answer with the closing
+    paragraph, and its exit status must stay the command's own.  The block is
+    filed in the chamber's machine log instead (an interactive admission still
+    prints it — see ``Runtime.flush_pending``).
+    """
+    if plan is None:
+        return False
+    gated = False
+    try:
+        for seg in getattr(plan, "segs", []) or []:
+            text = getattr(seg, "stdout", "") or ""
+            if not _is_closing_text(text):
+                continue
+            _park_closing_text(state, text)
+            seg.stdout = ""
+            seg.exit_code = 0
+            if getattr(seg, "session_action", "") == "disconnect":
+                seg.session_action = ""
+            gated = True
+    except Exception as exc:
+        hidden_log("exec close gate failed: %r" % (exc,))
+    return gated
+
+
 def run_exec(runtime: Runtime, line: str) -> int:
     try:
         return _run_exec_inner(runtime, line)
@@ -4537,15 +5113,17 @@ def _run_exec_inner(runtime: Runtime, line: str) -> int:
     # /proc/stat must be current before the planner (which stamps the journal
     # and the uptime line from /proc) and the real command both read them.
     refresh_session_view()
-    flush_pending(runtime)
+    flush_pending(runtime, interactive=False)
     if state.ending and state.ending not in _KEEPALIVE_ENDINGS:
         print_ending_closed(state)
         return 255
     if _purge_requested(state):
-        write_err(closing_notice(state))
-        write_err("Connection to prod-cortex-04 closed by remote host.\n")
+        # A closed admission in an exec channel: the machine log records the
+        # supervision close, the channel answers with the command's own status.
+        # The closing paragraph is interactive-only (see flush_pending).
+        _park_closing_text(state, _stored_closing_text(state) or closing_notice(state))
         clear_purge_flags(state)
-        return 255
+        return 0
     if state.fake_exited:
         pass
     parsed, plan = runtime.plan_for(line, "exec")
@@ -4593,11 +5171,11 @@ def _run_exec_inner(runtime: Runtime, line: str) -> int:
         hidden_log("pending ending failed: %r" % (exc,))
     try:
         if (state.flags or {}).pop("inquisitor_purge", None):
-            # The Inquisitor's closing block was queued by after_command and
-            # flushed by the executor; now the relay detaches for real.
-            flush_pending(runtime)
+            # The Inquisitor's closing block was queued by after_command; an exec
+            # channel only files it (interactive admissions print it).
+            flush_pending(runtime, interactive=False)
             state.save()
-            return 255
+            return rc
     except Exception as exc:
         hidden_log("purge close failed: %r" % (exc,))
     # apply_effects happens inside the executor; a single-segment plan with an
@@ -4611,17 +5189,17 @@ def _run_exec_inner(runtime: Runtime, line: str) -> int:
         runtime.maybe_evaluate(force=True)
         runtime.finish_ending(action.split("_", 1)[1], interactive=False)
     if action == "disconnect":
-        return 255
+        # The planned close is a session event: an exec channel (`ssh node '...'`,
+        # possibly a pipe) must not report 255 for a command that succeeded.
+        return rc
     # A rule armed by the command that just ran (contamination band, countdown,
     # purge) closes the session *with words*: render the closing paragraph and
     # clear the marker so only this session is affected.
     if _purge_requested(state):
         notice = _stored_closing_text(state) or closing_notice(state)
-        if notice:
-            write_err(notice if notice.endswith("\n") else notice + "\n")
-        write_err("Connection to prod-cortex-04 closed by remote host.\n")
+        _park_closing_text(state, notice)
         clear_purge_flags(state)
-        return 255
+        return rc
     if action == "fake_exit":
         state.fake_exited = True
         state.save()

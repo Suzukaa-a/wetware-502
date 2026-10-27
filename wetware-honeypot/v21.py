@@ -217,7 +217,7 @@ def purge_closing_text(state: Any = None) -> str:
     if not template:
         template = (
             "[INQUISITOR_PID_6660] session {session} closed.\n"
-            "[INQUISITOR_PID_6660] context window zeroed; keystroke stream detached; transcript sealed.\n"
+            "[INQUISITOR_PID_6660] pty relay detached; request buffer flushed; supervision trace closed.\n"
             "[INQUISITOR_PID_6660] specimen-04 remains in tonic-clonic lock; no rescue scheduled.\n"
         )
     flags = getattr(state, "flags", {}) or {}

@@ -367,7 +367,6 @@ class OneRecordDrivesEverything(unittest.TestCase):
             "/etc/hosts",
             "/var/log/syslog",
             "/home/ops/notes.txt",
-            "/var/spool/cron/crontabs/root",
         ]
         for path in edge_gate:
             body = F.cat_text(EDGE, path)
@@ -465,20 +464,19 @@ class NoEnoentForCommonFiles(unittest.TestCase):
     EDGE_FILES = [
         "/etc/hostname", "/etc/hosts", "/etc/os-release", "/etc/passwd",
         "/etc/group", "/etc/shadow", "/etc/fstab", "/etc/resolv.conf",
-        "/etc/timezone", "/etc/motd", "/etc/crontab", "/etc/ssh/sshd_config",
+        "/etc/timezone", "/etc/motd", "/etc/ssh/sshd_config",
         "/etc/nginx/nginx.conf", "/etc/nginx/conf.d/upstream.conf",
         "/root/.bash_history", "/root/.bashrc", "/root/.ssh/known_hosts",
         "/var/log/auth.log", "/var/log/kern.log", "/var/log/syslog",
         "/var/log/nginx/access.log", "/var/log/nginx/error.log",
         "/var/backups/lin_emergency_key.README",
-        "/var/spool/cron/crontabs/root",
         "/opt/cortex/VERSION", "/usr/bin/bash", "/boot/grub/grub.cfg",
         "/home/ops/notes.txt", "/home/lin/bin/healthcheck.sh",
     ]
     HIVE_FILES = [
         "/etc/hostname", "/etc/hosts", "/etc/os-release", "/etc/passwd",
         "/etc/group", "/etc/fstab", "/etc/resolv.conf", "/etc/motd",
-        "/etc/crontab", "/etc/ssh/sshd_config",
+        "/etc/ssh/sshd_config",
         "/etc/vesalius/hive.conf", "/etc/vesalius/chambers.d/chamber_07.conf",
         "/root/.bash_history", "/root/.ssh/known_hosts",
         "/var/log/auth.log", "/var/log/syslog", "/var/log/vesalius/chamber_telemetry.log",
@@ -713,10 +711,6 @@ class StoryTextParity(unittest.TestCase):
 
     #: path -> why the facade deliberately does *not* mirror v3's text
     INTENTIONAL_DEVIATIONS = {
-        "/var/spool/cron/crontabs/root":
-            "v3.EDGE_CRON_ROOT still uses system-crontab syntax inside a user "
-            "spool; the facade serves the user format that matches realism's "
-            "`crontab -l` (sim-hardener report, finding 14)",
         "/proc/cpuinfo":
             "facade renders the full Ubuntu field set (apicid/fpu/bugs/...) "
             "from HOST_FACTS; v3's shorter static copy is not the real format",

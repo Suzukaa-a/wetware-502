@@ -128,6 +128,10 @@ class State:
         self.companion_stages = {}
         self.current_host = "prod-cortex-04"
         self.pending_events = []
+        # Real HTTP requests the relay served, as daemon-log rows: the journal
+        # store takes the request line, the daemon log keeps the same event so
+        # `tail /var/log/cortex/daemon.log` and `journalctl -u nginx` agree.
+        self.http_requests = []
         self.md5_breath = self.viewed_binaries = 0
         self.reboot_shock = False
         self.http_online = False
@@ -360,6 +364,24 @@ def story_clock_path():
         return STORY_CLOCK_PATH
     state_dir = os.environ.get("WETWARE_STATE_DIR", "/var/lib/cortex-agent")
     return os.path.join(state_dir, "runtime", "story_clock")
+
+
+def journal_store_path(host=None):
+    """Hidden runtime file holding one host's materialised journal.
+
+    Same hidden runtime directory as the story clock: the operator's namespace
+    masks the whole state tree, so the store is never readable from a session.
+    The campaign shares one state directory between three containers, so the
+    file is per-host: a reset from another node must not re-cut this node's
+    boot instant.
+    """
+    state_dir = os.environ.get("WETWARE_STATE_DIR", "/var/lib/cortex-agent")
+    name = "journal_store.json"
+    if host:
+        safe = "".join(ch for ch in str(host) if ch.isalnum() or ch in "-_")
+        if safe:
+            name = "journal_store_%s.json" % safe
+    return os.path.join(state_dir, "runtime", name)
 
 
 def story_delta(create=False):

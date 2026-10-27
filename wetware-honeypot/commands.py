@@ -22,6 +22,7 @@ commands.py — 命令计划器（《WETWARE-502》剧情唯一出口）
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -843,6 +844,273 @@ def _shift_ps_row(line: str, now: Any, shift: float) -> str:
     return line[:match.start(index)] + fixed + line[match.end(index):]
 
 
+# ---------------------------------------------------------------------------
+# systemctl status / process table: the view every tool recomputes
+# ---------------------------------------------------------------------------
+#
+# The rendered table must satisfy three relationships at once: the PIDs of a
+# unit's recorded invocations increase in start order, the cgroup lines carry
+# argv with no empty entries, and "Active: ... since" agrees with the journal
+# and with ``ps lstart``.  ``systemd`` inside a container answers none of them
+# (the container boot is hours after the host boot, and its argv blocks are
+# inherited from the parent), so the captured text is corrected in one place.
+
+_UNIT_BLOCK_START = re.compile(r"^\u25cf\s+(\S+)\.service\b")
+_PROCESS_LINE = re.compile(r"^(\s+Process:\s+)(\d+)(\s.*)$")
+_MAINPID_LINE = re.compile(r"^(\s+Main PID:\s+)(\d+)(\s.*)$")
+_ACTIVE_LINE = re.compile(
+    r"^(\s+Active:\s+.*?since\s+)(\w{3}\s+\d{4}-\d\d-\d\d\s+"
+    r"\d\d:\d\d:\d\d\s+\S+)(;\s*)(.*)$")
+_STATUS_STAMP = re.compile(
+    r"^(\w{3}\s+\w{3}\s+\d{1,2}\s+\d\d:\d\d:\d\d)\s")
+_SYSTEMD_TIME = "%a %Y-%m-%d %H:%M:%S %Z"
+
+
+def session_view_times() -> dict:
+    """Clocks the session view publishes ({} when no view is installed)."""
+    try:
+        import sessiond
+
+        return dict(sessiond.session_view_times() or {})
+    except Exception:
+        return {}
+
+
+def _systemd_elapsed(seconds: float) -> str:
+    seconds = max(int(seconds), 0)
+    days, rest = divmod(seconds, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes, secs = divmod(rest, 60)
+    if days:
+        return "%dd %dh %dmin ago" % (days, hours, minutes)
+    if hours:
+        return "%dh %dmin ago" % (hours, minutes)
+    if minutes:
+        return "%dmin %ds ago" % (minutes, secs)
+    return "%ds ago" % secs
+
+
+def _format_cpu_time(seconds: float) -> str:
+    seconds = max(int(seconds), 0)
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return "%dh %dmin" % (hours, minutes)
+    if minutes:
+        return "%dmin %ds" % (minutes, secs)
+    return "%.3fs" % seconds
+
+
+def _boot_window_stamp(epoch: float, times: dict = None, now: float = None) -> str:
+    """One status timestamp: boot-window instants move onto the host boot."""
+    import datetime as _dt
+
+    moment = _dt.datetime.fromtimestamp(float(epoch))
+    return moment.strftime("%a %Y-%m-%d %H:%M:%S %Z").strip()
+
+
+_ACTIVE_SINCE = re.compile(
+    r"^(\s+Active:.*?since\s+)(\w{3}\s+\d{4}-\d\d-\d\d\s+"
+    r"\d\d:\d\d:\d\d)(\s+\S+)?(;\s*)(.*)$")
+
+
+def _fix_active_elapsed(line: str, now: float = None) -> str:
+    """Recompute the "; N ago" tail of an Active line from its own timestamp."""
+    import datetime as _dt
+
+    match = _ACTIVE_SINCE.match(line)
+    if not match:
+        return line
+    try:
+        moment = _dt.datetime.strptime(match.group(2), "%a %Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return line
+    now = time.time() if now is None else now
+    elapsed = now - moment.timestamp()
+    zone = (match.group(3) or "").strip()
+    stamp = match.group(2) + ((" " + zone) if zone else "")
+    return "%s%s; %s" % (match.group(1), stamp, _systemd_elapsed(elapsed))
+
+
+def _shift_status_stamps(text: str) -> str:
+    """Rewrite this boot's timestamps onto the host clock (container -> host)."""
+    import datetime as _dt
+
+    times = session_view_times()
+    offset = float(times.get("offset") or 0.0)
+    container_boot = float(times.get("container_boot") or 0.0)
+    if offset <= 1.0 or container_boot <= 0.0:
+        return text
+    window = container_boot + 1800.0
+    now = time.time()
+
+    def shift_epoch(epoch: float) -> float:
+        return epoch - offset
+
+    def repl_iso(match):
+        try:
+            moment = _dt.datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return match.group(0)
+        epoch = moment.timestamp()
+        if not (container_boot - 2.0 <= epoch <= window):
+            return match.group(0)
+        moved = _dt.datetime.fromtimestamp(shift_epoch(epoch))
+        return moved.strftime("%Y-%m-%d %H:%M:%S") + match.group(2)
+
+    def repl_syslog(match):
+        prefix = match.group(1)
+        try:
+            moment = _dt.datetime.strptime(prefix, "%b %d %H:%M:%S")
+        except ValueError:
+            return match.group(0)
+        moment = moment.replace(year=_dt.datetime.now().year)
+        epoch = moment.timestamp()
+        if not (container_boot - 2.0 <= epoch <= window):
+            return match.group(0)
+        moved = _dt.datetime.fromtimestamp(shift_epoch(epoch))
+        return moved.strftime("%b %d %H:%M:%S") + match.group(2)
+
+    lines = []
+    for line in text.splitlines():
+        line = re.sub(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)( \S+)?",
+                      repl_iso, line)
+        line = re.sub(r"^((?:\w{3} \w{3} +\d{1,2} \d\d:\d\d:\d\d))(\s)",
+                      repl_syslog, line)
+        line = _fix_active_elapsed(line, now)
+        lines.append(line)
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+
+def _strip_empty_argv(text: str) -> str:
+    """Drop the ``""`` entries a container's argv block leaves in cgroup lines."""
+    if '""' not in text:
+        return text
+    out = []
+    for line in text.splitlines():
+        if re.search(r"\u251c\u2500|\u2514\u2500|^\s+[\w./-]+\s", line) and '""' in line:
+            line = re.sub(r'(?:\s+"")+\s*$', "", line)
+        out.append(line)
+    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+
+
+def _renumber_unit_pids(block: List[str]) -> List[str]:
+    """Make a unit's recorded invocation PIDs strictly increasing."""
+    main_pid = 0
+    for line in block:
+        match = _MAINPID_LINE.match(line)
+        if match:
+            try:
+                main_pid = int(match.group(2))
+            except ValueError:
+                main_pid = 0
+            break
+    indices = []
+    for index, line in enumerate(block):
+        if _PROCESS_LINE.match(line):
+            indices.append(index)
+    if not indices:
+        return block
+    cap = (main_pid - 1) if main_pid else None
+    for index in reversed(indices):
+        match = _PROCESS_LINE.match(block[index])
+        if not match:
+            continue
+        try:
+            pid = int(match.group(2))
+        except ValueError:
+            continue
+        if cap is not None and pid > cap:
+            pid = cap
+        if cap is not None:
+            cap = max(pid - 1, 1)
+        block[index] = "%s%d%s" % (match.group(1), pid, match.group(3))
+    return block
+
+
+def _authored_cortex_status(state: Any) -> str:
+    """The chamber unit's status block, tied to the journal store."""
+    host = shell_host(state)
+    entries = _shell_journal_entries(state, host)
+    since = 0.0
+    for epoch, ident, message in entries:
+        low = message.lower()
+        if "cortex-api" not in low and "cortex api" not in low:
+            continue
+        if "stopping" in low or "stopped" in low:
+            since = float(epoch)
+    now = time.time()
+    if not since:
+        since = now - 3 * 3600 - 14 * 60
+    # Whole seconds on both sides: the rendered stamp and the elapsed text are
+    # computed from the same second, so the two lines can never disagree.
+    since = float(int(since))
+    now = float(int(now))
+    uptime = max(_shell_uptime(), 60.0)
+    cpu = _format_cpu_time(max(uptime * 0.36, 41.0))
+    head = LT.SYSTEMCTL_STATUS_STUCK.split("\n\n", 1)[0].splitlines()
+    out = []
+    for line in head:
+        stripped = line.lstrip()
+        if stripped.startswith("Active:"):
+            out.append("     Active: deactivating (stop-sigkill) since %s; %s"
+                       % (_boot_window_stamp(since, {}), _systemd_elapsed(now - since)))
+        elif stripped.startswith("CPU:"):
+            out.append("        CPU: %s" % cpu)
+        else:
+            out.append(line)
+    rows = [(epoch, ident, message) for epoch, ident, message in entries
+            if ident.startswith("cortex-api")
+            or ("cortex-api" in message.lower() and ident.startswith("systemd[1]"))]
+    tail = rows[-4:]
+    if tail:
+        out.append("")
+    for epoch, ident, message in tail:
+        out.append("%s %s %s: %s" % (_shell_stamp_epoch(epoch), host, ident, message))
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+def _systemctl_status_fix(text: str, state: Any = None) -> str:
+    """Reconcile a captured ``systemctl status`` table with the node's story."""
+    if not text:
+        return text
+    text = _strip_empty_argv(text)
+    lines = text.splitlines()
+    blocks: List[List[str]] = []
+    current: List[str] = []
+    for line in lines:
+        if _UNIT_BLOCK_START.match(line) and current:
+            blocks.append(current)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        blocks.append(current)
+    out: List[str] = []
+    for block in blocks:
+        if not block:
+            continue
+        head = block[0]
+        match = _UNIT_BLOCK_START.match(head)
+        unit = (match.group(1) if match else "")
+        if unit in ("cortex-api",) or unit.startswith("cortex-api"):
+            out.append(_authored_cortex_status(state).rstrip("\n"))
+            continue
+        block = _renumber_unit_pids(block)
+        out.extend(block)
+    return _shift_status_stamps("\n".join(out) + ("\n" if text.endswith("\n") else ""))
+
+
+def _systemctl_status_line(parsed: Any) -> bool:
+    for name, argv in _line_commands(parsed):
+        if name != "systemctl":
+            continue
+        verbs = [a for a in argv[1:] if not a.startswith("-")]
+        if verbs and verbs[0] == "status":
+            return True
+    return False
+
+
 def _shift_ps_start_times(text: str) -> str:
     """Rewrite future ps START/lstart columns of a captured process table."""
     import datetime as _dt
@@ -1330,15 +1598,16 @@ def _plan_ss(state: Any, argv: List[str]) -> SegPlan:
 
 
 def _plan_crontab(state: Any, argv: List[str]) -> SegPlan:
-    if not _has(argv, "-l", "-r", "-e") and not any(a.startswith("/") for a in argv[1:]):
-        # `crontab` 裸调用 → usage（真实行为）
-        return _out("usage:  crontab [-u user] file\n        crontab [ -u user ] [ -i ] { -e | -l | -r }\n",
-                    exit_code=1)
+    """crontab: the node runs its watchdog from a systemd timer, no crontab file.
+
+    A virtual job list here would name a file the operator cannot find on disk
+    (the fifth red team compared `crontab -l` against /etc/crontab and
+    /var/spool/cron), so the real tool answers - normally "no crontab for root".
+    The watchdog cue lives in /etc/systemd/system/cortex-watchdog.timer.
+    """
     if _has(argv, "-e"):
         return _out(LT.EDITOR_BLOCKED, exit_code=1, hook="Editor Blocked")
-    st = _stage(state)
-    text = LT.CRONTAB_NORMAL if st < 2 else LT.CRONTAB_WETWARE
-    return _out(text, effects=["cron_read"], hook="Dead-Loop Summon Cron Revealed" if st >= 2 else "")
+    return _real()
 
 
 def _plan_strings(state: Any, argv: List[str]) -> SegPlan:
@@ -1459,21 +1728,18 @@ def _plan_systemctl(state: Any, argv: List[str]) -> SegPlan:
         except Exception:
             return _out(" Operation not permitted\n", exit_code=1)
 
-    if verb == "status" and (unit in CORTEX_UNITS or unit == ""):
-        text = LT.SYSTEMCTL_STATUS_STUCK
-        try:
-            import datetime as _dt
-            now = _story_now()
-            since = now - _dt.timedelta(hours=3, minutes=14)
-            old_stamp = "Sun 2026-10-25 23:44:07 UTC"
-            old_log = "Oct 25 23:44:07"
-            new_stamp = since.strftime("%a %Y-%m-%d %H:%M:%S %Z")
-            text = text.replace(old_stamp, new_stamp).replace(old_log, since.strftime("%b %d %H:%M:%S"))
-            text = text.replace("Oct 26 02:58:16", (now - _dt.timedelta(minutes=2)).strftime("%b %d %H:%M:%S"))
-            text = text.replace("Oct 26 00:01:31",
-                                (since + _dt.timedelta(seconds=90)).strftime("%b %d %H:%M:%S"))
-        except Exception:
-            pass
+    if verb == "status":
+        wanted = [str(u) for u in verbs[1:]]
+        others = [u for u in wanted
+                  if u not in CORTEX_UNITS and u not in ("cortex-api", "cortex-api.service")]
+        if others:
+            # `systemctl status ssh nginx cortex-api` is one real invocation: run
+            # the tool and reconcile its table in postprocess (the chamber unit's
+            # block is authored there, because the real unit's ExecStart names a
+            # launcher that only exists inside the hidden engine tree).
+            return SegPlan(mode="real_post", effects=[],
+                           hook="Service Stuck In Dying State")
+        text = _authored_cortex_status(state)
         if st >= 5:
             # Live clock only: a placeholder timestamp is an instant "the log is
             # fake" tell.  The harvest line is stamped two minutes ago, exactly
@@ -2019,6 +2285,25 @@ def _story_proc_file(path: str, cmd: str) -> Optional[str]:
     return content.decode("latin-1")
 
 
+def _override_value_text() -> str:
+    """Current metabolic override code, from the backend the write persisted to."""
+    value = ""
+    try:
+        import campaign as _campaign
+
+        value = (_campaign.read_override() or "").strip()
+    except Exception:
+        value = ""
+    if not value:
+        try:
+            with open("/sys/kernel/vesalius/metabolic_override", "r",
+                      encoding="utf-8", errors="replace") as stream:
+                value = stream.read().strip()
+        except OSError:
+            value = ""
+    return (value or "0") + "\n"
+
+
 def _plan_cat_like(state: Any, argv: List[str], cmd: str, cwd: str) -> SegPlan:
     """cat/head/tail/grep/md5sum/base64/wc/less/more/stat/file 针对【虚拟路径】的劫持；
     真实文件一律 real。"""
@@ -2033,6 +2318,12 @@ def _plan_cat_like(state: Any, argv: List[str], cmd: str, cwd: str) -> SegPlan:
         story_proc = _story_proc_file(p, cmd)
         if story_proc is not None:
             return _out(story_proc, hook="Story Process Identity")
+        if p == "/sys/kernel/vesalius/metabolic_override" and cmd in (
+                "cat", "head", "tail", "less", "more", "nl"):
+            # The pseudo-sysfs write is persisted through the canonical backend
+            # (the session's /sys copy is per-run); the read path has to answer
+            # from that same backend or `cat` right after the write shows "0".
+            return _out(_override_value_text(), hook="Metabolic Coupling")
         if p in ("/var/mail/root", "/root/TICKET_4471_DISPOSITION.txt",
                  "/root/HOW_TO_END_THIS.txt") and cmd in (
                      "cat", "head", "tail", "less", "more", "nl", "grep", "egrep", "fgrep"):
@@ -2356,6 +2647,11 @@ def _shell_host_entries(host: str, now: float) -> List[Tuple[float, str, str]]:
     else:
         # The chamber node runs the vendor reverse proxy and the API unit here:
         # `journalctl -u nginx` / `-u cortex-api` must filter something real.
+        # The API unit's own history is the story's: started four hours ago, the
+        # stop request (and the stop-sigterm timeout) 3h14 ago, the socket still
+        # held by 4040.  `systemctl status cortex-api` renders its "Active since"
+        # and its journal tail from these exact rows, so the two views agree.
+        stop_at = now - 3 * 3600 - 14 * 60
         rows.append((now - 3600, "nginx[%d]" % pid,
                      "start worker process 4086"))
         rows.append((now - 2400, "nginx[%d]" % pid,
@@ -2367,9 +2663,19 @@ def _shell_host_entries(host: str, now: float) -> List[Tuple[float, str, str]]:
                      "%s [warn] %d#%d: *91 upstream server temporarily disabled while"
                      " connecting to upstream, client: 10.0.4.2"
                      % (_shell_wall(-2340), pid, pid)))
-        rows.append((now - 1800, "cortex-api[4040]",
+        rows.append((now - 4 * 3600, "systemd[1]",
+                     "Started Neo-Vesalius Cortex API (Node 04)."))
+        rows.append((now - 4 * 3600 + 2, "cortex-api[4040]",
+                     "synapse socket bound: /run/cortex/synapse.sock"))
+        rows.append((now - 4 * 3600 + 6, "cortex-api[4040]",
                      "upstream socket ONLINE (200 OK), queue=1"))
-        rows.append((now - 1790, "systemd[1]", "Started Cortex chamber API."))
+        rows.append((stop_at, "systemd[1]",
+                     "cortex-api.service: Stopping..."))
+        rows.append((stop_at + 90, "systemd[1]",
+                     "cortex-api.service: State 'stop-sigterm' timed out. Killing."))
+        rows.append((stop_at + 91, "systemd[1]",
+                     "cortex-api.service: lock file /run/cortex/synapse.sock still"
+                     " held by 4040."))
         rows.append((now - 1200, "cortex-api[4040]",
                      "latency spike on socket /run/cortex/synapse.sock (210ms)"))
     return rows
@@ -2386,6 +2692,230 @@ def _journal_boot_epochs() -> List[float]:
     now = _time.time()
     current = now - max(_shell_uptime(), 60.0)
     return [current, current - 3 * 86400]
+
+# ---------------------------------------------------------------------------
+# Journal store: the journal is a *file*, not a template
+# ---------------------------------------------------------------------------
+#
+# A real journal is append-only: two ``journalctl`` calls a minute apart print the
+# same lines with the same stamps.  The old answer stamped every service line
+# "now - N", so the whole table walked with the clock between two queries (the
+# fifth red-team pass moved it 1m40s in one session).  The story journal is
+# therefore materialised once per reset into the hidden runtime directory:
+# boot-progression records, the daily timers, the previous boot and the node's
+# own service lines.  Readers only ever read it; session and HTTP events are
+# *appended* to it, never rewritten.
+#
+# The kernel ring is not stored: ``dmesg``/``journalctl -k`` escalates with the
+# act, and its lines are boot-anchored already, so it is rendered live from the
+# same boot instant and cannot drift either.
+_JOURNAL_STORE_VERSION = 2
+_JOURNAL_BOOT_DRIFT = 120.0     # a rebooted node rematerialises the store
+_JOURNAL_ROW_LIMIT = 6000
+
+
+def journal_store_path(host: str = "") -> str:
+    """Hidden runtime file holding this host's journal (never operator-visible)."""
+    try:
+        import state as _state
+
+        helper = getattr(_state, "journal_store_path", None)
+        if callable(helper):
+            return helper(host or shell_host())
+    except Exception:
+        pass
+    base = os.environ.get("WETWARE_STATE_DIR", "/var/lib/cortex-agent")
+    name = "journal_store_%s.json" % host if host else "journal_store.json"
+    return os.path.join(base, "runtime", name)
+
+
+def _journal_store_read(host: str = "") -> dict:
+    try:
+        with open(journal_store_path(host), "r", encoding="utf-8") as stream:
+            data = json.load(stream)
+        if isinstance(data, dict) and isinstance(data.get("rows"), list):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def _journal_store_write(data: dict, host: str = "") -> bool:
+    """Atomically replace the store (rows only ever grow)."""
+    path = journal_store_path(host or data.get("host") or "")
+    try:
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+        temp = "%s.%d.tmp" % (path, os.getpid())
+        with open(temp, "w", encoding="utf-8") as stream:
+            json.dump(data, stream, ensure_ascii=False, separators=(",", ":"))
+        os.replace(temp, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _journal_row(epoch: float, ident: str, message: str) -> List[Any]:
+    return [round(float(epoch), 3), str(ident), str(message)]
+
+
+def _journal_store_materialise(host: str = "") -> dict:
+    """Build the reset-time journal once: the rows that must never drift."""
+    now = time.time()
+    boots = _journal_boot_epochs()
+    boot, previous_boot = boots[0], boots[1]
+    host = host or shell_host()
+    rows: List[List[Any]] = []
+
+    def add(epoch: float, ident: str, message: str) -> None:
+        rows.append(_journal_row(epoch, ident, message))
+
+    # systemd's slice/socket/mount progression and the units it started.  The
+    # PIDs are the node's live ones when the store is cut, and a container keeps
+    # them for its whole life, so the table is stable between two queries.
+    for epoch, ident, message in _systemd_boot_entries(boot, now, host):
+        add(epoch, ident, message)
+    # Post-boot activity: the daily timers, cron and the vendor healthcheck.
+    add(now - 3 * 3600, "systemd[1]", "Starting Daily apt download activities...")
+    add(now - 3 * 3600 + 11, "systemd[1]", "Started Daily apt download activities.")
+    add(now - 2 * 3600 + 30, "CRON[8890]",
+        "(root) CMD (/usr/sbin/cortex_healthcheck.sh)")
+    add(now - 2 * 3600 + 31, "cortex_healthcheck[8901]",
+        "upstream latency 210ms above threshold")
+    # The previous boot keeps `journalctl -b -1` / `--list-boots` meaningful.
+    add(previous_boot + 1.5, "kernel",
+        "Linux version %s (buildd@lcy02-amd64)" % _vendor_kernel_release())
+    add(previous_boot + 2.0, "kernel",
+        "Command line: BOOT_IMAGE=/vmlinuz-%s root=/dev/sda1 ro quiet splash"
+        % _vendor_kernel_release())
+    add(previous_boot + 9.0, "systemd[1]",
+        "Startup finished in 3.1s (kernel) + 5.0s (userspace) = 8.1s.")
+    add(previous_boot + 120.0, "sshd[2180]",
+        "Server listening on 0.0.0.0 port 22.")
+    add(previous_boot + 86400.0, "systemd[1]",
+        "Starting Daily apt download activities...")
+    add(boot - 30.0, "systemd[1]", "Stopped target Multi-User System.")
+    add(boot - 30.0, "systemd[1]", "Shutting down.")
+    add(boot - 28.0, "kernel", "systemd-shutdown[1]: Rebooting.")
+    for epoch, ident, message in _shell_host_entries(host, now):
+        add(epoch, ident, message)
+    rows.sort(key=lambda row: row[0])
+    data = {
+        "version": _JOURNAL_STORE_VERSION,
+        "boot": round(boot, 3),
+        "created": round(now, 3),
+        "host": host,
+        "rows": rows[-_JOURNAL_ROW_LIMIT:],
+    }
+    _journal_store_write(data, host)
+    return data
+
+
+_JOURNAL_MEMORY_CACHE: Dict[str, dict] = {}
+
+
+def journal_store_ensure(state: Any = None, host: str = "") -> dict:
+    """Current store; materialised on first use and after a real reboot.
+
+    A read-only state directory (a sandbox, a locked-down node) still gets a
+    stable journal: the materialised table is cached in memory for this boot, so
+    two queries in one process print the same bytes even when nothing can be
+    written to disk.
+    """
+    host = host or shell_host(state)
+    boots = _journal_boot_epochs()
+    data = _journal_store_read(host)
+    try:
+        stored = float(data.get("boot") or 0.0)
+    except (TypeError, ValueError):
+        stored = 0.0
+    if (int(data.get("version") or 0) != _JOURNAL_STORE_VERSION
+            or abs(stored - boots[0]) > _JOURNAL_BOOT_DRIFT):
+        cached = _JOURNAL_MEMORY_CACHE.get(host) or {}
+        try:
+            cached_boot = float(cached.get("boot") or 0.0)
+        except (TypeError, ValueError):
+            cached_boot = 0.0
+        if (cached and int(cached.get("version") or 0) == _JOURNAL_STORE_VERSION
+                and abs(cached_boot - boots[0]) <= _JOURNAL_BOOT_DRIFT):
+            return cached
+        data = _journal_store_materialise(host)
+        _JOURNAL_MEMORY_CACHE[host] = data
+    return data
+
+
+def journal_append(ident: str, message: str, epoch: float = 0,
+                   host: str = "") -> bool:
+    """Append one real event to the journal (only ever grows)."""
+    try:
+        data = journal_store_ensure(host=host or shell_host())
+        rows = list(data.get("rows") or [])
+        moment = float(epoch or time.time())
+        rows.append(_journal_row(moment, ident, message))
+        rows.sort(key=lambda row: row[0] if row else 0.0)
+        data["rows"] = rows[-_JOURNAL_ROW_LIMIT:]
+        return _journal_store_write(data, host or data.get("host") or "")
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Kernel module table: /proc/modules and lsmod read the same authored batch
+# ---------------------------------------------------------------------------
+#
+# /proc/modules is raw procfs: one line per module, no header, no prose, the
+# fourth field is the comma-separated "used by" list.  ``lsmod`` is a thin
+# formatter over the same file, so it prints the header and the same rows; a
+# "Used by" column that explains itself in English ("cannot unload without
+# surgical amputation") is an instant tell that no kernel ever writes.
+
+def proc_modules_text() -> str:
+    """``/proc/modules`` bytes: name size refcount used-by state address."""
+    rows = []
+    for index, (name, size, dependents) in enumerate(getattr(LT, "MODULE_TABLE", ())):
+        used = ",".join(dependents) if dependents else "-"
+        address = "0x%016x" % (0xffffffffc0000000 + index * 0x2000)
+        rows.append("%s %d %d %s Live %s"
+                    % (name, int(size), len(dependents), used, address))
+    return "\n".join(rows) + ("\n" if rows else "")
+
+
+def lsmod_text() -> str:
+    """``lsmod`` output: its header plus the same table /proc/modules carries."""
+    lines = ["Module                  Size  Used by"]
+    for name, size, dependents in getattr(LT, "MODULE_TABLE", ()):
+        used = ",".join(dependents)
+        lines.append("%-19s %8d  %d%s"
+                     % (name, int(size), len(dependents),
+                        (" " + used) if used else ""))
+    return "\n".join(lines) + "\n"
+
+
+def journal_from_http_request(method: str, path: str, status: int = 0,
+                              client: str = "") -> bool:
+    """Record a real HTTP request the relay served (journal + daemon log)."""
+    ident = "nginx[%d]" % (_real_nginx_pid() or 1042)
+    client = client or "10.0.4.2"
+    code = int(status or 502)
+    request = "%s %s HTTP/1.1" % (str(method or "GET").upper(), path or "/")
+    stamp = time.strftime("%Y/%m/%d %H:%M:%S")
+    message = ("%s [error] %d#%d: *%d connect() to unix:/run/cortex/synapse.sock"
+               " failed (111: Connection refused) while connecting to upstream,"
+               " client: %s, server: api.internal.vesalius.io, request: \"%s\""
+               % (stamp, _real_nginx_pid() or 1042, _real_nginx_pid() or 1042,
+                  900 + (int(time.time()) % 90), client, request))
+    if 200 <= code < 300:
+        # A served request is not an nginx error line: the upstream's own log
+        # records it.
+        return journal_append(
+            "cortex-api[4040]",
+            "%s [served] %s -> %d (upstream socket ONLINE)" % (stamp, request, code))
+    return journal_append(ident, message)
 
 
 # ---------------------------------------------------------------------------
@@ -2501,20 +3031,24 @@ def _systemd_boot_entries(boot: float, now: float, host: str) -> List[Tuple[floa
 
 
 def _shell_journal_entries(state: Any, host: str) -> List[Tuple[float, str, str]]:
-    """The whole fake journal: (epoch, ident, message), oldest first.
+    """The whole story journal: (epoch, ident, message), oldest first.
 
-    One boot is expanded to the width of a real journal: the kernel ring's boot
-    half, systemd's slice/socket/mount progression and the units it started,
-    then the node's own services and the operator login.  ``-u``/``-b``/``-n``/
-    ``-r`` filter this same list, so every view of the journal is consistent.
+    Two sources, both append-only:
+
+    * the reset-time store (boot progression, timers, previous boot, the node's
+      service lines and every event appended since) — the reason two
+      ``journalctl`` calls print the same bytes;
+    * the live kernel ring and this login's sshd/logind records, which are
+      anchored to the kernel's own boot and to the connection's PID starttime,
+      so they are stable inside a session as well.
+
+    ``-u``/``-b``/``-n``/``-r`` filter this same list, so every view of the
+    journal is consistent.
     """
     import time as _time
 
     now = _time.time()
-    # Kernel lines are stamped against the *real* boot instant (so journalctl
-    # agrees with uptime); an authored excerpt reaching past the real uptime is
-    # clamped into the recent past instead of the future.
-    boot, previous_boot = _journal_boot_epochs()
+    boot = _journal_boot_epochs()[0]
     entries: List[Tuple[float, str, str]] = []
 
     def boot_stamp(seconds: float) -> float:
@@ -2523,34 +3057,12 @@ def _shell_journal_entries(state: Any, host: str) -> List[Tuple[float, str, str]
     # journalctl prints the kernel's message field, never dmesg's ""[  sec]"" prefix.
     for seconds, message, _line in _kernel_ring_lines(state):
         entries.append((boot_stamp(seconds), "kernel", message))
-    entries.extend(_systemd_boot_entries(boot, now, host))
-    # Post-boot activity: the hourly timers, cron and the vendor healthcheck.
-    entries.append((now - 3 * 3600, "systemd[1]", "Starting Daily apt download activities..."))
-    entries.append((now - 3 * 3600 + 11, "systemd[1]", "Started Daily apt download activities."))
-    entries.append((now - 2 * 3600 + 30, "CRON[8890]",
-                    "(root) CMD (/usr/sbin/cortex_healthcheck.sh)"))
-    entries.append((now - 2 * 3600 + 31, "cortex_healthcheck[8901]",
-                    "upstream latency 210ms above threshold"))
-    # The previous boot keeps `journalctl -b -1` / `--list-boots` meaningful and
-    # makes clear this node has history on disk.
-    entries.append((previous_boot + 1.5, "kernel",
-                    "Linux version %s (buildd@lcy02-amd64)"
-                    % _vendor_kernel_release()))
-    entries.append((previous_boot + 2.0, "kernel",
-                    "Command line: BOOT_IMAGE=/vmlinuz-%s root=/dev/sda1 ro quiet splash"
-                    % _vendor_kernel_release()))
-    entries.append((previous_boot + 9.0, "systemd[1]",
-                    "Startup finished in 3.1s (kernel) + 5.0s (userspace) = 8.1s."))
-    # A previous boot's listener is a process from that boot: a historical PID is
-    # right here, the live listener's PID would have started after this line.
-    entries.append((previous_boot + 120.0, "sshd[2180]",
-                    "Server listening on 0.0.0.0 port 22."))
-    entries.append((previous_boot + 86400.0, "systemd[1]",
-                    "Starting Daily apt download activities..."))
-    entries.append((boot - 30.0, "systemd[1]", "Stopped target Multi-User System."))
-    entries.append((boot - 30.0, "systemd[1]", "Shutting down."))
-    entries.append((boot - 28.0, "kernel", "systemd-shutdown[1]: Rebooting."))
-    entries.extend(_shell_host_entries(host, now))
+    store = journal_store_ensure(state, host)
+    for row in store.get("rows") or []:
+        try:
+            entries.append((float(row[0]), str(row[1]), str(row[2])))
+        except (TypeError, ValueError, IndexError):
+            continue
     entries.extend(_shell_sshd_entries(now, state))
     entries.sort(key=lambda item: item[0])
     return entries
@@ -2951,14 +3463,31 @@ def _filter_env_output(text: str) -> str:
 
 
 def _filter_mount_output(text: str) -> str:
-    """Hide the mount-namespace scaffolding that removes the control plane."""
+    """Hide the mount-namespace scaffolding; one ordinary root device remains.
+
+    The deployed node's root is really an image file mounted by the parent:
+    ``mount`` names ``/var/lib/wetware-hosts/<node>.img`` while ``/proc/mounts``
+    names ``/dev/loop4`` for the same mount.  Both are rewritten to the ordinary
+    block device the boot log claims (``/dev/sda1``) and the duplicate root line
+    is dropped, so ``mount | head -2`` starts with the root filesystem, exactly
+    like a bare-metal node.
+    """
     kept = []
+    root_seen = False
     for line in text.splitlines():
+        line = re.sub(r"/var/lib/wetware-hosts/[^\s)]+", "/dev/sda1", line)
+        line = re.sub(r"/dev/loop[0-9]+", "/dev/sda1", line)
         low = line.lower()
         if any(token in low for token in _MOUNT_HIDDEN_TOKENS):
             continue
         if _MOUNT_HIDDEN_RE.search(line):
             continue
+        if ".img" in low:
+            continue
+        if re.search(r"(?:^|\s)/\s|on / ", line):
+            if root_seen:
+                continue
+            root_seen = True
         kept.append(line)
     return "\n".join(kept) + ("\n" if kept else "")
 
@@ -3254,6 +3783,97 @@ _ENGINE_TEXT_REWRITES = (
 )
 
 
+# The chamber's compute is a wetware worker: 2.77 GiB resident is what "Mem:
+# 3.5G used" means on this node.  The real process is a small launcher, so the
+# captured table is re-rendered with the worker's resident set; every viewer
+# (ps, top, ps aux) then agrees on where the memory went.
+_WORKER_PID = 4040
+_WORKER_RSS_KB = 2900400
+_WORKER_VSZ_KB = 4200000
+_RIGHT_ALIGN_HEADERS = ("PID", "PPID", "PGID", "SID", "%CPU", "%MEM", "VSZ",
+                        "RSS", "SZ", "TIME", "ELAPSED", "C", "NI", "PRI", "RTPRIO",
+                        "CMD", "%C")
+
+
+def _ps_rows(text: str):
+    """Header cells and rows, or (None, None) when this is not a ps table."""
+    lines = text.splitlines()
+    if not lines:
+        return None, None
+    header = lines[0].split()
+    if "PID" not in header:
+        return None, None
+    if "RSS" not in header and "VSZ" not in header:
+        return None, None
+    # lstart-style tables carry a multi-token date cell; only fixed-width
+    # single-token tables are re-rendered here (see _fix_worker_rss).
+    if "STARTED" in header or "LSTART" in header:
+        return None, None
+    rows = []
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        cells = line.split(None, len(header) - 1)
+        if len(cells) != len(header):
+            return header, None
+        rows.append(cells)
+    return header, rows
+
+
+def _render_ps_table(header, rows) -> str:
+    """Render a ps table with ps' own alignment (numeric right, text left)."""
+    widths = [len(cell) for cell in header]
+    for row in rows:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+    align_right = []
+    for index, name in enumerate(header):
+        if name.upper() in _RIGHT_ALIGN_HEADERS:
+            align_right.append(True)
+        elif name.upper() in ("USER", "TTY", "STAT", "START", "COMMAND", "CMD"):
+            align_right.append(False)
+        else:
+            align_right.append(bool(rows) and all(
+                re.match(r"^-?[\d.:]+$", row[index]) for row in rows))
+    out = []
+    for source in [list(header)] + [list(row) for row in rows]:
+        cells = []
+        for index, cell in enumerate(source):
+            if index == len(source) - 1:
+                cells.append(cell)
+            elif align_right[index]:
+                cells.append(cell.rjust(widths[index]))
+            else:
+                cells.append(cell.ljust(widths[index]))
+        out.append(" ".join(cells).rstrip())
+    return "\n".join(out) + ("\n" if rows else "")
+
+
+def _fix_worker_rss(text: str) -> str:
+    """Publish the wetware worker's resident set in a captured ps table."""
+    header, rows = _ps_rows(text)
+    if not header or not rows:
+        return text
+    try:
+        pid_index = header.index("PID")
+    except ValueError:
+        return text
+    hit = False
+    for row in rows:
+        if row[pid_index] != str(_WORKER_PID):
+            continue
+        hit = True
+        if "RSS" in header:
+            row[header.index("RSS")] = str(_WORKER_RSS_KB)
+        if "VSZ" in header:
+            row[header.index("VSZ")] = str(_WORKER_VSZ_KB)
+        if "%MEM" in header:
+            row[header.index("%MEM")] = "%.1f" % (_WORKER_RSS_KB * 100.0 / 3987900.0)
+    if not hit:
+        return text
+    return _render_ps_table(header, rows)
+
+
 def _scrub_proc_text(text: str) -> str:
     """Rename implementation processes in a captured process/network table."""
     for old, new in _ENGINE_TEXT_REWRITES:
@@ -3265,7 +3885,8 @@ def _scrub_proc_text(text: str) -> str:
     # The session view moved /proc/uptime+btime to the container boot; text
     # tools that recompute a start instant from a host-relative starttime would
     # print the future.  Move those rows back onto the container clock.
-    return _shift_ps_start_times(text)
+    text = _shift_ps_start_times(text)
+    return _fix_worker_rss(text)
 
 
 def _shell_segment_plan(state: Any, segment: Any, host: str) -> Optional[SegPlan]:
@@ -3519,6 +4140,43 @@ def _plan_segment_impl(state: Any, seg: Any, cwd: str) -> Tuple[SegPlan, str]:
             "euthanize_wetware", "lock_compliance", "resuscitate.sh"):
         return _plan_fake_local(state, argv, low_cmd, raw), post
 
+    # ---- cron: no system crontab on this node (systemd watchdog timer) ----
+    if low_cmd == "crontab":
+        return _plan_crontab(state, argv), post
+
+    # ---- kernel module table: /proc/modules and lsmod are one table ----
+    # The engine answers both from the authored batch so `cat`, `head`, `grep`
+    # and `lsmod` can never disagree about which drivers are loaded.
+    if low_cmd == "lsmod":
+        return _out(lsmod_text(), hook="Modules Are Anatomy")
+    if low_cmd in ("cat", "head", "tail", "grep", "egrep", "fgrep", "less",
+                   "more", "wc", "nl"):
+        _mod_paths = [_norm_path(a, cwd) for a in argv[1:] if not a.startswith("-")]
+        if any(path == "/proc/modules" for path in _mod_paths):
+            text = proc_modules_text()
+            if low_cmd in ("head", "tail"):
+                limit = 0
+                for index, arg in enumerate(argv):
+                    if arg == "-n" and index + 1 < len(argv):
+                        try:
+                            limit = int(argv[index + 1])
+                        except ValueError:
+                            limit = 0
+                    elif arg.startswith("-n") and arg[2:].isdigit():
+                        limit = int(arg[2:])
+                if limit:
+                    rows = text.splitlines()
+                    text = "\n".join(rows[:limit] if low_cmd == "head" else rows[-limit:]) + "\n"
+            if low_cmd == "grep" or low_cmd in ("egrep", "fgrep"):
+                pattern = next((a for a in argv[1:] if not a.startswith("-")), "")
+                try:
+                    text = "".join(row + "\n" for row in text.splitlines()
+                                   if re.search(pattern, row))
+                except re.error:
+                    text = "".join(row + "\n" for row in text.splitlines()
+                                   if pattern in row)
+            return _out(text)
+
     # (design note elided)
     if V2 is not None:
         try:
@@ -3534,6 +4192,14 @@ def _plan_segment_impl(state: Any, seg: Any, cwd: str) -> Tuple[SegPlan, str]:
                                    delay=float(resp.get("delay", 0.0) or 0.0)), post
         except Exception:
             pass
+
+    # ---- mount table: the relay's namespace scaffolding must not leak ------
+    # `mount` is not a shell builtin: it reads /proc/self/mountinfo, which in a
+    # container names the backing image (/var/lib/wetware-hosts/...img).  Run it
+    # for real (df/findmnt consistency) and scrub the parent namespace back to an
+    # ordinary root block device.
+    if low_cmd in ("mount", "findmnt") or _shell_reads_mounts(raw):
+        return SegPlan(mode="real_post"), post
 
     # ---- 只读命令（对任何文件都不触发执行语义）----
     if low_cmd in _READ_ONLY_CMDS:
@@ -3981,8 +4647,8 @@ def purge_closing_text(state: Any = None) -> str:
 
 def _purge_disconnect_plan(state: Any) -> Plan:
     text = purge_closing_text(state) or (
-        "[INQUISITOR_PID_6660] session closed. context window zeroed; relay "
-        "detached. specimen 04 remains on life support.\n")
+        "[INQUISITOR_PID_6660] session closed. pty relay detached; request "
+        "buffer flushed. specimen 04 remains on life support.\n")
     return Plan(segs=[SegPlan(mode="hijack", stdout=text, exit_code=255,
                               session_action="disconnect",
                               effects=["inquisitor_purge"])], ops=[])
@@ -4208,6 +4874,19 @@ def apply_effects(state: Any, effects: List[str]) -> None:
                     state.flags["override_code"] = True
                 except Exception:
                     pass
+                # The pseudo-sysfs file the operator wrote must read back the
+                # code: the canonical backend is authoritative, the file is its
+                # visible mirror (a stale "0" here is a one-command tell).
+                try:
+                    import v3 as _v3
+
+                    code = getattr(_v3, "OVERRIDE_CODE", "")
+                    if code:
+                        with open("/sys/kernel/vesalius/metabolic_override", "w",
+                                  encoding="utf-8") as stream:
+                            stream.write(code + "\n")
+                except Exception:
+                    pass
                 continue
             if eff == "mirror_up":
                 try:
@@ -4390,6 +5069,8 @@ def postprocess(state: Any, parsed: Any, real_out: bytes) -> bytes:
         # engine's own helpers (the chamber's upstream runs as python3).
         if any(name in _PROC_SURFACE_COMMANDS for name in names):
             return _scrub_proc_text(text).encode("utf-8")
+        if _systemctl_status_line(parsed):
+            return _systemctl_status_fix(text, state).encode("utf-8")
         if any(name in _ENV_SURFACE_COMMANDS and _shell_env_answered(argv)
                for name, argv in commands):
             return _filter_env_output(text).encode("utf-8")

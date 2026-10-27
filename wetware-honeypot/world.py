@@ -693,6 +693,11 @@ class World:
         self._stamp_vendor_binaries()
         self._normalise_story_mtimes()
         self._restore_dir_stamps()
+        # The story journal and the kernel surfaces are per-run artefacts: one
+        # materialisation at reset, appended-to afterwards (never re-templated
+        # per query, which is what made two journalctl calls drift).
+        self._reset_journal_store()
+        self._kernel_surfaces()
 
     # The four plates are a *reset-time* artefact: the capture run that produced
     # them happened hours before the operator was paged.  They are generated
@@ -701,19 +706,68 @@ class World:
     ASSET_BASE_STAMP = "2026-10-25 23:41:00"
 
     def _align_generated_assets(self):
+        """Stamp the four plates like a real capture run, not an arithmetic series.
+
+        The old build wrote whole-second mtimes on a 37 s ladder.  A capture
+        appliance writes PNGs as it encodes them: irregular gaps, sub-second
+        tails, and a directory mtime equal to the newest file it holds.  The
+        offsets are a hash of the file name, so two `ls` calls in one run agree
+        while the four files no longer share a formula.
+        """
         try:
             from state import story_epoch
             base = self._whole(story_epoch(self.ASSET_BASE_STAMP, "%Y-%m-%d %H:%M:%S"))
-            root = self._p(self.asset_dir)
-            for index, name in enumerate(sorted(os.listdir(root))):
+            # state.asset_dir is already mapped to the deployment root.
+            root = self.asset_dir
+            newest_ns = 0
+            for name in sorted(os.listdir(root)):
                 if not name.endswith(".png"):
                     continue
-                stamp = base + index * 37
-                os.utime(os.path.join(root, name), (stamp, stamp))
-            if not self.fs_root:
+                digest = hashlib.sha1(name.encode("utf-8")).digest()
+                offset = 3 + (digest[0] << 4 | digest[1] >> 4) % 3000
+                nanos = (digest[2] << 16 | digest[3] << 8 | digest[4]) % 1000000000
+                stamp_ns = int((base + offset) * 1000000000) + nanos
+                newest_ns = max(newest_ns, stamp_ns)
+                os.utime(os.path.join(root, name), ns=(stamp_ns, stamp_ns))
+            if newest_ns:
+                # The directory's mtime is the last plate written, byte for byte.
+                os.utime(root, ns=(newest_ns, newest_ns))
+            elif not self.fs_root:
                 os.utime(root, (base, base))
         except Exception:
             pass
+
+    # -- kernel surfaces the story needs ------------------------------------
+    def _kernel_surfaces(self):
+        """Create /sys/module, /sys/kernel/vesalius and /dev/wetware0 once.
+
+        The container's /sys is a read-only tmpfs (the host's sysfs would name
+        the hypervisor) and /dev is a fresh tmpfs, so the surfaces a loaded
+        driver batch implies have to be materialised on the node itself.  They
+        are stamped with the boot instant, never with the reset's second.
+        """
+        if self.fs_root:
+            return
+        try:
+            import sessiond
+
+            sessiond._ensure_kernel_surfaces()
+        except Exception as exc:
+            self._log(exc)
+
+    def _reset_journal_store(self):
+        """Re-cut the journal for this run: materialise once, append afterwards."""
+        try:
+            import commands
+
+            path = commands.journal_store_path()
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            commands.journal_store_ensure(self.state)
+        except Exception as exc:
+            self._log(exc)
 
     # -- authored stamps survive every write --------------------------------
     def _restore_dir_stamps(self):
@@ -1054,6 +1108,10 @@ class World:
                 continue
             try:
                 path = self._p(logical)
+                if spec.get("seed_only") and os.path.lexists(path):
+                    # Seeded once, on an empty node: the running daemon's own
+                    # appends must never be replaced by the story's history.
+                    continue
                 if spec.get("min_stage", 0) > stage:
                     if os.path.lexists(path) and not os.path.isdir(path) and not stat.S_ISSOCK(os.lstat(path).st_mode):
                         os.unlink(path)
@@ -1724,6 +1782,11 @@ class World:
         for logical in lore_texts.FILES.keys() | lore_texts.SYMLINKS.keys():
             if keep_images and (logical == self.asset_dir or logical.startswith(self.asset_dir.rstrip("/") + "/")):
                 continue
+            spec = lore_texts.FILES.get(logical) or {}
+            if isinstance(spec, dict) and spec.get("seed_only") and os.path.lexists(self._p(logical)):
+                # A live daemon owns this file (nginx appends to it): a reset
+                # seeds it only when the disk has none.
+                continue
             try:
                 path = self._p(logical)
                 if os.path.lexists(path) and not (os.path.isdir(path) and not os.path.islink(path)) and not stat.S_ISSOCK(os.lstat(path).st_mode):
@@ -1763,6 +1826,8 @@ class World:
             try:
                 self.sync()
                 self._ensure_active_log(self.state)
+                self._reset_journal_store()
+                self._kernel_surfaces()
             finally:
                 self._preserve_images = False
         else:

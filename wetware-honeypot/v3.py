@@ -1050,8 +1050,7 @@ def _lookup(state: Any, path: str) -> Optional[str]:
             "/proc/meminfo": PROC_MEMINFO_EDGE,
             "/var/log/syslog": EDGE_SYSLOG,
             "/home/ops/notes.txt": EDGE_OPS_NOTES,
-            "/var/spool/cron/crontabs/root": EDGE_CRON_ROOT,
-            "/home/ops/cortex-sre/.git/HEAD": "ref: refs/heads/main\n",
+                   "/home/ops/cortex-sre/.git/HEAD": "ref: refs/heads/main\n",
             "/home/ops/cortex-sre/.git/config": "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = git@git.vesalius.internal:infra/cortex-sre.git\n",
             "/opt/cortex/.git/HEAD": "ref: refs/heads/main\n",
         }

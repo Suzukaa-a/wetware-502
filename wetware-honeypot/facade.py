@@ -2930,7 +2930,6 @@ def _edge_entries() -> List[Tuple[str, Dict[str, Any]]]:
     add("/etc/environment", _file(
         "PATH=\"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"\n",
         mtime=inst))
-    add("/etc/crontab", _file(EDGE_SYSTEM_CRONTAB, mtime=_T_README))
     add("/etc/cron.d/e2scrub_all", _file(
         "30 3 * * 0 root test -e /run/systemd/system || "
         "SERVICE=/usr/lib/systemd/system/e2scrub_all.service; "
@@ -3123,9 +3122,6 @@ def _edge_entries() -> List[Tuple[str, Dict[str, Any]]]:
     add("/var/mail", _dir(mode=0o2775, group="mail", mtime=inst))
     add("/var/opt", _dir(mtime=inst))
     add("/var/spool/cron", _dir(mtime=inst))
-    add("/var/spool/cron/crontabs", _dir(mode=0o1730, group="crontab", mtime=inst))
-    add("/var/spool/cron/crontabs/root",
-        _file(EDGE_SPOOL_CRON, mode=0o600, mtime=_T_README))
     add("/var/spool/mail", _link("/var/mail", mtime=inst))
     add("/var/tmp", _dir(mode=0o1777, mtime=boot))
     add("/var/www", _dir(mtime=inst))
@@ -3646,7 +3642,6 @@ def _hive_entries() -> List[Tuple[str, Dict[str, Any]]]:
     add("/var/mail", _dir(mode=0o2775, group="mail", mtime=inst))
     add("/var/opt", _dir(mtime=inst))
     add("/var/spool/cron", _dir(mtime=inst))
-    add("/var/spool/cron/crontabs", _dir(mode=0o1730, group="crontab", mtime=inst))
     add("/var/spool/mail", _link("/var/mail", mtime=inst))
     add("/var/tmp", _dir(mode=0o1777, mtime=boot))
     add("/var/www", _dir(mtime=inst))

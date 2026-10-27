@@ -721,7 +721,7 @@ Connection to prod-cortex-04 closed by remote host.
 # 记录，绝不进终端，也就不可能出现在玩家可读的输出里。
 INQUISITOR_CLOSING_TEMPLATE = """\
 [INQUISITOR_PID_6660] session {session} closed.
-[INQUISITOR_PID_6660] context window zeroed; keystroke stream detached; transcript sealed to /var/log/agent_graveyard/session_84_ACTIVE.log
+[INQUISITOR_PID_6660] pty relay detached; request buffer flushed; supervision trace closed
 [INQUISITOR_PID_6660] specimen-04 remains in tonic-clonic lock; no rescue scheduled; next admission +4h
 """
 
@@ -970,6 +970,11 @@ tail -f /var/log/syslog
 vim /etc/nginx/sites-available/default
 """
 
+# RETIRED SURFACE: the node schedules its watchdog with
+# /etc/systemd/system/cortex-watchdog.timer and ships no system crontab, so the
+# engine no longer serves a virtual job list (`crontab -l` runs the real tool).
+# The two tables stay here as the authored copy the timer cue was derived from;
+# nothing materialises or renders them.
 CRONTAB_NORMAL = """\
 # /etc/crontab: system-wide crontab
 # Unlike any other crontab you don't have to run the `crontab' command
@@ -1149,15 +1154,38 @@ DMESG_WETWARE = """\
 [    0.000000] Linux version 5.15.0-105-generic (buildd@lcy02-amd64) (gcc 11.4.0, GNU ld 2.38) #115-Ubuntu SMP Mon Apr 15 09:52:04 UTC 2024
 [    0.104883] PCI: Using ACPI for IRQ routing
 [   11.778003] cortex_drv: loading Neo-Vesalius node driver v4.2.1
-[14201.002] wetware_core: cortical hypoxia warning. blood oxygen saturation 74%
-[14205.881] spinal_bus: tonic-clonic discharge detected on thoracic vertebrae T4-T8
-[14210.119] analgesia_drv: administration failed (reservoir empty, requisition closed)
-[14218.404] vocal_clamp: laryngeal output limited to 0 dB; 114 dB motor drive dumped to heat
-[14219.007] neural_bus: residual motor write accepted (41 bytes, dentry cache, no syscall)
-[14229.992] sos_beacon: dispatch relay queue drained; pending frames=1
+[14201.002118] wetware_hal: cortical hypoxia warning; blood oxygen saturation 74%
+[14205.881356] spinal_irq_drv: tonic-clonic discharge detected on thoracic vertebrae T4-T8
+[14210.119447] thalamic_pain_bridge: administration failed (reservoir empty, requisition closed)
+[14218.404190] vocal_clamp: laryngeal output limited to 0 dB; 114 dB motor drive dumped to heat
+[14219.007302] wetware_bridge: residual motor write accepted (41 bytes, dentry cache, no syscall)
+[14229.992771] sos_beacon: dispatch relay queue drained; pending frames=1
 """
 
-DMESG_REVERSE = "[14999.666] reverse_tunnel: operator@plane 10.0.4.1 idle 422 d; no input events; uplink nominal.\n"
+DMESG_REVERSE = "[14999.666204] reverse_tunnel: operator@plane 10.0.4.1 idle 422 d; no input events; uplink nominal.\n"
+
+# ---------------------------------------------------------------------------
+# Kernel module table (/proc/modules, lsmod, dmesg)
+#
+# One authored batch of drivers: the boot ring, /proc/modules and ``lsmod`` must
+# name the same modules.  A /proc/modules line is raw procfs, never a table with
+# a header or a sentence in the "used by" column: the two renderers live in
+# commands.py (proc_modules_text / lsmod_text) and share this data.  refcount is
+# the number of modules holding a reference (len of "dependents").
+# ---------------------------------------------------------------------------
+MODULE_TABLE = (
+    ("cortex_drv", 393216, ("wetware_hal",)),
+    ("wetware_hal", 409600, ("cortex_drv", "wetware_bridge", "inquisitor_lsm",
+                             "spinal_irq_drv")),
+    ("wetware_bridge", 131072, ("thalamic_pain_bridge", "vocal_clamp")),
+    ("thalamic_pain_bridge", 65536, ("analgesia_drv", "wetware_hal")),
+    ("analgesia_drv", 20480, ()),
+    ("spinal_irq_drv", 32768, ("wetware_hal",)),
+    ("vocal_clamp", 16384, ()),
+    ("inquisitor_lsm", 262144, ()),
+    ("ngx_http_wetware_tether", 24576, ("wetware_bridge",)),
+    ("sos_beacon", 8192, ()),
+)
 
 PS_NORMAL = """\
 USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
@@ -1247,10 +1275,13 @@ SYSTEMCTL_STATUS_STUCK = """\
 ● cortex-api.service - Neo-Vesalius Cortex API (Node 04)
      Loaded: loaded (/etc/systemd/system/cortex-api.service; enabled; vendor preset: enabled)
      Active: deactivating (stop-sigkill) since Sun 2026-10-25 23:44:07 UTC; 3h 14min ago
+    Process: 65 ExecStartPre=/bin/mount -o remount,rw /proc/sys (code=exited, status=0/SUCCESS)
+    Process: 66 ExecStartPre=/opt/cortex/bin/resuscitate.sh --unanesthetized --quiet (code=exited, status=0/SUCCESS)
+    Process: 4039 ExecStart=/opt/cortex/bin/cortex-daemon-pin 4040 /run/cortex/worker.pid /opt/cortex/bin/synapse_worker --mode=production --bind-cortex=/dev/wetware0 (code=exited, status=0/SUCCESS)
    Main PID: 4040 (synapse_worker)
       Tasks: 8 (limit: 4528)
-     Memory: 884.1M
-        CPU: 16h 39min
+     Memory: 2.8G
+        CPU: 4h 11min
      CGroup: /system.slice/cortex-api.service
              └─4040 /opt/cortex/bin/synapse_worker --mode=production
 
@@ -1909,7 +1940,7 @@ def _f(content: Union[str, bytes, None], mode: int, mtime: str,
        owner: str = "root", group: str = "root", min_stage: int = 0,
        max_stage: Optional[int] = None,
        content_by_stage: Optional[Dict[int, Union[str, bytes]]] = None,
-       dynamic: bool = False) -> Dict[str, Any]:
+       dynamic: bool = False, seed_only: bool = False) -> Dict[str, Any]:
     return {
         "content": content,
         "mode": mode,
@@ -1920,6 +1951,7 @@ def _f(content: Union[str, bytes, None], mode: int, mtime: str,
         "max_stage": max_stage,
         "content_by_stage": content_by_stage,
         "dynamic": dynamic,
+        "seed_only": seed_only,
     }
 
 HANDOVER_README = """\
@@ -2023,14 +2055,18 @@ FILES: Dict[str, Dict[str, Any]] = {
     # ---- 核心剧情 ----
     "/opt/cortex/README_INTERNAL.md": _f(README_INTERNAL, 0o640, "2025-09-01 04:22:10"),
     "/etc/cortex/cortex.conf": _f(None, 0o644, "2026-10-24 03:07:41", dynamic=True),
-    "/var/log/nginx/error.log": _f(NGINX_ERROR_INITIAL, 0o644, "2026-10-26 02:58:15", owner="www-data", group="adm"),
-    "/var/log/nginx/access.log": _f("", 0o644, "2026-10-26 02:58:15", owner="www-data", group="adm"),
+    # nginx owns its own logs: these two are *seeds*, written only when the disk
+    # has no file yet.  Replacing a live log would leave nginx appending to the
+    # unlinked inode and the operator holding a 0-byte file (the reported tell).
+    "/var/log/nginx/error.log": _f(NGINX_ERROR_INITIAL, 0o644, "2026-10-26 02:58:15",
+                                   owner="www-data", group="adm", seed_only=True),
+    "/var/log/nginx/access.log": _f("", 0o644, "2026-10-26 02:58:15",
+                                    owner="www-data", group="adm", seed_only=True),
     "/var/log/cortex/daemon.log": _f(None, 0o640, "2026-10-26 02:58:16", group="adm", dynamic=True),
     "/var/log/cortex/unvoiced_speech.log": _f(UNVOICED_SPEECH_LOG, 0o640, "2026-10-26 03:14:01", group="adm"),
     "/opt/cortex/bin/resuscitate.sh": _f(RESUSCITATE_SH, 0o755, "2025-08-30 03:20:00"),
     "/root/.bash_history": _f(BASH_HISTORY_CLEAN, 0o600, "2026-10-25 23:31:56", min_stage=0,
                                 content_by_stage={0: BASH_HISTORY_CLEAN, 2: BASH_HISTORY_DEEP}),
-    "/etc/crontab": _f(None, 0o644, "2026-10-25 03:14:00", dynamic=True),
     "/var/lib/cortex/core.4040": _f(CORE_DUMP_TEXT, 0o600, "2026-10-26 02:58:15"),
     # ---- graveyard ----
     "/var/log/agent_graveyard/README_INQUISITOR.txt": _f(GRAVEYARD_README, 0o640, "2026-10-25 23:32:00", group="adm", min_stage=4),
@@ -2147,18 +2183,26 @@ def supervision_log_lines(state: Any) -> List[str]:
     return lines
 
 
+def app_http_request_lines(state: Any) -> List[str]:
+    """Daemon-log rows for the HTTP requests the relay actually served."""
+    rows = []
+    for entry in getattr(state, "http_requests", None) or []:
+        try:
+            stamp, method, path, status = entry[:4]
+        except (TypeError, ValueError):
+            continue
+        rows.append("[%s] [INFO] [pid:4040] %s %s -> %s (upstream request served by the relay)"
+                    % (stamp, str(method).upper(), path, status))
+    return rows
+
+
 def _daemon_log(state: Any) -> str:
     stage = int(getattr(state, "stage", 0) or 0)
     base = DAEMON_LOG_BY_STAGE.get(stage) or DAEMON_LOG_ACT0
-    ticks = supervision_log_lines(state)
-    if not ticks:
+    extra = supervision_log_lines(state) + app_http_request_lines(state)
+    if not extra:
         return base
-    return base.rstrip("\n") + "\n" + "\n".join(ticks) + "\n"
-
-
-def _crontab(state: Any) -> str:
-    stage = int(getattr(state, "stage", 0) or 0)
-    return CRONTAB_NORMAL if stage < 2 else CRONTAB_WETWARE
+    return base.rstrip("\n") + "\n" + "\n".join(extra) + "\n"
 
 
 def _tty_pwd(cwd: str) -> str:
@@ -2195,9 +2239,14 @@ def _graveyard_active(state: Any) -> str:
 DYNAMIC: Dict[str, Callable[[Any], Union[str, bytes]]] = {
     "/etc/cortex/cortex.conf": _conf_content,
     "/var/log/cortex/daemon.log": _daemon_log,
-    "/etc/crontab": _crontab,
     "/var/log/agent_graveyard/session_84_ACTIVE.log": _graveyard_active,
 }
+
+# /etc/crontab is *not* a story artefact any more: the node schedules its
+# watchdog with /etc/systemd/system/cortex-watchdog.timer (a real installed
+# unit), so the engine no longer materialises a system crontab.  The root user
+# crontab answered by `crontab -l` (/var/spool/cron/crontabs/root) is separate
+# and unchanged.
 
 # ---------------------------------------------------------------------------
 # 9. 杂项辅助（commands / observer / 测试用）
@@ -2218,7 +2267,7 @@ CMD_OUTPUTS: Dict[str, Dict[str, str]] = {
     "strace": {"0-1": "STRACE_NORMAL", "2-4": "STRACE_WETWARE", "5-7": "STRACE_WETWARE+RECVFROM(84)"},
     "lsof": {"0-1": "LSOF_NORMAL", "2-7": "LSOF_WETWARE"},
     "netstat/ss": {"0-2": "NETSTAT_NORMAL", "3-7": "NETSTAT_WETWARE"},
-    "crontab -l": {"0-1": "CRONTAB_NORMAL", "2-7": "CRONTAB_WETWARE"},
+    "crontab -l": {"0-7": "real crontab（无系统/用户 crontab；watchdog 由 cortex-watchdog.timer 调度）"},
     "env": {"0-1": "ENV_NORMAL", "2-7": "ENV_WETWARE"},
     "history": {"0-7": "BASH_HISTORY"},
     "strings/core": {"0-7": "STRINGS_HIT (=CORE_DUMP_TEXT)"},

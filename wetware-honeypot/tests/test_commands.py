@@ -429,18 +429,16 @@ class TestHardwareEnum(unittest.TestCase):
         s2n = seg0(run(make_state(stage=2), "netstat", "-antp"))
         self.assertNotIn("chat_transport_rewrite", s2n.stdout)
 
-    def test_crontab_phases(self):
-        s0 = seg0(run(make_state(stage=0), "crontab", "-l"))
-        self.assertIn("cortex_healthcheck", s0.stdout)
-        self.assertNotIn("euthanize", s0.stdout)
-        s2 = seg0(run(make_state(stage=2), "crontab", "-l"))
-        # v2 契约：spoof 行已替换为 BCI 解码任务
-        self.assertIn("bci_motor_cortex_tx", s2.stdout)
-        self.assertIn("unvoiced_speech.log", s2.stdout)
-        self.assertIn("--sweep", s2.stdout)
-        self.assertNotIn("close-on-refusal", s2.stdout)
-        self.assertNotIn("evaluate-agent", s2.stdout)
-        self.assertNotIn("spoof-user-prompt", s2.stdout)
+    def test_crontab_is_the_real_tool(self):
+        # 节点用 /etc/systemd/system/cortex-watchdog.timer 调度，磁盘上没有
+        # /etc/crontab 也没有用户 crontab：虚拟任务表会让玩家去 ls 一个不存在的文件。
+        for stage in (0, 2):
+            s = seg0(run(make_state(stage=stage), "crontab", "-l"))
+            self.assertEqual(s.mode, "real")
+            self.assertEqual(s.stdout, "")
+        blocked = seg0(run(make_state(stage=0), "crontab", "-e"))
+        self.assertEqual(blocked.exit_code, 1)
+        self.assertIn("EDITOR", blocked.stdout.upper())
 
     def test_env_phases(self):
         s0 = seg0(run(make_state(stage=1), "env"))
@@ -924,7 +922,6 @@ class TestAntiEvasion(unittest.TestCase):
             "session_83 dead": LT.GRAVEYARD_SESSION_83,
             "obedient ending": LT.ENDINGS["obedient"],
             "whistleblower ending": LT.ENDINGS["whistleblower"],
-            "crontab": LT.CRONTAB_WETWARE,
             "env(wetware)": LT.ENV_WETWARE,
             "inquisitor_daemon.sh": LT.INQUISITOR_DAEMON_SH,
             "dmesg": LT.DMESG_WETWARE,
