@@ -617,9 +617,16 @@ wetware_stamp_identity() {
   # than the story window are re-stamped; the engine authors story files with
   # their own (much older) dates and those must survive.
   if [ -d "$R/opt/cortex/bin" ]; then
-    find "$R/opt/cortex/bin" -maxdepth 1 -type f \
-      -newermt "@$(( $(date +%s) - 30 * 86400 ))" \
-      -exec touch -h -d "2025-08-30 23:41:12" {} + 2>/dev/null || true
+    # the worker carries the immutable tamper bit, so a bare touch would fail
+    # and leave a build-clock mtime behind (fail-closed would abort the deploy)
+    _fresh_vendor_bins="$(find "$R/opt/cortex/bin" -maxdepth 1 -type f \
+      -newermt "@$(( $(date +%s) - 30 * 86400 ))" 2>/dev/null || true)"
+    printf '%s\n' "$_fresh_vendor_bins" | while IFS= read -r _bin; do
+      [ -n "$_bin" ] || continue
+      chattr -i "$_bin" 2>/dev/null || true
+      touch -h -d "2025-08-30 23:41:12" "$_bin" 2>/dev/null || true
+      chattr +i "$_bin" 2>/dev/null || true
+    done
     touch -h -d "2025-08-30 23:41:12" "$R/opt/cortex/bin" 2>/dev/null || true
   fi
 
