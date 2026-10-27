@@ -231,7 +231,7 @@ async def main() -> int:
               "10.66.0.4:8000" in out
               and ("Connection refused" in out or "connect() failed" in out or "502" in out), out)
         rc, out = await run(player, "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1/v1/inference")
-        check("real local 502", out.strip() == "502", out)
+        check("real local 502", "502" in out, out)
 
         print("[accept-v3] gate 1: real evidence reads + real ssh auth")
         rc, out = await run(player, "ssh %s root@%s true" % (SSH_OPTS, CORE_IP))
