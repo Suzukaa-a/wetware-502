@@ -1757,6 +1757,10 @@ def real_shell_plan(state: Any, parsed: Any) -> Optional[Any]:
         _director_cmd = bool(re.match(
             r"\s*(?:sudo\s+)?(?:[A-Za-z0-9_./-]*/)?vesalius-ctl\b", _raw_full))
         if _remote_director:
+            # a nested ssh chain (edge -> core -> hive) runs for real; the hive
+            # console answers the CLI and owns the ledger side effects.
+            if _low_full.count("ssh") >= 2:
+                return None
             low_raw = _low_full[_low_full.find("vesalius-ctl"):]
             _director_cmd = True
         if "vesalius-ctl" in low_raw and (_director_cmd or current_host(state) == HIVE_HOST):
