@@ -284,6 +284,7 @@ class State:
                     self.nginx_tampers or self.socket_pulls or self.mock_attempts or
                     any(self.has_flag(name) for name in (
             "read_howto", "read_consent", "read_graveyard", "dnr_verified",
+            "drp_verified",
             "halted_epinephrine", "shocked_brain", "service_stopped",
             "gate1_key_obtained", "gate3_token", "override_code", "mirror_up",
             "silicon_mirror_active", "global_cryo")))

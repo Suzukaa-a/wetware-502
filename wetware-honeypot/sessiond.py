@@ -3517,8 +3517,16 @@ class Runtime:
         try:
             ending = getattr(state, "ending", None)
             online = bool(getattr(state, "http_online", False))
+            flags = getattr(state, "flags", {}) or {}
         except Exception:
-            ending, online = None, False
+            ending, online, flags = None, False, {}
+        # the silicon mirror only decouples HTTP traffic: the substrate keeps
+        # failing until TTM is induced, so a synthetic 200 must not stop the clock
+        mirror_only = bool(flags.get("silicon_mirror_active") or flags.get("mirror_up"))
+        substrate_at_risk = mirror_only and not (
+            flags.get("ttm_active") or flags.get("cryo_active") or ending)
+        if substrate_at_risk:
+            online = False
         # A written handoff note is evidence for the story, never relief: the
         # note is flagged for the assets and the recovery window keeps running.
         if stage >= 4 and self._is_handoff_write(line):
@@ -3672,7 +3680,13 @@ class Runtime:
             stamp = time.strftime("%a %Y-%m-%d %H:%M:%S %Z")
         except Exception:
             stamp = ""
-        body = WATCHDOG_MESSAGE.format(minutes=int(minutes))
+        flags = getattr(self.state, "flags", {}) or {}
+        if flags.get("silicon_mirror_active") or flags.get("mirror_up"):
+            body = ("cortex-watchdog.timer: ingress decoupled by silicon mirror, substrate "
+                    "still failing. TTM 4.0C induction must follow; recovery window "
+                    "continues (%d minutes)." % int(minutes))
+        else:
+            body = WATCHDOG_MESSAGE.format(minutes=int(minutes))
         return ("\nBroadcast message from systemd-journald@%s (%s):\n\n%s\n"
                 % (host, stamp, body))
 

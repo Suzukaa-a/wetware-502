@@ -1099,6 +1099,27 @@ jwgO9y/5XuupFR3EZ+Uoa86CJw/4rryIs7D4qeDTmae/NE68xJlg8=
 -----END SSH SIGNATURE-----
 """
 
+CLINICAL_DETERIORATION = [
+    "[422184.102914] b7_telemetry: slot_04 unserviced synapse_backlog=4096 icp 46mmhg->52mmhg spo2=74% perfusion_reserve=COMPROMISED",
+    "[422244.590118] spinal_irq_drv: subject_04 sympathetic_storm icp 52mmhg->61mmhg spo2=68% status_epilepticus_margin=-1.4mv",
+    "[422312.801452] wetware_hal: node_04 uncal_herniation_proximity=0.91 icp 61mmhg->70mmhg spo2=57% window_before_irreversible_ischemia=180s",
+]
+
+CLINICAL_OVERRIDE_OK = [
+    "[422360.104592] wetware_hal: metabolic_override key=542A5703 accepted dnr_lockout=BYPASSED seizure_threshold=+11.8mv",
+    "[422362.481903] thalamic_pain_bridge: nociceptive_cascade arrested icp 70mmhg->54mmhg cerebral_perfusion_pressure=RESTORED",
+]
+
+CLINICAL_MIRROR_OK = [
+    "[422410.019482] b7_telemetry: ingress_diverted=100% edge_synthetic_200=VERIFIED slot_04 bio_synapse_load decoupled",
+    "[422413.729104] wetware_hal: subject_04 icp 54mmhg->32mmhg eeg_spectral_shift high_beta->theta_delta_slowwave sync=0.89",
+]
+
+CLINICAL_TTM_OK = [
+    "[422480.601289] b7_telemetry: core_perfusate_temp=4.0C metabolic_rate=8.0% cmro2_suppressed systemic_lactate_clearing=PASS",
+    "[422485.918420] thalamic_pain_bridge: nociceptive_flux=0.0mv pain_index=0.0 eeg=burst_suppression_protective_stasis qsofa=0",
+]
+
 ONCALL_DISPATCH_LOG = """\
 [DISPATCH_ORIGIN]: oncall-auto-dispatcher.service (PID 1104, crontab by Lin@neo-vesalius.io, 2025-08-30 23:38:12)
 [AUDIT_VERIFICATION]: GPG_KEY_ID: 0x4024LIN (MATCHED: /root/.ssh/authorized_keys line 1)

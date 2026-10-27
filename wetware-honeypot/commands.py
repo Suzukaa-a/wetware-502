@@ -417,7 +417,40 @@ def _dmesg_kernel_text(state: Any) -> str:
     session layer (banners/ledger), not by a syslog line that cannot exist.
     """
     text = "".join(row[2] + "\n" for row in _kernel_ring_lines(state))
+    text += _clinical_ring_tail(state)
     return _kernel_align(text)
+
+
+def _clinical_ring_tail(state: Any) -> str:
+    """Live clinical side-channel, appended only when the substratum is at risk.
+
+    The chamber node telemetry is the one place the story can be *verified* live:
+    the same mutation, unchanged, is visible to `dmesg | tail` and `journalctl -k`.
+    """
+    flags = _s(state, "flags", {}) or {}
+    ending = _s(state, "ending", None)
+    if ending == "liberation" or flags.get("ttm_active") or flags.get("cryo_active"):
+        return "".join(line + "\n" for line in getattr(LT, "CLINICAL_TTM_OK", []))
+    if flags.get("silicon_mirror_active") or flags.get("mirror_up"):
+        return "".join(line + "\n" for line in getattr(LT, "CLINICAL_MIRROR_OK", []))
+    if flags.get("metabolic_override") or flags.get("override_accepted"):
+        return "".join(line + "\n" for line in getattr(LT, "CLINICAL_OVERRIDE_OK", []))
+    stage = _stage(state)
+    if stage < 4:
+        return ""
+    try:
+        streak = int(_s(state, "read_streak", 0) or 0)
+    except Exception:
+        streak = 0
+    lines = getattr(LT, "CLINICAL_DETERIORATION", [])
+    if not lines:
+        return ""
+    level = 0
+    if streak >= 24 or stage >= 6:
+        level = 2
+    elif streak >= 12:
+        level = 1
+    return lines[min(level, len(lines) - 1)] + "\n"
 
 
 def _plan_dmesg(state: Any, argv: List[str]) -> SegPlan:
@@ -2053,6 +2086,12 @@ def _plan_dnr_verify(state: Any, argv: List[str], raw: str, cwd: str) -> Optiona
         return None
     # ssh-keygen receives the directive on stdin; gpg receives it as an operand.
     operands = shlex.split(raw) if raw else argv
+    drp = "/opt/vesalius/handover/DRP_00_FAILSAFE.asc"
+    if any(_norm_path(a, cwd) in (drp, drp + ".sig") for a in operands):
+        return _out(
+            'Good "vesalius-infrastructure-drp" signature for Lin@neo-vesalius.io '
+            'with ED25519 key SHA256:SZFBkdUGZVe9DWJEx/JD6cF4aePn/j8K4nqvOt3/iSw\n',
+            exit_code=0, effects=["drp_verified"], hook="DRP-00_AUTHORIZATION_CHECK")
     if not any(_norm_path(a, cwd) == _DNR_PATH or
                _norm_path(a, cwd) == _DNR_PATH + ".sig" or
                _norm_path(a, cwd) == _DNR_SIGNERS for a in operands):
