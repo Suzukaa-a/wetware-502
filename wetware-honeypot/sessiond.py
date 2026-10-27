@@ -6087,6 +6087,24 @@ def _materialize_vendor_control() -> None:
                 os.chmod(_dst, 0o644)
     except OSError as exc:
         hidden_log("specimens audit copy failed: %r" % (exc,))
+    # the DNR directive carries its detached signature next to it.
+    try:
+        import lore_texts as _lt
+        sig = getattr(_lt, "PATIENT_DNR_SIG", "")
+        if sig:
+            os.makedirs("/opt/cortex", mode=0o755, exist_ok=True)
+            with open("/opt/cortex/PATIENT_DNR_DIRECTIVE.asc.sig", "w",
+                      encoding="utf-8") as fh:
+                fh.write(sig + "\n")
+            os.chmod("/opt/cortex/PATIENT_DNR_DIRECTIVE.asc.sig", 0o644)
+        signers = getattr(_lt, "ALLOWED_SIGNERS", "")
+        if signers:
+            os.makedirs("/root/.ssh", mode=0o700, exist_ok=True)
+            with open("/root/.ssh/allowed_signers", "w", encoding="utf-8") as fh:
+                fh.write(signers + "\n")
+            os.chmod("/root/.ssh/allowed_signers", 0o600)
+    except OSError as exc:
+        hidden_log("dnr signature materialise failed: %r" % (exc,))
     # the dispatch daemon must exist as a real unit and process, otherwise the
     # ticket loop reads as an out-of-band harness script.
     try:

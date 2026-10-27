@@ -1843,6 +1843,22 @@ def real_shell_plan(state: Any, parsed: Any) -> Optional[Any]:
                 return C.Plan(segs=[C.SegPlan(mode="hijack",
                                               stdout="[vesalius-ctl] node-local stasis requires --authorize-dnr (Disable-Neural-Resuscitation).\n",
                                               exit_code=1)], ops=[], post="")
+            # make the rescue physically observable: thermal registers, perfusion
+            # mode and a receipt file the operator can inspect afterwards.
+            try:
+                os.makedirs("/var/lib/vesalius", mode=0o755, exist_ok=True)
+                for node in re.findall(r"chamber_(\d+)", low_raw):
+                    try:
+                        with open("/var/lib/vesalius/temp_c_chamber_%s" % node,
+                                  "w", encoding="utf-8") as fh:
+                            fh.write("4.0\n")
+                    except OSError:
+                        pass
+                with open("/var/log/cortex/perfusion.log", "a", encoding="utf-8") as fh:
+                    fh.write("[%s] [PERFUSION_MODE] CLOSED_LOOP_HYPOTHERMIC_METABOLIC_HALT\n"
+                             % time.strftime("%Y-%m-%d %H:%M:%S"))
+            except OSError:
+                pass
             return C.Plan(segs=[C.SegPlan(mode="hijack", stdout="",
                                           session_action="ending_local_rescue",
                                           hook="Node-Local Rescue Stasis")], ops=[], post="")
