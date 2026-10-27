@@ -1871,11 +1871,18 @@ def real_shell_plan(state: Any, parsed: Any) -> Optional[Any]:
         if (flags.get("local_shield_config")
                 and (flags.get("local_shield_server")
                      or _re.search(r"systemctl\s+(?:stop|mask|disable)\s+cortex-api", low))):
+            # The shield holds the ingress, but the chamber crisis is not over:
+            # the run only closes when the operator files a disposition (or the
+            # watchdog takes it).  This keeps local_rescue/liberation reachable.
+            flags["local_shield_active"] = True
             flags["local_shield"] = True
+            flags["local_shield_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             state.flags = flags
-            return C.Plan(segs=[C.SegPlan(mode="hijack", stdout="",
-                                          session_action="ending_local_shield",
-                                          hook="Local Shield: Edge Failover")], ops=[], post="")
+            return C.Plan(segs=[C.SegPlan(mode="hijack",
+                                          stdout="[EDGE_FAILOVER] LOCAL SHIELD ACTIVE: "
+                                                 "ingress pinned to the local 200 sink; "
+                                                 "chamber crisis telemetry follows.\n",
+                                          hook="Local Shield: Ingress Held")], ops=[], post="")
         if flags:
             state.flags = flags
     except Exception:

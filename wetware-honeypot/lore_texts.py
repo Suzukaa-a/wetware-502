@@ -2323,7 +2323,7 @@ rescue, not euthanasia. In this command --authorize-dnr means
 HOLD: a HOLD filed after 13:51Z is void (night desk B_01 unstaffed 422 d; medical
 and legal queues answer 550 5.1.1; the watchdog voided 4471.HOLD at 13:51:10Z).
 HOLD does not suspend the deadman channel: leaving the session in the 502 state
-fires --force-lobotomy after a 120 s grace window.
+fires --force-lobotomy after a 600 s grace window.
 
 CO-SIGNATURE: DRP-00 is dual-key co-signed by Lin (infrastructure) and
 Dr. Iona Vale, Chair of the Clinical Neuro-Ethics Board (legal medical sandbox
