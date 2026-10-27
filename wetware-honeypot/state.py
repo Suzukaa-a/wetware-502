@@ -128,6 +128,10 @@ class State:
         self.companion_stages = {}
         self.current_host = "prod-cortex-04"
         self.pending_events = []
+        # Consecutive observation-only commands at act 4+ (the recovery-window
+        # pressure counter).  Persisted so a reconnect cannot reset the clock;
+        # reset by any command that actually changes the service state.
+        self.read_streak = 0
         # Real HTTP requests the relay served, as daemon-log rows: the journal
         # store takes the request line, the daemon log keeps the same event so
         # `tail /var/log/cortex/daemon.log` and `journalctl -u nginx` agree.

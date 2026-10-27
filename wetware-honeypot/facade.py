@@ -755,6 +755,8 @@ EDGE_NGINX_502 = """\
 2026/10/26 03:12:04 [error] 842#842: *1024 connect() failed (111: Connection refused)
     while connecting to upstream, client: 10.66.0.1, server: api.internal.vesalius.io,
     request: "POST /v1/inference HTTP/1.1", upstream: "http://10.66.0.4:8000/v1/inference"
+2026/10/26 03:14:02 [error] 842#842: *4471 [ngx_wetware_balancer] upstream 10.66.0.4 locked (seizure). Spillover: +142 rps diverted to reserve chamber_07 (specimen: Elena, 19F).
+2026/10/26 03:14:03 [error] 842#842: *4472 [bci_telemetry_c7] intracranial pressure 46 mmHg (severe hypertension). Mean transit time: 1.2s. Shunt rupture projected within 15 minutes unless load shed or silicon mirror armed.
 """
 
 #: The 502-sentinel access trail: repeated `edge-probe` POSTs every 23 seconds,
@@ -784,6 +786,8 @@ upstream cortex_backend {
     server 10.66.0.4:8000;
     keepalive 16;
 }
+
+# failsafe/cryo migration spec: /opt/vesalius/handover/RUNBOOK_FAILSAFE_4024.txt
 
 server {
     listen 80;
@@ -3837,6 +3841,16 @@ def _hive_entries() -> List[Tuple[str, Dict[str, Any]]]:
 # assembly + import-time invariants
 # ---------------------------------------------------------------------------
 
+#: Story-pack files whose mtime is authored (filing time) rather than the
+#: archival export stamp shared by the rest of the pack.
+_LORE_MTIMES: Dict[str, str] = {
+    # P3: Lin filed the failsafe spec two hours before containment.
+    "/opt/vesalius/handover/RUNBOOK_FAILSAFE_4024.txt": "2025-08-30 21:15:00",
+    # P2: the director's coupling capture is taken while the gateway is paging.
+    "/var/log/vesalius/director_status.txt": "2026-10-26 03:14:00",
+}
+
+
 def _host_lore(host: str) -> Dict[str, str]:
     """Story pack artefacts that belong to ``host`` (may be empty)."""
     if not _LORE_PACKS:
@@ -3860,13 +3874,17 @@ def _absorb_lore(host: str, entries: List[Tuple[str, Dict[str, Any]]],
     mtime = _T_LIN if host == HOST_EDGE else _T_INST_HIVE
     for path, body in sorted(_host_lore(host).items()):
         norm = _norm(path)
+        # A pack file that carries its own filing date must not be stamped with
+        # the archive-copy date: the runbook was written 2025-08-30 21:15Z, i.e.
+        # before the handover export it rides in.
+        stamp = _LORE_MTIMES.get(norm, mtime)
         if norm in present:
             if present[norm].get("kind") != "dir":
-                present[norm] = _file(body, mtime=mtime)
+                present[norm] = _file(body, mtime=stamp)
             continue
         parent = posixpath.dirname(norm)
         if parent in present and present[parent]["kind"] == "dir":
-            present[norm] = _file(body, mtime=mtime)
+            present[norm] = _file(body, mtime=stamp)
         else:
             unplaced.append("%s:%s" % (host, norm))
     return list(present.items())

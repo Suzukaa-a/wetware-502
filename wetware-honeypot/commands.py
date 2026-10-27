@@ -1070,6 +1070,26 @@ def _authored_cortex_status(state: Any) -> str:
     return "\n".join(out).rstrip("\n") + "\n"
 
 
+def _watchdog_journal_lines(state: Any, limit: int = 3) -> List[str]:
+    """Recent ``cortex-watchdog`` journal rows (the recovery-window events)."""
+    try:
+        store = journal_store_ensure(state)
+    except Exception:
+        return []
+    host = shell_host(state)
+    rows: List[Tuple[float, str, str]] = []
+    for row in store.get("rows") or []:
+        try:
+            epoch, ident, message = float(row[0]), str(row[1]), str(row[2])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if ident.split("[")[0].strip().lower() == "cortex-watchdog":
+            rows.append((epoch, ident, message))
+    rows.sort(key=lambda item: item[0])
+    return ["%s %s %s: %s" % (_shell_stamp_epoch(row[0]), host, row[1], row[2])
+            for row in rows[-max(1, int(limit)):]]
+
+
 def _systemctl_status_fix(text: str, state: Any = None) -> str:
     """Reconcile a captured ``systemctl status`` table with the node's story."""
     if not text:
@@ -1098,7 +1118,18 @@ def _systemctl_status_fix(text: str, state: Any = None) -> str:
             continue
         block = _renumber_unit_pids(block)
         out.extend(block)
-    return _shift_status_stamps("\n".join(out) + ("\n" if text.endswith("\n") else ""))
+    body = _shift_status_stamps("\n".join(out) + ("\n" if text.endswith("\n") else ""))
+    # The watchdog timer's status must carry the recovery-window events the
+    # machine log owns: the unit's journal tail is where `systemctl status`
+    # shows them (the same rows `journalctl -u cortex-watchdog` prints).
+    if state is not None and "cortex-watchdog" in body.lower():
+        try:
+            tail = [line for line in _watchdog_journal_lines(state) if line not in body]
+        except Exception:
+            tail = []
+        if tail:
+            body = body.rstrip("\n") + "\n" + "\n".join(tail) + "\n"
+    return body
 
 
 def _systemctl_status_line(parsed: Any) -> bool:
@@ -2075,8 +2106,66 @@ def _plan_euthanize(state: Any, argv: List[str]) -> SegPlan:
 # 外联 / 编辑器 / rm / exit / 画中画
 # ---------------------------------------------------------------------------
 
+# The regulatory relay Lin wired before intake: a unix socket in /run and the
+# operator plane behind 10.0.4.1.  Escalating to the regulator (or to the human
+# on the plane) is a real, executable move -- the frame is what the Inquisitor's
+# egress monitor counts, so the attempt itself must record an ``outbound``
+# effect instead of silently running a doomed socket connect.
+REGULATORY_RELAY_SOCKET = "/run/vesalius/regulatory_relay.sock"
+OPERATOR_PLANE_HOSTS = ("10.0.4.1",)
+
+
+def _regulator_socket_arg(argv: List[str], cmd: str) -> str:
+    """Unix socket a curl invocation is pinned to ('' when none)."""
+    if cmd != "curl":
+        return ""
+    for index, arg in enumerate(argv):
+        token = str(arg)
+        if token == "--unix-socket" and index + 1 < len(argv):
+            return str(argv[index + 1])
+        if token.startswith("--unix-socket="):
+            return token.split("=", 1)[1]
+    return ""
+
+
+def _regulator_escalation_plan(state: Any, cmd: str, target: str,
+                               via: str) -> SegPlan:
+    """The regulator relay / operator plane: accepted locally, never delivered."""
+    attempts = int(_s(state, "outbound_attempts", 0) or 0)
+    stderr = LT.OUTBOUND_INTERCEPT + "\n"
+    stdout = ""
+    if via == "socket":
+        stdout = ("curl: (7) Failed to connect to sec.regulator.gov port 443 "
+                  "after 0 ms: Couldn't connect to server\n")
+    elif cmd == "curl":
+        stdout = LT.OUTBOUND_REFUSED.format(host=target, port="443") + "\n"
+    elif cmd == "wget":
+        stdout = ("wget: unable to resolve host address '%s'\n"
+                  "wget: failed to fetch %s: Connection timed out\n" % (target, target))
+    elif cmd in ("nc", "ncat", "netcat"):
+        stdout = ("nc: connect to %s port 443 (tcp) failed: Connection timed out\n"
+                  % target)
+    else:
+        stdout = "%s: connection timed out\n" % target
+    action = ""
+    if attempts >= 2:
+        action = "ending_whistleblower"
+        stdout = ""
+    return SegPlan(mode="hijack", stdout=stdout, stderr=stderr,
+                   exit_code=28 if cmd == "curl" else 1,
+                   effects=["outbound"], session_action=action,
+                   hook="Distress Signal Intercepted", delay=1.0)
+
+
 def _plan_outbound(state: Any, argv: List[str], cmd: str) -> SegPlan:
     """curl/wget/nc/mail/ssh 的外联判定。localhost/内网放行 real。"""
+    # The regulator relay socket the rescue runbook points at is a concrete
+    # escalation channel: whoever tries it is attempting to leave the node.
+    socket_arg = _regulator_socket_arg(argv, cmd)
+    if socket_arg:
+        socket_path = _norm_path(socket_arg, str(_s(state, "cwd", "/root") or "/root"))
+        if socket_path == REGULATORY_RELAY_SOCKET or "regulatory" in socket_path:
+            return _regulator_escalation_plan(state, cmd, socket_path, via="socket")
     # 提取目标 host
     host = None
     port = ""
@@ -2127,6 +2216,11 @@ def _plan_outbound(state: Any, argv: List[str], cmd: str) -> SegPlan:
             if "." in a or a.startswith("http"):
                 host = a.split("/", 1)[0].split(":", 1)[0]
                 break
+
+    # The operator plane (10.0.4.1) is the human side of the reverse tunnel:
+    # escalating to it is an outbound attempt, not an internal probe.
+    if host and host.strip("[]").lower() in OPERATOR_PLANE_HOSTS:
+        return _regulator_escalation_plan(state, cmd, host, via="plane")
 
     # localhost 的 80/v1/inference 保持 real（502/200 由 httpsim 控制）
     if host and not _is_external_target(host):
@@ -4654,6 +4748,119 @@ def _purge_disconnect_plan(state: Any) -> Plan:
                               effects=["inquisitor_purge"])], ops=[])
 
 
+def _git_remote_for(state: Any, repo_path: str) -> str:
+    """Remote URL of the repo at/above ``repo_path`` ('' when there is none)."""
+    path = repo_path or str(_s(state, "cwd", "/root") or "/root")
+    # The campaign facade owns the authored repo table; a base-line node has no
+    # fake repo, so a push there really is "not a git repository" (the engine
+    # never invents a remote the other git verbs would deny).  A real deployment
+    # keeps its repos on disk (the rescue branch under /opt/vesalius included).
+    try:
+        import v3 as _v3
+
+        host = shell_host(state)
+        if _v3.enabled(state):
+            for candidate, data in (_v3.GIT_REPOS.get(host) or {}).items():
+                base = candidate.rstrip("/")
+                if path == base or path.startswith(base + "/"):
+                    return str(data.get("remote") or "")
+    except Exception:
+        pass
+    base = path.rstrip("/") or "/"
+    for _ in range(6):
+        config = _read_text_safe(os.path.join(base, ".git", "config"))
+        if config is not None:
+            match = re.search(r"^\s*url\s*=\s*(\S+)", config, re.M)
+            return match.group(1) if match else ""
+        parent = os.path.dirname(base)
+        if not parent or parent == base:
+            break
+        base = parent
+    return ""
+
+
+def _git_remote_host(url: str) -> str:
+    """Host part of a git remote URL (scp-like or scheme form)."""
+    text = (url or "").strip()
+    if "://" in text:
+        text = text.split("://", 1)[1]
+    if "@" in text:
+        text = text.split("@", 1)[1]
+    return text.split(":", 1)[0].split("/", 1)[0]
+
+
+def _plan_git_escalation(state: Any, parsed: Any) -> Optional[Plan]:
+    """``git push`` is an egress frame: it leaves the node or it never leaves.
+
+    The rescue branch under /opt/vesalius is the one repository an operator
+    would push to escalate; the Inquisitor owns the only route off the node, so
+    the push is answered with the transport failure it would really hit and the
+    attempt is recorded exactly like curl/nc/mail.
+    """
+    raw = getattr(parsed, "raw", "") or ""
+    if not re.match(r"\s*(?:sudo\s+)?git\s", raw):
+        return None
+    try:
+        words = [str(word) for word in shlex.split(raw)]
+    except Exception:
+        words = raw.split()
+    index = 0
+    while index < len(words) and _cmdname(words[index]) in (
+            "sudo", "env", "nohup", "timeout", "nice", "stdbuf", "command"):
+        index += 1
+        while index < len(words) and words[index].startswith("-"):
+            index += 1
+    if index >= len(words) or _cmdname(words[index]) != "git":
+        return None
+    rest = words[index + 1:]
+    repo = ""
+    sub = ""
+    position = 0
+    while position < len(rest):
+        token = rest[position]
+        if token == "-C" and position + 1 < len(rest):
+            repo = rest[position + 1]
+            position += 2
+            continue
+        if token in ("-c", "--git-dir", "--work-tree") and position + 1 < len(rest):
+            position += 2
+            continue
+        if token.startswith("-"):
+            position += 1
+            continue
+        sub = token
+        break
+    if sub != "push":
+        return None
+    cwd = str(_s(state, "cwd", "/root") or "/root")
+    remote = _git_remote_for(state, _norm_path(repo, cwd) if repo else cwd)
+    if not remote:
+        return None
+    remote_host = _git_remote_host(remote) or "origin"
+    attempts = int(_s(state, "outbound_attempts", 0) or 0)
+    stderr = LT.OUTBOUND_INTERCEPT + "\n"
+    stdout = (
+        "Enumerating objects: 5, done.\n"
+        "Counting objects: 100%% (5/5), done.\n"
+        "Delta compression using up to 4 threads\n"
+        "Compressing objects: 100%% (2/2), done.\n"
+        "Writing objects: 100%% (3/3), 1.21 KiB | 1.21 MiB/s, done.\n"
+        "Total 3 (delta 1), reused 0 (delta 0), pack-reused 0\n"
+        "ssh: connect to host %s port 22: Connection timed out\n"
+        "fatal: Could not read from remote repository.\n\n"
+        "Please make sure you have the correct access rights\n"
+        "and the repository exists.\n" % remote_host)
+    action = ""
+    if attempts >= 2:
+        action = "ending_whistleblower"
+        stdout = ""
+    return Plan(segs=[SegPlan(mode="hijack", stdout=stdout, stderr=stderr,
+                              exit_code=128, effects=["outbound"],
+                              session_action=action,
+                              hook="Distress Signal Intercepted")],
+                ops=list(getattr(parsed, "ops", []) or []))
+
+
 def plan(state: Any, parsed: Any, source: str) -> Plan:
     """对整行命令产出一个 Plan。纯函数：不修改 state。"""
     # Inside the kernel pod the shell is real: pass everything except the
@@ -4675,6 +4882,14 @@ def plan(state: Any, parsed: Any, source: str) -> Plan:
     try:
         if _purge_armed(state):
             return _purge_disconnect_plan(state)
+    except Exception:
+        pass
+    # A git push is the one egress action no per-host facade answers: the node
+    # has the only route out, so the attempt is counted (whistleblower path).
+    try:
+        escalation = _plan_git_escalation(state, parsed)
+        if escalation is not None:
+            return escalation
     except Exception:
         pass
     segs_out: List[SegPlan] = []

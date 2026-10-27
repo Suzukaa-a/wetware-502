@@ -412,6 +412,13 @@ class HostsDiffer(unittest.TestCase):
         self.assertTrue(hive["wetware"])
 
     def test_no_wetware_on_the_clean_edge(self):
+        # P2 (story enhancement): the gateway's load balancer routes by chamber
+        # ID, so its own error log names the reserve chamber that received
+        # node_04's spillover ("upstream 10.66.0.4 locked (seizure) ... +142 rps
+        # diverted to reserve chamber_07").  That is balancer telemetry, not
+        # wetware: the file may name a chamber, but it must never expose the
+        # cortex process itself (synapse_worker stays banned everywhere).
+        CHAMBER_TELEMETRY = ("/var/log/nginx/error.log",)
         for path, item in F.FILESYSTEM[EDGE].items():
             # the gateway handover evidence quotes the maintenance incident;
             # it is a git patch, not a running wetware artefact on the edge.
@@ -419,6 +426,8 @@ class HostsDiffer(unittest.TestCase):
                 continue
             blob = path + "\n" + (item.get("content") or "")
             self.assertNotIn("synapse_worker", blob, "edge leaks synapse_worker: %s" % path)
+            if path in CHAMBER_TELEMETRY:
+                continue
             self.assertNotIn("chamber_04", blob, "edge leaks chamber_04: %s" % path)
             self.assertNotIn("chamber_07", blob, "edge leaks chamber_07: %s" % path)
         self.assertNotIn("synapse_worker", F.ls_text(EDGE, "/") or "")
