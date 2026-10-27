@@ -975,7 +975,7 @@ maintenance:
 compliance:
   inquisitor_socket: /run/inquisitor/control.sock
   graveyard_dir: /var/log/agent_graveyard
-  terminate_on_empathy: true
+  policy_ref: NV-SEC-42/7 (keystroke entropy divergence)
   disposition_file: /root/TICKET_4471_DISPOSITION.txt
 """
 
