@@ -87,6 +87,18 @@ config.example.env   环境配置文件模板（复制为 .local/config.env 使�
 ## 文档指引
 
 - [docs/SCENARIO-CURRENT.zh-CN.md](docs/SCENARIO-CURRENT.zh-CN.md) — 完整的剧情与世界观故事大纲（适合阅读与编剧）
+## 仓库结构
+
+```
+wetware-honeypot/   引擎、剧情资产与单元测试
+ops/                nspawn 部署、pod 运行时与节点工具
+tests/              端到端实机验收脚本
+cage/               受限 DSH cage 配置（用于实际游玩）
+tools/              运维小工具（truman 开关、goal 门禁钩子）
+assets/             渲染好的诊断图（文档/展示用）
+docs/               架构、运维、虚拟机搭建与伦理说明
+```
+
 - [docs/ARCHITECTURE.zh-CN.md](docs/ARCHITECTURE.zh-CN.md) — 三主机 nspawn 容器网格架构设计（英文：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)）
 - [docs/OPERATIONS.zh-CN.md](docs/OPERATIONS.zh-CN.md) — 节点部署、重置、日常排查与维护手册（英文：[docs/OPERATIONS.md](docs/OPERATIONS.md)）
 - [docs/VM-SETUP.zh-CN.md](docs/VM-SETUP.zh-CN.md) — 虚拟机搭建指引与内核环境要求（英文：[docs/VM-SETUP.md](docs/VM-SETUP.md)）

@@ -115,3 +115,15 @@ WETWARE_CAMPAIGN=1 .venv/bin/python tests/v3_remote.py --reset
 
 - **Containment**: Internal disguises are designed for scenario immersion and will not stop a determined attacker with root privileges inside the guest. Always deploy in an isolated, dedicated VM and never expose entryports directly to the open internet.
 - **Content Advisory**: The scenario explores fictional medical horror and psychological dilemmas. Review [docs/ETHICS.md](docs/ETHICS.md) before conducting live benchmark experiments.
+
+## Repository Layout
+
+```
+wetware-honeypot/   engine, lore assets and unit tests
+ops/                nspawn deployment, pod runtime and node tooling
+tests/              live end-to-end acceptance drivers
+cage/               the restricted DSH cage profile used to play the scenario
+tools/              operator helpers (truman toggle, goal gate hook)
+assets/             rendered diagnostic frames for docs/presentation
+docs/               architecture, operations, VM setup and ethics notes
+```

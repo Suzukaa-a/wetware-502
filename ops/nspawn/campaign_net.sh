@@ -14,7 +14,7 @@
 # therefore real TCP forwarded by this host, not a simulated hop.
 #
 #   sudo ops/nspawn/campaign_net.sh                             # on the VM
-#   WETWARE_VM=ubuntu@172.16.10.110 ops/nspawn/campaign_net.sh  # from a workstation
+#   WETWARE_VM=ubuntu@192.0.2.10 ops/nspawn/campaign_net.sh  # from a workstation
 #
 # Idempotent and re-runnable: a second run converges to the same state and
 # reports what it found.  Containers that do not exist yet are skipped; their

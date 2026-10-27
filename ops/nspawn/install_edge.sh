@@ -43,8 +43,8 @@
 #   sudo bash ops/nspawn/install_edge.sh stop|start
 #
 # From the workstation (packs the payload, stages it and runs the script there):
-#   WETWARE_VM=ubuntu@172.16.10.110 ops/nspawn/install_edge.sh
-#   WETWARE_VM=ubuntu@172.16.10.110 ops/nspawn/install_edge.sh verify
+#   WETWARE_VM=ubuntu@192.0.2.10 ops/nspawn/install_edge.sh
+#   WETWARE_VM=ubuntu@192.0.2.10 ops/nspawn/install_edge.sh verify
 #
 # Environment overrides:
 #   HOST_ID=edge-gw-01   MACHINE_NAME=edge-gw   SRC_HOST_ID=prod-cortex-04

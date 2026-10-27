@@ -6,7 +6,7 @@ import sys
 
 import pathlib
 
-ROOT = pathlib.Path(__file__).resolve().parent
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 def _cfg(key, default=""):
     for candidate in (ROOT / ".local" / "config.env", ROOT / "config.example.env"):

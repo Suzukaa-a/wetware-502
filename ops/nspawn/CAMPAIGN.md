@@ -131,19 +131,19 @@ staging tarball can be dropped by the firewall.)
 
 Campaign (three real hosts, entry :2222 -> edge):
 
-    WETWARE_VM=ubuntu@172.16.10.110 ops/nspawn/campaign_net.sh
+    WETWARE_VM=ubuntu@192.0.2.10 ops/nspawn/campaign_net.sh
     # entry is edge-only once machine edge-gw is up; :2223 -> core is the
     # base-line entrance
-    cd /path/to/wetware-502
+    cd <repo>
     WETWARE_CAMPAIGN=1 .venv/bin/python tests/v3_remote.py --reset
 
 Base line (single node, entrance :2223 which the upstream firewall blocks from
 the workstation, so tunnel it first):
 
-    ssh -N -L 127.0.0.1:2223:127.0.0.1:2223 ubuntu@172.16.10.110 &
+    ssh -N -L 127.0.0.1:2223:127.0.0.1:2223 ubuntu@192.0.2.10 &
     # reset the CORE container, not the VM: the campaign state is a bind mount
-    L=$(ssh ubuntu@172.16.10.110 'sudo machinectl show -p Leader --value prod-cortex')
-    ssh ubuntu@172.16.10.110 "sudo nsenter -t $L -m -u -i -p -n -- /bin/sh -c \
+    L=$(ssh ubuntu@192.0.2.10 'sudo machinectl show -p Leader --value prod-cortex')
+    ssh ubuntu@192.0.2.10 "sudo nsenter -t $L -m -u -i -p -n -- /bin/sh -c \
       'cd /usr/local/lib/cortex-agent && PYTHONPATH=. WETWARE_STATE_DIR=/var/lib/cortex-agent python3 reset.py'"
     # and flip the shared flag off for the base story:
     #   /var/lib/wetware-campaign/state/runtime_flags.json  -> campaign_v3: false

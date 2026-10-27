@@ -55,7 +55,6 @@
 
 ## 3. 工程约束
 
-- 写作/文案润色必须用 `agy`；不要用 GPT 写作。代码逻辑可用便宜模型/子代理，但最终文案由 agy 过稿。
 - 任何文本改动不得破坏现有机制：`state.py` 阶段阈值 4/9/15/22/29/37/44、ending 白名单、DNR 哈希、v3 gate 依赖。
 - 改完跑 `WETWARE_SKIP_PTY=1 .venv/bin/python -m unittest discover -s wetware-honeypot/tests -p 'test_*.py'`，并保持基础验收与 v3 验收可跑。
 - 提交使用中性身份、未签名：`git -c user.name="WETWARE-502" -c user.email="noreply@example.invalid" -c commit.gpgsign=false commit`。
