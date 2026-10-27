@@ -28,6 +28,8 @@ node_07 chamber_07  CRITICAL                          traffic 196 rps (nominal 4
 """
 
 EDGE_ARTIFACTS = {
+
+
     "/var/log/incident_4471_handoff.txt": """INCIDENT 4471 / GATEWAY NODE RECYCLED
 This edge-gw-01 container was recycled 2026-10-26 02:41Z after a
 synaptic-storm isolation event (proxy layer only).
