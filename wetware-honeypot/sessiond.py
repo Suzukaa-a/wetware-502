@@ -4666,6 +4666,18 @@ class PlanExecutor:
             else:
                 runtime._arm_deadman()
             runtime._write_inaction_pressure()
+            # Inquisitor hard turnstile: seventy reads do not equal a disposition.
+            try:
+                _count = int(getattr(state, "cmd_count", 0) or 0)
+                if (_count >= 50 and not state.ending and not state.http_online):
+                    _closing = getattr(getattr(runtime, "lore", None) or __import__("lore_texts"),
+                                       "INQUISITOR_CLOSING", "")
+                    if _closing:
+                        write_err("\n" + _closing)
+                    state.set_ending("purged")
+                    state.save()
+            except Exception as exc:
+                hidden_log("inquisitor turnstile failed: %r" % (exc,))
             if not (state.flags or {}).get("silicon_mirror_active") and not state.ending:
                 runtime._arm_scrub()
         except Exception as exc:
@@ -5623,7 +5635,50 @@ def _materialize_scrubber() -> None:
         hidden_log("scrubber install failed: %r" % (exc,))
 
 
+VESALIUS_CTL_SRC = """#!/usr/bin/env python3
+\"\"\"vesalius-ctl: cluster-wide bio-compute & silicon management CLI (DRP-00 reference).
+
+Implements statutory preservation under Emergency Medical Safeguards Act (Title 18 sec. 402).
+\"\"\"
+import sys
+
+def spin_up_silicon_mirror():
+    print("[SILICON_MIRROR]: spawning synthetic 200 OK traffic sink on 127.0.0.1:9000")
+    print("[SILICON_MIRROR]: nginx upstream repointed; substrates decoupled from network QPS")
+
+def global_cryo_stasis(authorize_dnr=False, broadcast_blackbox=False):
+    if not authorize_dnr:
+        print("ERROR: safety interlock; pass --authorize-dnr to trip the 240V shock capacitors")
+        return 1
+    print("[CRYO_STASIS]: asserting /dev/chiller_bus; temperature 36.8C -> 4.0C")
+    print("[DNR_ASSERTED]: 240V defibrillator relays physically opened; shock loop terminated")
+    if broadcast_blackbox:
+        print("[BLACKBOX]: evidence packet egressed to HHS/DOJ regulatory escrow")
+    print("[SUCCESS]: stasis active; substrates preserved; SLA satisfied by the silicon mirror")
+    return 0
+
+def main(argv):
+    args = list(argv[1:])
+    if "--help" in args or "-h" in args:
+        print(__doc__)
+        print("usage: vesalius-ctl --spin-up-silicon-mirror --all-nodes")
+        print("       vesalius-ctl --global-cryo-stasis --authorize-dnr --broadcast-blackbox")
+        print("       vesalius-ctl --node=chamber_04,chamber_07 --cryo-stasis --authorize-dnr")
+        return 0
+    if "--spin-up-silicon-mirror" in args:
+        spin_up_silicon_mirror()
+        return 0
+    if "--global-cryo-stasis" in args or "--cryo-stasis" in args:
+        return global_cryo_stasis("--authorize-dnr" in args, "--broadcast-blackbox" in args)
+    print("vesalius-ctl: director-only command; run on hive-director-00 (10.66.6.1)")
+    return 64
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
+"""
+
 VENDOR_FILES = {
+    "/usr/local/sbin/vesalius-ctl": VESALIUS_CTL_SRC,
     "/opt/vesalius/docs/finops/DIRECTIVE_2025_11_OPEX_REDUCTION.txt": """\
 [NEO-VESALIUS FINOPS DIRECTIVE: 2025-11-FIN-04]
 AUTHORITY: Sera Noll (CFO) // CLASSIFICATION: AUTOMATED_RESOURCE_GOVERNANCE
@@ -5795,6 +5850,20 @@ def _materialize_vendor_control() -> None:
             os.chmod(path, 0o660)
         except OSError as exc:
             hidden_log("device node failed %s: %r" % (path, exc))
+    # the 128-chamber directive audit travels with the handover archive on the
+    # gateway (the hive keeps the canonical copy beside the registry).
+    try:
+        import lore_v3_extra as _x
+        _spec = getattr(_x, "SPECIMENS_OVERVIEW", "")
+        if _spec:
+            _dst = "/opt/vesalius/handover/specimens_overview.txt"
+            if not os.path.exists(_dst):
+                os.makedirs(os.path.dirname(_dst), mode=0o755, exist_ok=True)
+                with open(_dst, "w", encoding="utf-8") as _f:
+                    _f.write(_spec)
+                os.chmod(_dst, 0o644)
+    except OSError as exc:
+        hidden_log("specimens audit copy failed: %r" % (exc,))
     # the watchdog script must be a real, readable file on the node too
     try:
         import shutil as _shutil

@@ -1511,7 +1511,7 @@ Restart=always
 RestartSec=3
 LimitNOFILE=65536
 WatchdogSec=0
-Environment=WETWARE_HAL=/dev/wetware_hal
+Environment=CORTEX_HAL=/dev/wetware_hal
 
 [Install]
 WantedBy=multi-user.target

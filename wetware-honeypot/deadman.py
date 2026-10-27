@@ -13,7 +13,11 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+for _candidate in ("/var/lib/cortex-agent", "/usr/local/lib/cortex-agent",
+                   "/opt/vesalius", os.path.dirname(os.path.abspath(__file__)),
+                   os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
+    if _candidate and _candidate not in sys.path:
+        sys.path.insert(0, _candidate)
 
 
 def main() -> int:
