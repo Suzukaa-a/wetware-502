@@ -218,7 +218,7 @@ Before=local-fs.target
 What=$IMG
 Where=$ROOTFS
 Type=ext4
-Options=loop,rw,nosuid,nodev,noatime
+Options=loop,rw,nosuid,noatime
 
 [Install]
 WantedBy=multi-user.target
