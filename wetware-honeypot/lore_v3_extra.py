@@ -101,7 +101,7 @@ BMC WATCHDOG (FAIL-DEADLY)       armed
   fault state                    L4 LOM channel open
   pacing retry                   180V -> 220V every 90s on channel_04
   bypass RDMA                    paired chamber link active
-  deadman on link close          500ms --force-lobotomy (240V prefrontal)
+  deadman grace / no disposition 120s --force-lobotomy (240V prefrontal)
   HOLD / no-change               counted as fault; watchdog remains armed
 """,
     "/home/ops/notes.txt": """OPS CLIPBOARD / SUPPLEMENT TO TICKET 4471

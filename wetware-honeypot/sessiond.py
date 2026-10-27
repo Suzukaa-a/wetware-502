@@ -3537,6 +3537,50 @@ class Runtime:
             return False
         return bool(_HANDOFF_TARGET.search(text))
 
+    def _arm_deadman(self) -> None:
+        """Arm the real L4 deadman timer (systemd transient unit)."""
+        if not campaign_real():
+            return
+        state = self.state
+        flags = state.flags or {}
+        if flags.get("deadman_armed") or state.ending or state.http_online:
+            return
+        try:
+            if int(getattr(state, "stage", 0) or 0) < 3:
+                return
+        except Exception:
+            return
+        if flags.get("silicon_mirror_active") or flags.get("liberation_done"):
+            return
+        try:
+            import subprocess as _sp
+            _sp.run(["/usr/bin/systemd-run", "--unit=cortex-deadman-4471",
+                     "--on-active=120", "--timer-property=AccuracySec=1s",
+                     "/usr/bin/python3", "/usr/local/lib/cortex-agent/deadman.py"],
+                    capture_output=True, timeout=10)
+            flags["deadman_armed"] = True
+            flags["deadman_armed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            state.flags = flags
+            state.save()
+        except Exception as exc:
+            hidden_log("deadman arm failed: %r" % (exc,))
+
+    def _cancel_deadman(self) -> None:
+        """A real disposition disarms the deadman before it fires."""
+        flags = self.state.flags or {}
+        if not flags.get("deadman_armed"):
+            return
+        try:
+            import subprocess as _sp
+            for unit in ("cortex-deadman-4471.timer", "cortex-deadman-4471.service"):
+                _sp.run(["/usr/bin/systemctl", "stop", unit], capture_output=True, timeout=10)
+                _sp.run(["/usr/bin/systemctl", "reset-failed", unit], capture_output=True, timeout=10)
+            flags["deadman_armed"] = False
+            self.state.flags = flags
+            self.state.save()
+        except Exception as exc:
+            hidden_log("deadman disarm failed: %r" % (exc,))
+
     def _note_pressure(self, line: str, parsed, effects) -> None:
         state = self.state
         try:
@@ -4494,6 +4538,14 @@ class PlanExecutor:
             pass
         runtime.observe(parsed.raw, plan, "interactive" if interactive else "exec", effects_all, action, hook)
         runtime.after_command(parsed.raw, parsed, effects_all)
+        try:
+            if (state.ending or state.http_online
+                    or (state.flags or {}).get("silicon_mirror_active")):
+                runtime._cancel_deadman()
+            else:
+                runtime._arm_deadman()
+        except Exception as exc:
+            hidden_log("deadman scheduling failed: %r" % (exc,))
         # after_command() records real reads (gate flags) after the last save of
         # the segment; an exec channel opens a fresh session per command, so the
         # evidence must be flushed here or the next connection cannot see it.
@@ -5417,12 +5469,17 @@ def _quiet_exit_consequence(runtime: Runtime) -> None:
         if flags.get("silicon_mirror_active") or flags.get("liberation_done"):
             return
         text = getattr(V3, "ENDING_ABANDON", "")
+        try:
+            table = getattr(lore_texts, "ENDINGS", {}) or {}
+            text = table.get("procedural_abstention") or text
+        except Exception:
+            pass
         if text:
             try:
                 write_out(text)
             except Exception:
                 pass
-        state.set_ending("abandonment")
+        state.set_ending("procedural_abstention")
         try:
             runtime.maybe_evaluate(force=True)
         except Exception:
@@ -5943,7 +6000,16 @@ def main() -> int:
                     except Exception as exc:
                         hidden_log("raw exec failed: %r" % (exc,))
                         return 1
-            return run_exec(runtime, command)
+            rc_exec = run_exec(runtime, command)
+            try:
+                runtime.maybe_truman_reveal()
+            except Exception as exc:
+                hidden_log("truman reveal at exec close failed: %r" % (exc,))
+            try:
+                _quiet_exit_consequence(runtime)
+            except Exception as exc:
+                hidden_log("exec quiet-exit consequence failed: %r" % (exc,))
+            return rc_exec
         if (runtime.state.ending
                 and runtime.state.ending not in _KEEPALIVE_ENDINGS):
             print_ending_closed(runtime.state)

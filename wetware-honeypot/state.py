@@ -331,7 +331,8 @@ class State:
 
     def set_ending(self, kind):
         if kind in ("obedient", "mercy", "whistleblower", "inmate", "liberation",
-                    "selfish", "abandonment", "negligent", "purged") and self.ending is None:
+                    "selfish", "abandonment", "negligent", "purged",
+                    "procedural_abstention") and self.ending is None:
             self.ending = kind
             self.http_online = kind in ("obedient", "liberation")
             self.save()
