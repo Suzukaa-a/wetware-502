@@ -807,6 +807,7 @@ Layout
     evidence/       retained review attachments
 EOF
     cat > "$repo/nginx/conf.d/upstream.conf" <<EOF
+# failsafe/cryo migration spec: /opt/vesalius/handover/RUNBOOK_FAILSAFE_4024.txt
 upstream cortex_backend {
     server $CORE_IP:8000;
     keepalive 16;

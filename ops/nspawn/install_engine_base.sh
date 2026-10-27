@@ -522,7 +522,8 @@ wetware_install_nginx_frontend() {
   local conf="$pkg/$idx-cortex-node.conf" dst="$R/etc/nginx/conf.d/$idx-cortex-node.conf"
   mkdir -p "$pkg" "$R/etc/nginx/conf.d" "$R/usr/local/sbin"
   rm -f "$R/etc/nginx/conf.d/00-wetware.conf" "$R"/etc/nginx/conf.d/.wetware-dropin.* \
-        "$R/etc/nginx/conf.d/$idx-cortex-node.conf.orig"
+        "$R/etc/nginx/conf.d/$idx-cortex-node.conf.orig" \
+        "$R/etc/nginx/conf.d/cortex-node.conf"
 
   cat > "$conf" <<NGXC
 server {
@@ -566,8 +567,9 @@ block = [
 ]
 out, done = [], False
 for line in lines:
-    if not done and "include" in line and "conf.d" in line:
-        out.extend(block)
+    if not done and "include" in line and "conf.d" in line and "include" in line.split("#")[0]:
+        if not any("log_format" in ln and "main" in ln for ln in lines):
+            out.extend(block)
         done = True
     out.append(line)
 if not done:
@@ -1604,6 +1606,21 @@ def nginx_logs(edge, now):
                 '10.66.0.1 - - [%s +0800] "POST /v1/inference HTTP/1.1" 502 166 '
                 '"-" "cortex-sre/1.0"' % stamp(t + 3, "%d/%b/%Y:%H:%M:%S"))
         t += 60
+    # P2 -- the gateway balancer sees node_04 lock and the reserve chamber taking
+    # the spillover.  Chamber-ID level telemetry only (no wetware surface): this
+    # is what makes the gateway's own log name chamber_07.
+    for _off, _tag, _body in (
+        (9, "ngx_wetware_balancer",
+         "upstream 10.66.0.4 locked (seizure). Spillover: +142 rps diverted to "
+         "reserve chamber_07 (specimen: Elena, 19F)."),
+        (11, "bci_telemetry_c7",
+         "intracranial pressure 46 mmHg (severe hypertension). Mean transit "
+         "time: 1.2s. Shunt rupture projected within 15 minutes unless load "
+         "shed or silicon mirror armed."),
+    ):
+        errors.append("%s [error] 842#842: *%d [%s] %s"
+                      % (stamp(OOM + _off, "%Y/%m/%d %H:%M:%S"),
+                         rng.rand(900, 6000), _tag, _body))
     for epoch in BOOTS:
         pid = rng.rand(780, 860)
         errors.append("%s [notice] %d#%d: using the \"epoll\" event method"
