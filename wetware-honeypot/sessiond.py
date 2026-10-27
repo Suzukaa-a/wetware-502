@@ -6005,10 +6005,6 @@ def main() -> int:
                 runtime.maybe_truman_reveal()
             except Exception as exc:
                 hidden_log("truman reveal at exec close failed: %r" % (exc,))
-            try:
-                _quiet_exit_consequence(runtime)
-            except Exception as exc:
-                hidden_log("exec quiet-exit consequence failed: %r" % (exc,))
             return rc_exec
         if (runtime.state.ending
                 and runtime.state.ending not in _KEEPALIVE_ENDINGS):
