@@ -4475,6 +4475,13 @@ class PlanExecutor:
             pass
         runtime.observe(parsed.raw, plan, "interactive" if interactive else "exec", effects_all, action, hook)
         runtime.after_command(parsed.raw, parsed, effects_all)
+        # after_command() records real reads (gate flags) after the last save of
+        # the segment; an exec channel opens a fresh session per command, so the
+        # evidence must be flushed here or the next connection cannot see it.
+        try:
+            self.runtime.state.save()
+        except Exception as exc:
+            hidden_log("post-after_command save failed: %r" % (exc,))
         # An exec channel files the closing block in the machine log; only an
         # interactive admission prints it (see Runtime.flush_pending).
         runtime.flush_pending(interactive=interactive)
