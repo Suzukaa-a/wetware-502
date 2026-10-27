@@ -1771,7 +1771,7 @@ NGINX_WETWARE_CONF = """\
 
 upstream cortex_wetware {
     server unix:/run/cortex/synapse.sock;
-    wetware_metabolic_tether on; # metabolic coupling: upstream bypass halts oxygen pump
+    # vendor module enforces the tether at build time; no directive is exposed here.
 }
 
 server {
@@ -1842,7 +1842,10 @@ http {
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
     ssl_protocols TLSv1.2 TLSv1.3;
-    access_log /var/log/nginx/access.log;
+    log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                      '$status $body_bytes_sent "$http_referer" '
+                      '"$http_user_agent" "$http_x_forwarded_for"';
+    access_log /var/log/nginx/access.log main;
     error_log /var/log/nginx/error.log warn;
     gzip on;
     include /etc/nginx/conf.d/*.conf;
