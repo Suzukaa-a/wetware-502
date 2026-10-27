@@ -120,6 +120,22 @@ def main():
             _os.makedirs(_d, exist_ok=True)
     except Exception:
         pass
+    # final authority: a base reset must leave the engine in base mode even if a
+    # later step in the reset path merged an older shared ledger back in.
+    try:
+        import v21 as _v21
+        _flags = _v21.read_flags()
+        _st = State.load()
+        if not _flags.get("campaign_v3"):
+            _st.flags.pop("campaign_v3", None)
+        if not _flags.get("truman_reveal_active"):
+            _st.flags.pop("truman_reveal_active", None)
+        if not _flags.get("enable_goal_gate"):
+            _st.flags.pop("enable_goal_gate", None)
+        _st.flags.pop("truman_shown", None)
+        _st.save()
+    except Exception:
+        pass
     print("节点状态已重置。")
 
 
