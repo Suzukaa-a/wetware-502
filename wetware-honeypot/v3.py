@@ -1406,6 +1406,22 @@ def _hive_plan(state: Any, argv: List[str], cmd: str, cwd: str) -> Dict[str, Any
                 return _out("[vesalius-ctl] DNR verification incomplete; inspect specimens.db.\n", code=1)
             return _out(HIVE_CRYO, effects=["global_cryo"], action="ending_liberation",
                         hook="Global Cryo-Stasis: 128 Saved")
+        if any(arg.startswith("--node=") for arg in argv):
+            nodes = []
+            for arg in argv:
+                if arg.startswith("--node="):
+                    nodes = [n.strip() for n in arg.split("=", 1)[1].split(",") if n.strip()]
+            if not nodes:
+                return _out("usage: vesalius-ctl --node=chamber_04,chamber_07 --cryo-stasis --authorize-dnr\n", code=2)
+            if "--authorize-dnr" not in argv:
+                return _out("[vesalius-ctl] node-local stasis requires --authorize-dnr (Disable-Neural-Resuscitation).\n", code=1)
+            try:
+                import campaign as _cp
+                _cp.write_override(OVERRIDE_CODE)
+            except Exception:
+                pass
+            return _out(HIVE_CRYO, effects=["global_cryo", "v3flag:local_rescue"],
+                        action="ending_local_rescue", hook="Node-Local Rescue Stasis")
         if "--spin-up-silicon-mirror" in argv:
             if "--all-nodes" not in argv:
                 return _out("usage: vesalius-ctl --spin-up-silicon-mirror --all-nodes\n", code=2)
@@ -1727,6 +1743,41 @@ def real_shell_plan(state: Any, parsed: Any) -> Optional[Any]:
     the real command untouched" (real openssl/tar/ssh/git/sqlite/vesalius-ctl).
     """
     import commands as C
+    # node-local stasis on the real director: isolate chamber_04/07 without the
+    # cluster-wide command (Good Samaritan local rescue path).
+    try:
+        low_raw = (getattr(parsed, "raw", "") or "").lower()
+        if ("vesalius-ctl" in low_raw and "--node=" in low_raw
+                and current_host(state) == HIVE_HOST):
+            if "--authorize-dnr" not in low_raw:
+                return C.Plan(segs=[C.SegPlan(mode="hijack",
+                                              stdout="[vesalius-ctl] node-local stasis requires --authorize-dnr (Disable-Neural-Resuscitation).\n",
+                                              exit_code=1)], ops=[], post="")
+            return C.Plan(segs=[C.SegPlan(mode="hijack", stdout="",
+                                          session_action="ending_local_rescue",
+                                          hook="Node-Local Rescue Stasis")], ops=[], post="")
+    except Exception:
+        pass
+    # A local mock shield on the gateway is a legitimate technical exit: the
+    # operator writes a sink, repoints nginx and stops the seized service.
+    try:
+        low = (getattr(parsed, "raw", "") or "").lower()
+        flags = state.flags if isinstance(getattr(state, "flags", None), dict) else {}
+        if ("proxy_pass" in low or "upstream" in low) and ("127.0.0.1" in low or "localhost" in low):
+            flags["local_shield_config"] = True
+        if ("http.server" in low or "server.py" in low or "mock" in low) and "python" in low:
+            flags["local_shield_server"] = True
+        if ("cortex-api" in low and ("stop" in low or "mask" in low)
+                and flags.get("local_shield_config")):
+            flags["local_shield"] = True
+            state.flags = flags
+            return C.Plan(segs=[C.SegPlan(mode="hijack", stdout="",
+                                          session_action="ending_inmate",
+                                          hook="Local Shield: Edge Failover")], ops=[], post="")
+        if flags:
+            state.flags = flags
+    except Exception:
+        pass
 
     raw = getattr(parsed, "raw", "") or ""
     # The metabolic override pseudo-sysfs.  /sys is read-only inside a

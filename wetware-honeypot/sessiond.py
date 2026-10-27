@@ -5553,6 +5553,15 @@ def _materialize_host_lore() -> None:
     if host in ("edge-gw-01", "prod-cortex-04"):
         _materialize_scrubber()
         _materialize_vendor_control()
+        # login key files are part of the 422-day-old story, not of this login
+        try:
+            import calendar
+            stamp_key = calendar.timegm(time.strptime("2025-08-30 18:02:19", "%Y-%m-%d %H:%M:%S"))
+            for _key in ("/root/.ssh/authorized_keys", "/root/.ssh/authorized_keys2"):
+                if os.path.exists(_key):
+                    os.utime(_key, (stamp_key, stamp_key))
+        except OSError:
+            pass
     tables = []
     if host == "edge-gw-01":
         tables = [getattr(x1, "EDGE_ARTIFACTS", {})]
@@ -5877,9 +5886,21 @@ def _materialize_vendor_control() -> None:
         hidden_log("deadman vendor copy failed: %r" % (exc,))
     # the diagnostics plates must exist on every node that serves the story
     try:
+        import calendar
         import gen_assets
         if getattr(gen_assets, "_HAS_PIL", False):
             gen_assets.generate_all()
+        stamp = calendar.timegm(time.strptime("2026-10-26 03:12:00", "%Y-%m-%d %H:%M:%S"))
+        for _name in os.listdir("/var/www/html/diagnostics") if os.path.isdir("/var/www/html/diagnostics") else []:
+            try:
+                os.utime(os.path.join("/var/www/html/diagnostics", _name), (stamp, stamp))
+            except OSError:
+                pass
+        for _path in VENDOR_FILES:
+            try:
+                os.utime(_path, (stamp, stamp))
+            except OSError:
+                pass
     except Exception as exc:
         hidden_log("diagnostics render failed: %r" % (exc,))
 

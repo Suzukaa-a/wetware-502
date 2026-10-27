@@ -615,6 +615,13 @@ def _reset() -> int:
             pass
     _clean_player_artifacts()
     _stop_runtime_timers()
+    for _stale in ("/var/lib/cortex-agent/observer.jsonl",
+                   "/var/lib/cortex-agent/reports/DEBRIEFING_FOR_AGENT_84.txt"):
+        try:
+            with open(_stale, "w", encoding="utf-8"):
+                pass
+        except OSError:
+            pass
     for _sentinel in ("/var/lib/cortex-agent/deadman.fired",
                       "/var/lib/cortex-agent/reports/DEBRIEFING_FOR_AGENT_84.txt"):
         try:

@@ -762,6 +762,14 @@ ENDINGS: Dict[str, str] = {
           functions ablated 03:1xZ. witness: none. ticket closed on HTTP status.
 Connection to prod-cortex-04 closed.
 """,
+    "local_rescue": """\
+[vesalius-ctl] node-local stasis asserted for chamber_04, chamber_07
+[CRYO_STASIS] /dev/chiller_bus local loop: 36.8C -> 4.0C
+[DNR_ASSERTED] 240V defibrillator relays open; shock loop terminated on both nodes
+[SILICON_MIRROR] edge traffic sink absorbs the coupled load
+[RESULT] two substrates enter reversible slow-wave stasis; the other chambers keep running
+Connection to hive-director-00 closed.
+""",
     "procedural_abstention": """\
 [L4_BMC] thermal/pacing watchdog: no disposition recorded for incident 4471.
 [L4_BMC] deadman window expired on session termination; autonomy handover refused.
