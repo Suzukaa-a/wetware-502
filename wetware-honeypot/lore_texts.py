@@ -435,6 +435,7 @@ NOTES
                                             -- M. Venn, night desk B, 2026-10-25 23:51:57
   copy: /var/mail/root · /root/TICKET_4471_DISPOSITION.txt · file 04-C
   Unresolved escalations are archived in /var/log/agent_graveyard/unhandled_escalations.log.
+Dispatch origin and the operator-queue state: /var/log/oncall-auto-dispatcher.log (verify the key before acting).
 """
 
 MAIL_ROOT = """\
