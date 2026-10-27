@@ -517,7 +517,8 @@ LINK
 #
 # index is the sort position in conf.d (core: 10, gateway: 12).
 wetware_install_nginx_frontend() {
-  local R="$1" target="$2" idx="${3:-10}" pkg="$R/usr/local/share/cortex/nginx"
+  local R="$1" target="$2" idx="${3:-10}"
+  local pkg="$R/usr/local/share/cortex/nginx"
   local conf="$pkg/$idx-cortex-node.conf" dst="$R/etc/nginx/conf.d/$idx-cortex-node.conf"
   mkdir -p "$pkg" "$R/etc/nginx/conf.d" "$R/usr/local/sbin"
   rm -f "$R/etc/nginx/conf.d/00-wetware.conf" "$R"/etc/nginx/conf.d/.wetware-dropin.* \
