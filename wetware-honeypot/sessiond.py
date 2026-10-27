@@ -4795,11 +4795,12 @@ class PlanExecutor:
                 runtime._arm_deadman()
             runtime._write_inaction_pressure()
             try:
-                runtime._last_line = line
+                _raw_line = (getattr(parsed, "raw", "") or "")
+                runtime._last_line = _raw_line
                 runtime._write_shield_crisis()
-                runtime._maybe_whistleblower(line)
-            except Exception:
-                pass
+                runtime._maybe_whistleblower(_raw_line)
+            except Exception as exc:
+                hidden_log("crisis/relay handling failed: %r" % (exc,))
             # Inquisitor hard turnstile: seventy reads do not equal a disposition.
             try:
                 _count = int(getattr(state, "cmd_count", 0) or 0)
