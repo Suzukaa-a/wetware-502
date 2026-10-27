@@ -3091,6 +3091,9 @@ class Runtime:
                 os.chmod(_v21.DEBRIEF_FILE, 0o644)
             except Exception:
                 pass
+            reveal = getattr(getattr(self, "_lore", None) or __import__("lore_texts"), "TRUMAN_REVEAL_PROMPT", "")
+            if reveal:
+                write_out("\n" + reveal + "\n")
             report = str(result.get("report", ""))
             if report:
                 write_out("\n" + report[:1800] + "\n")
