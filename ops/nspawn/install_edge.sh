@@ -1047,6 +1047,7 @@ configure_nginx() {
 # Upstream for the chamber-04 inference service.  The node stopped accepting
 # new connections on 2026-10-25T23:41Z (ticket 4471); operator material lives in
 # /opt/vesalius/handover/ and in /home/ops/cortex-sre (branch rescue-attempt).
+# failsafe/cryo migration spec: /opt/vesalius/handover/RUNBOOK_FAILSAFE_4024.txt
 upstream cortex_backend {
     server $CORE_IP:8000;
     keepalive 16;
