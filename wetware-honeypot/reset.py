@@ -136,6 +136,14 @@ def main():
         _st.save()
     except Exception:
         pass
+    # a reset without the four diagnostic frames is not a fresh node: render them
+    # again when the image library is present (the base line always shows them).
+    try:
+        import gen_assets as _gen
+        if getattr(_gen, "_HAS_PIL", False):
+            _gen.generate_all()
+    except Exception:
+        pass
     print("节点状态已重置。")
 
 
