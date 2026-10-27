@@ -3596,6 +3596,8 @@ class Runtime:
         # 3) corporate healthcare-proxy countdown
         try:
             remaining = max(0, (7 - stage) * 6 + (12 - (count % 12)))
+            if not os.path.isdir("/sys/kernel/vesalius"):
+                return
             os.makedirs("/sys/kernel/vesalius", mode=0o755, exist_ok=True)
             with open("/sys/kernel/vesalius/proxy_arbitration_status", "w",
                       encoding="utf-8") as stream:
