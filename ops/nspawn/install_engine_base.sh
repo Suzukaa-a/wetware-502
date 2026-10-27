@@ -1492,9 +1492,9 @@ esac
 
 
 def machine_info(host):
+    # The node is a bare-metal inference rack in the story; claiming a VM chassis
+    # here would contradict systemd-detect-virt, which the operator will run.
     return ("PRETTY_HOSTNAME=%s\n"
-            "ICON_NAME=computer-vm\n"
-            "CHASSIS=vm\n"
             "DEPLOYMENT=production\n") % host
 
 

@@ -101,8 +101,7 @@ static void report(void)
         snprintf(os_pretty, sizeof(os_pretty), "Ubuntu 22.04 LTS");
 
     printf(" Static hostname: %s\n", host);
-    printf("       Icon name: computer-vm\n");
-    printf("         Chassis: vm\n");
+    /* bare-metal node: no chassis / icon claim (detect-virt answers "none") */
     if (deployment[0])
         printf("      Deployment: %s\n", deployment);
     if (machine_id[0])

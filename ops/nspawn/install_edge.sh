@@ -1482,7 +1482,7 @@ cmd_verify() {
   check_eq "guest hostname (hostnamectl)" "$HOST_ID" "$(cexec 'hostnamectl --static' 2>/dev/null || true)"
   check_eq "guest machine-id" "$edge_mid" "$(cexec 'cat /etc/machine-id' 2>/dev/null || true)"
   check_has "node-id" "$HOST_ID" "$(cexec 'cat /run/cortex/node-id' 2>/dev/null || true)"
-  check_eq "hostnamectl chassis" "vm" "$(cexec 'hostnamectl 2>/dev/null | sed -n "s/^ *Chassis: //p"' 2>/dev/null || true)"
+  check_eq "hostnamectl keeps the rack story honest" "" "$(cexec 'hostnamectl 2>/dev/null | sed -n "s/^ *\(Chassis\|Virtualization\): //p"' 2>/dev/null || true)"
   check_has "guest nic renamed to ens192" "ens192" "$(cexec 'ip -br a 2>/dev/null' || true)"
   check_eq "hostnamectl prints no hypervisor" "" "$(cexec 'hostnamectl 2>/dev/null | grep -iE "Virtualization|systemd-nspawn|kvm"' 2>/dev/null || true)"
   check_eq "systemd-detect-virt" "none" "$(cexec 'systemd-detect-virt 2>/dev/null' || true)"
