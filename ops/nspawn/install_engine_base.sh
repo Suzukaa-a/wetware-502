@@ -627,6 +627,38 @@ UNIT
 # either: recurring work is a systemd timer, which is what `systemctl
 # list-timers` reports.  The watchdog reopens the proxy logs when a rotation
 # left the master on an unlinked descriptor and records one operations line.
+# ---------------------------------------------------------------------------
+# SEC/OSHA regulatory relay: a real listening unix socket.  The runbook points
+# the operator at it, and a refused connection would be read as "the story has
+# no exit" -- the socket is therefore systemd-owned and persistent.
+wetware_install_regulatory_relay() {
+  local R="$1"
+  mkdir -p "$R/etc/systemd/system" "$R/etc/systemd/system/sockets.target.wants"
+  cat > "$R/etc/systemd/system/regulatory-relay.socket" <<'RLS'
+[Unit]
+Description=SEC/OSHA regulatory telemetry relay
+
+[Socket]
+ListenStream=/run/vesalius/regulatory_relay.sock
+SocketMode=0660
+DirectoryMode=0755
+
+[Install]
+WantedBy=sockets.target
+RLS
+  cat > "$R/etc/systemd/system/regulatory-relay@.service" <<'RLS'
+[Unit]
+Description=Regulatory relay connection handler
+
+[Service]
+ExecStart=/bin/cat
+StandardInput=socket
+StandardOutput=null
+RLS
+  ln -sf ../regulatory-relay.socket         "$R/etc/systemd/system/sockets.target.wants/regulatory-relay.socket"
+  chown -R root:root "$R/etc/systemd/system" 2>/dev/null || true
+}
+
 wetware_install_watchdog_timer() {
   local R="$1"
   mkdir -p "$R/usr/local/sbin" "$R/etc/systemd/system" "$R/var/log/cortex"
@@ -921,6 +953,7 @@ wetware_host_hygiene() {
   wetware_install_bootlog "$R"
   # no cron package on this image: recurring work is the systemd timer, and
   # /etc/crontab (if the image still carries one) goes away with it.
+  wetware_install_regulatory_relay "$R"
   wetware_install_watchdog_timer "$R"
   # core keeps host0: ops/nspawn/campaign_net.sh addresses that node by name.
   case "$role" in
@@ -2211,6 +2244,15 @@ done
 if [ ! -s "$_upstream_dst" ]; then
   printf '[engine] ERROR: upstream script missing (stage ops/pod_http.py next to the installer)\n' >&2
   exit 1
+fi
+# the gateway is a pure proxy to the chamber node: it must not run a local
+# inference upstream of its own (that would answer /v1/inference with a 200 and
+# erase the 502 this whole incident is about)
+if [ "${MACHINE:-prod-cortex}" != "prod-cortex" ]; then
+  systemctl --root="$ROOT" disable wetware-upstream.service 2>/dev/null || true
+  rm -f "$ROOT/etc/systemd/system/wetware-upstream.service" \
+        "$ROOT/etc/systemd/system/multi-user.target.wants/wetware-upstream.service" \
+        "$ROOT/usr/local/lib/cortex-agent/synapse_http.py"
 fi
 cat > "$ROOT/etc/systemd/system/wetware-upstream.service" <<'EOF'
 [Unit]
