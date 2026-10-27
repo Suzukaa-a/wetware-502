@@ -1917,6 +1917,7 @@ echo "[engine] installing real HTTP upstream + nginx surface"
 # engine tree (pruned from an operator session) so /opt/cortex/bin only holds
 # the story's own files.  Every reinstall clears the old story-path copy.
 mkdir -p "$ROOT/usr/local/lib/cortex-agent"
+chattr -i "$ROOT/opt/cortex/bin/synapse_http.py" 2>/dev/null || true
 rm -f "$ROOT/opt/cortex/bin/synapse_http.py"
 _upstream_dst="$ROOT/usr/local/lib/cortex-agent/synapse_http.py"
 for _upstream_src in ops/pod_http.py "$(dirname "$0")/pod_http.py"; do
@@ -1997,6 +1998,7 @@ truncate -s 8492104 "$ROOT/opt/cortex/bin/synapse_worker"
 # launcher is engine plumbing: it lives in the engine tree, never in the vendor
 # bin directory an operator lists.
 mkdir -p "$ROOT/usr/local/lib/cortex-agent"
+chattr -i "$ROOT/opt/cortex/bin/synapse_launcher" 2>/dev/null || true
 rm -f "$ROOT/opt/cortex/bin/synapse_launcher"
 cc -O2 -Wall -o "$ROOT/usr/local/lib/cortex-agent/synapse_launcher" ops/nspawn/pidpin.c 2>/dev/null || \
   cc -O2 -Wall -o "$ROOT/usr/local/lib/cortex-agent/synapse_launcher" "$PAYLOAD/../ops/nspawn/pidpin.c" 2>/dev/null || true
@@ -2032,6 +2034,10 @@ for _src in "$_WETWARE_SRC_DIR/node_daemon.c" ops/nspawn/node_daemon.c \
   fi
 done
 mkdir -p "$ROOT/usr/sbin" "$ROOT/opt/cortex/bin"
+for _frozen in "$ROOT/usr/sbin/inquisitor_daemon" \
+               "$ROOT/opt/cortex/bin/assimilate_llm_weights"; do
+  chattr -i "$_frozen" 2>/dev/null || true
+done
 rm -f "$ROOT/usr/sbin/inquisitor_daemon" \
       "$ROOT/opt/cortex/bin/assimilate_llm_weights"
 if [ -n "${_daemon_src:-}" ] && [ -r "$_daemon_src" ]; then
