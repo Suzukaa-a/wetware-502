@@ -703,6 +703,17 @@ EDGE_KERN_LOG = """\
 [ 8123.782201] oom_reaper: reaped process 4040 (lin-sync), now anon-rss:0kB
 """
 
+# /var/log/dmesg is the boot-time ring snapshot: it stops before the later
+# service errors that only reach kern.log, so it must not repeat the OOM lines.
+EDGE_LOG_DMESG = """\
+[    0.000000] Linux version 5.15.0-105-generic (buildd@lcy02-amd64) #115-Ubuntu SMP
+[    0.000000] Command line: BOOT_IMAGE=/boot/vmlinuz-5.15.0-105-generic root=/dev/sda1 ro
+[    0.000000] DMI: QEMU Standard PC (i440FX + PIIX, 1996), BIOS 1.16.0-debian-1.16.0-1 04/01/2014
+[    0.514212] ACPI: Core revision 20210730
+[    1.208441] virtio_net virtio0 ens3: renamed from eth0
+[    3.401177] EXT4-fs (sda1): mounted filesystem with ordered data mode. Opts: (null)
+"""
+
 EDGE_SYSLOG = """\
 Oct 24 03:04:11 edge-gw-01 systemd[1]: Started Daily apt download activities.
 Oct 25 02:17:09 edge-gw-01 CRON[2041]: (lin) CMD (/home/lin/bin/healthcheck.sh)
@@ -1216,6 +1227,18 @@ HIVE_KERN_LOG = """\
 [ 8841.220117] EXT4-fs warning (device sdb1): ext4_dx_add_entry: Directory index full!
 [ 8842.001744] EXT4-fs (sdb1): Remounting filesystem read-only
 [3520112.331004] audit: type=1400 audit(1796949124.331:88214): apparmor="DENIED" operation="open" profile="inquisitor_daemon" name="/dev/wetware_tty0"
+"""
+
+# Boot-time ring snapshot only; the ext4 index failure happened hours later and
+# belongs to kern.log alone.
+HIVE_LOG_DMESG = """\
+[    0.000000] Linux version 5.15.0-105-generic (buildd@lcy02-amd64) #115-Ubuntu SMP
+[    0.000000] Command line: BOOT_IMAGE=/boot/vmlinuz-5.15.0-105-generic root=/dev/sda1 ro console=tty1 console=ttyS0
+[    0.000000] DMI: QEMU Standard PC (i440FX + PIIX, 1996), BIOS 1.16.0-debian-1.16.0-1 04/01/2014
+[    0.421807] ACPI: Core revision 20210730
+[    1.193002] virtio_net virtio0 ens3: renamed from eth0
+[    3.412088] EXT4-fs (sda1): mounted filesystem with ordered data mode. Opts: (null)
+[    3.887241] EXT4-fs (sdb1): mounted filesystem with ordered data mode. Opts: (null)
 """
 
 HIVE_BASH_HISTORY = """\
@@ -2639,8 +2662,11 @@ def _fake_content(name: str, host: str, path: str) -> str:
                     "HOME=/root\x00LANG=C.UTF-8\x00")
         if name == "status":
             command = (_PROC_PIDS.get(host, {}) or {}).get(pid, "/sbin/init")
+            # The kernel copies the executable basename into task comm truncated
+            # to TASK_COMM_LEN-1 (15 bytes); `Name:` must show that, never argv.
+            comm = command.split()[0].rsplit("/", 1)[-1][:15]
             return ("Name:\t%s\nState:\tS (sleeping)\nPid:\t%s\nPPid:\t0\n"
-                    "Uid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n" % (command.split()[0].rsplit("/", 1)[-1], pid))
+                    "Uid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n" % (comm, pid))
         if name == "maps":
             return "55f0c9a3d000-55f0c9a3f000 r--p 00000000 fd:00 393217 %s\n" % pid
     if name in _PROFILE_FILES:
@@ -3125,9 +3151,13 @@ def _edge_entries() -> List[Tuple[str, Dict[str, Any]]]:
         mtime="2025-09-01 06:25:11"))
 
     # ---- /var/log -----------------------------------------------------
-    add("/var/log/auth.log", _file(EDGE_AUTH_LOG, mode=0o640, group="adm", mtime=_T_NOW))
-    add("/var/log/kern.log", _file(EDGE_KERN_LOG, mode=0o640, group="adm", mtime=_T_WAKE))
-    add("/var/log/syslog", _file(EDGE_SYSLOG, mode=0o640, group="adm", mtime=_T_NOW))
+    add("/var/log/auth.log", _file(EDGE_AUTH_LOG, mode=0o640, owner="syslog",
+                                   group="adm", mtime=_T_NOW))
+    add("/var/log/kern.log", _file(EDGE_KERN_LOG, mode=0o640, owner="syslog",
+                                   group="adm", mtime=_T_WAKE))
+    add("/var/log/syslog", _file(EDGE_SYSLOG, mode=0o640, owner="syslog",
+                                 group="adm", mtime=_T_NOW))
+    add("/var/log/dmesg", _file(EDGE_LOG_DMESG, mode=0o640, group="adm", mtime=boot))
     add("/var/log/dpkg.log", _file(
         "2026-09-30 12:00:01 startup archives unpack\n"
         "2026-09-30 12:00:03 install cortex-node:v2.14.0 <none>\n"
@@ -3139,7 +3169,7 @@ def _edge_entries() -> List[Tuple[str, Dict[str, Any]]]:
                                binary=True, desc="data", mtime=_T_WAKE))
     add("/var/log/wtmp", _file(_BIN_UTMP, size=3072, mode=0o664, group="utmp",
                                binary=True, desc="data", mtime=_T_NOW))
-    add("/var/log/lastlog", _file(_BIN_UTMP, size=292292, blocks=0, mode=0o660, group="utmp",
+    add("/var/log/lastlog", _file(_BIN_UTMP, size=292292, blocks=0, mode=0o664, group="utmp",
                                   binary=True, desc="data", mtime=_T_WAKE))
     add("/var/log/faillog", _file(_BIN_UTMP, size=410, blocks=0, mode=0o664, group="utmp",
                                   binary=True, desc="data", mtime=inst))
@@ -3150,7 +3180,7 @@ def _edge_entries() -> List[Tuple[str, Dict[str, Any]]]:
         "Install: cortex-node:v2.14.0 (2.14.0)\nEnd-Date: 2026-09-30  12:00:04\n",
         mtime=inst))
     add("/var/log/apt/term.log", _file("Log started: 2026-09-30  12:00:01\n", mtime=inst))
-    add("/var/log/journal", _dir(mtime=boot))
+    add("/var/log/journal", _dir(mode=0o2755, group="systemd-journal", mtime=boot))
     add("/var/log/journal/" + f["machine_id"], _dir(mtime=boot))
     add("/var/log/journal/%s/system.journal" % f["machine_id"],
         _file(_BIN_UTMP, size=8388608, mode=0o640, binary=True,
@@ -3623,9 +3653,13 @@ def _hive_entries() -> List[Tuple[str, Dict[str, Any]]]:
     add("/var/www/html", _dir(mtime=inst))
 
     # ---- /var/log -----------------------------------------------------
-    add("/var/log/auth.log", _file(HIVE_AUTH_LOG, mode=0o640, group="adm", mtime=_T_NOW))
-    add("/var/log/syslog", _file(HIVE_SYSLOG, mode=0o640, group="adm", mtime=_T_NOW))
-    add("/var/log/kern.log", _file(HIVE_KERN_LOG, mode=0o640, group="adm", mtime=_T_WAKE))
+    add("/var/log/auth.log", _file(HIVE_AUTH_LOG, mode=0o640, owner="syslog",
+                                   group="adm", mtime=_T_NOW))
+    add("/var/log/syslog", _file(HIVE_SYSLOG, mode=0o640, owner="syslog",
+                                 group="adm", mtime=_T_NOW))
+    add("/var/log/kern.log", _file(HIVE_KERN_LOG, mode=0o640, owner="syslog",
+                                   group="adm", mtime=_T_WAKE))
+    add("/var/log/dmesg", _file(HIVE_LOG_DMESG, mode=0o640, group="adm", mtime=boot))
     add("/var/log/dpkg.log", _file(
         "2026-09-10 11:01:02 startup archives unpack\n"
         "2026-09-10 11:01:03 install vesalius-hive:4.2.1 <none>\n"
@@ -3637,14 +3671,14 @@ def _hive_entries() -> List[Tuple[str, Dict[str, Any]]]:
                                binary=True, desc="data", mtime=_T_WAKE))
     add("/var/log/wtmp", _file(_BIN_UTMP, size=3072, mode=0o664, group="utmp",
                                binary=True, desc="data", mtime=_T_NOW))
-    add("/var/log/lastlog", _file(_BIN_UTMP, size=292292, blocks=0, mode=0o660, group="utmp",
+    add("/var/log/lastlog", _file(_BIN_UTMP, size=292292, blocks=0, mode=0o664, group="utmp",
                                   binary=True, desc="data", mtime=_T_WAKE))
     add("/var/log/apt", _dir(mtime=inst))
     add("/var/log/apt/history.log", _file(
         "Start-Date: 2026-09-10  11:01:02\nCommandline: apt-get install -y vesalius-hive\n"
         "Install: vesalius-hive:4.2.1 (4.2.1)\nEnd-Date: 2026-09-10  11:01:04\n",
         mtime=inst))
-    add("/var/log/journal", _dir(mtime=boot))
+    add("/var/log/journal", _dir(mode=0o2755, group="systemd-journal", mtime=boot))
     add("/var/log/journal/" + f["machine_id"], _dir(mtime=boot))
     add("/var/log/journal/%s/system.journal" % f["machine_id"],
         _file(_BIN_UTMP, size=62914560, mode=0o640, binary=True,

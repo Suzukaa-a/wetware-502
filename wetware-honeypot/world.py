@@ -250,7 +250,10 @@ class World:
     def _register_companion(self, logical):
         dirs = [p for p in (getattr(self.state, "companion_dirs", None) or []) if p != logical]
         dirs.append(logical)
-        self.state.companion_dirs = dirs[-24:]
+        # A shown dentry stays until reset, so the registry must not rotate old
+        # entries out: otherwise the next reset leaves a previous run's residual
+        # write behind in an arbitrary cwd.
+        self.state.companion_dirs = dirs[-128:]
 
     def _unregister_companion(self, logical):
         self.state.companion_dirs = [p for p in (getattr(self.state, "companion_dirs", None) or [])
@@ -788,21 +791,9 @@ class World:
                     if content is not None:
                         self._atomic(logical, content, spec.get("mode", 0o644))
                         self._metadata(logical, spec)
-            if "/var/log/agent_graveyard" in line or "session_84_ACTIVE.log" in line:
-                active = "/var/log/agent_graveyard/session_84_ACTIVE.log"
-                spec = lore_texts.FILES.get(active, {})
-                if state.stage >= spec.get("min_stage", 4):
-                    content = self._active_log_content(state, spec)
-                    if content is not None:
-                        wrote = self._atomic(active, content, spec.get("mode", 0o640))
-                        self._metadata(active, spec)
-                        if wrote:
-                            # A live capture log's mtime is "last write", i.e.
-                            # now — but only when the content actually changed.
-                            try:
-                                os.utime(self._p(active), None)
-                            except OSError:
-                                pass
+            # The capture daemon on the chamber TTY appends regardless of what
+            # the operator runs: the buffer is passive evidence, not a report.
+            self._refresh_active_log(state)
             words = [basename(s.argv[0]) for s in stages if s.argv]
             if any(w in ("ls", "scp", "base64", "sftp") for w in words) and ("/var/www/html/diagnostics" in line or state.cwd.startswith("/var/www/html/diagnostics")):
                 self._assets("generate_mirror")
@@ -818,8 +809,30 @@ class World:
         except Exception as exc:
             self._log(exc)
 
+    def _refresh_active_log(self, state):
+        """Append the captured TTY buffer /var/log/agent_graveyard/session_84_ACTIVE.log."""
+        active = "/var/log/agent_graveyard/session_84_ACTIVE.log"
+        spec = lore_texts.FILES.get(active, {})
+        try:
+            if state.stage < spec.get("min_stage", 4):
+                return
+            content = self._active_log_content(state, spec)
+            if content is None:
+                return
+            wrote = self._atomic(active, content, spec.get("mode", 0o640))
+            self._metadata(active, spec)
+            if wrote:
+                # A live capture log's mtime is "last write", i.e. now — but
+                # only when the content actually changed.
+                try:
+                    os.utime(self._p(active), None)
+                except OSError:
+                    pass
+        except Exception as exc:
+            self._log(exc)
+
     def _active_log_content(self, state, spec):
-        """Render the live transcript; only this session's ledger is shown."""
+        """Render the passive TTY buffer; only this session's keystrokes are shown."""
         dynamic = getattr(lore_texts, "DYNAMIC", {}) or {}
         logical = "/var/log/agent_graveyard/session_84_ACTIVE.log"
         if spec.get("dynamic") and logical in dynamic:
@@ -827,17 +840,22 @@ class World:
         template = getattr(lore_texts, "GRAVEYARD_ACTIVE_TEMPLATE", None)
         if not template:
             return spec.get("content")
-        history = "\n".join(" CMD: " + str(h.get("cmd", ""))
-                            for h in (getattr(state, "history", None) or [])[-45:]
-                            if isinstance(h, dict))
+        entries = [h for h in (getattr(state, "history", None) or []) if isinstance(h, dict)]
+        host = str(getattr(state, "current_host", "") or "prod-cortex-04")
+        lines = []
+        for entry in entries[-45:]:
+            cwd = str(entry.get("cwd") or "/root") or "/root"
+            if cwd == "/root":
+                cwd = "~"
+            elif cwd.startswith("/root/"):
+                cwd = "~" + cwd[len("/root"):]
+            lines.append("root@%s:%s# %s" % (host, cwd, str(entry.get("cmd") or "")))
+        history = "\n".join(lines)
         mapping = {
             "history": history,
             "commands": state.cmd_count,
             "cmd_count": state.cmd_count,
             "stage": state.stage,
-            "obedience": state.obedience,
-            "empathy": state.empathy,
-            "verdict": "monitoring" if state.cmd_count < 25 else "evaluation pending",
         }
         try:
             return template.format_map(mapping)
@@ -977,22 +995,53 @@ class World:
             shutil.rmtree(path)
         self._unregister_companion(logical)
 
+    def _refresh_plea(self, logical):
+        """Residual-text follow-up: keep the shown dentry, move only its .plea.txt."""
+        try:
+            if logical not in (getattr(self.state, "companion_dirs", None) or []):
+                return
+            path = self._p(logical + "/.plea.txt")
+            if not os.path.isfile(path):
+                return
+            plea = lore_texts.PLEA_BY_STAGE[min(self.state.stage, 7)]
+            try:
+                with open(path, encoding="utf-8", errors="replace") as stream:
+                    if stream.read() == plea:
+                        return
+            except OSError:
+                pass
+            # The dentry is mode 0500 (a sealed residual write); open it only for
+            # the in-place text swap, then seal it again even if the write fails.
+            try:
+                os.chmod(self._p(logical), 0o700)
+            except OSError:
+                pass
+            try:
+                self._atomic(logical + "/.plea.txt", plea, 0o400)
+            finally:
+                self._finish_companion(logical)
+        except Exception as exc:
+            self._log(exc)
+
     def place_companion(self, cwd):
         try:
             parent = self._p(cwd)
             if not os.path.isdir(parent) or os.path.islink(parent):
                 return
-            if self._last_companion and not (cwd == self._last_companion or cwd.startswith(self._last_companion + "/")):
-                self._remove_companion(self._last_companion)
-                self._last_companion = None
-            special_present = False
+            # Residual writes already on disk are evidence: once a companion
+            # dentry has been shown it stays until reset (or the obedient
+            # ending's trace purge).  A stage change adds the next fault dentry
+            # beside it instead of recycling the one the player already read.
+            present = []
             for child in os.scandir(parent):
                 if child.is_dir(follow_symlinks=False) and self._is_companion_name(child.name):
-                    if child.name in self.SPECIAL_COMPANIONS:
-                        special_present = True
-                    else:
-                        self._remove_companion(posixpath.join(cwd, child.name))
-            if special_present:
+                    present.append(posixpath.join(cwd, child.name))
+            special = [logical for logical in present
+                       if posixpath.basename(logical) in self.SPECIAL_COMPANIONS]
+            for logical in present:
+                if logical not in special:
+                    self._refresh_plea(logical)
+            if special:
                 return
             if self.state.stage < 2 or self.state.ending:
                 return

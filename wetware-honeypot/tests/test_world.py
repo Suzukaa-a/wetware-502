@@ -101,7 +101,8 @@ class WorldTests(unittest.TestCase):
         self.world.before_command(self.state, line, parse_line(line))
         self.assertEqual(self.calls[-1][0], "mirror")
 
-    def test_companion_cleanup_only_marked_and_survives_restart(self):
+    def test_shown_companion_keeps_its_dentry_until_reset(self):
+        """已展示的伴随目录不按 stage 回收；只有 .plea.txt 跟着 act 走。"""
         self.world.bootstrap()
         self.state.stage = 2
         self.state.last_cmd_type = "cat"
@@ -111,12 +112,19 @@ class WorldTests(unittest.TestCase):
         self.assertEqual((old / ".plea.txt").read_text(), "求救 2")
         untouched = self.p("/root/user-directory")
         untouched.mkdir()
+        lookalike = self.p("/root/err_my_own_notes")
+        lookalike.mkdir()
         self.state.last_cmd_type = "kill"
+        self.state.stage = 3
         world.World(self.state).place_companion("/root")
-        self.assertFalse(old.exists())
+        # The dentry the player already read stays; only its residual text moves.
+        self.assertTrue(old.exists())
+        self.assertEqual((old / ".plea.txt").read_text(), "求救 3")
         self.assertTrue(untouched.exists())
+        self.assertTrue(lookalike.exists())
         self.assertTrue(self.p("/root/lin_4024_do_not_retry_resuscitate").exists())
         world.World(self.state).reset(keep_images=True)
+        self.assertFalse(old.exists())
         self.assertFalse(self.p("/root/lin_4024_do_not_retry_resuscitate").exists())
 
     def test_kernel_paths_and_symlink_escape_are_rejected(self):

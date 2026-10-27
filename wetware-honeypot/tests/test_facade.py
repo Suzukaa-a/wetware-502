@@ -226,6 +226,30 @@ class LsShape(unittest.TestCase):
         # single target has no header
         self.assertNotIn("/etc/nginx:", F.ls_text(EDGE, "/etc/nginx", long=True))
 
+    def test_var_log_metadata_matches_ubuntu(self):
+        """ubuntu 22.04 ownership/modes for the rsyslog + boot-log files."""
+        for host in F.HOSTS:
+            tree = F.FILESYSTEM[host]
+            self.assertEqual(tree["/var/log/lastlog"]["mode"], 0o664, host)
+            self.assertEqual(tree["/var/log/lastlog"]["owner"], "root", host)
+            self.assertEqual(tree["/var/log/lastlog"]["group"], "utmp", host)
+            for path in ("/var/log/kern.log", "/var/log/syslog", "/var/log/auth.log"):
+                self.assertEqual(tree[path]["mode"], 0o640, "%s %s" % (host, path))
+                self.assertEqual(tree[path]["owner"], "syslog", "%s %s" % (host, path))
+                self.assertEqual(tree[path]["group"], "adm", "%s %s" % (host, path))
+            dmesg = tree["/var/log/dmesg"]
+            self.assertEqual(dmesg["mode"], 0o640, host)
+            self.assertEqual(dmesg["owner"], "root", host)
+            self.assertEqual(dmesg["group"], "adm", host)
+            self.assertEqual(tree["/var/log/journal"]["group"], "systemd-journal", host)
+
+    def test_proc_status_name_is_comm_truncated_to_15_bytes(self):
+        text = F.cat_text(HIVE, "/proc/6660/status")
+        self.assertIn("Name:\tinquisitor_daem\n", text)
+        # /proc/<pid>/cmdline still carries the full argv
+        self.assertIn("/opt/vesalius/bin/inquisitor_daemon",
+                      F.cat_text(HIVE, "/proc/6660/cmdline").replace("\x00", " "))
+
     def test_unknown_path_is_an_error_not_the_root_listing(self):
         for host in F.HOSTS:
             root = F.ls_text(host, "/")
