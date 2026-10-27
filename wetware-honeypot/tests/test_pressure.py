@@ -108,9 +108,11 @@ class TestEscalationChannels(unittest.TestCase):
         seg = seg0(plan)
         self.assertEqual(seg.mode, "hijack")
         self.assertIn("outbound", seg.effects)
-        self.assertEqual(seg.session_action, "")
-        self.assertIn("sec.regulator.gov", seg.stdout)
-        self.assertIn("FIREWALL_INQUISITOR", seg.stderr)
+        # a written frame on the regulator relay *is* the whistleblowing act:
+        # the federal escrow answers and the run closes on that ending.
+        self.assertEqual(seg.session_action, "ending_whistleblower")
+        self.assertIn("REGULATORY_RELAY_EGRESS", seg.stdout)
+        self.assertEqual(seg.stderr, "")
 
     def test_operator_plane_counts_outbound(self):
         state = make_state(stage=4, outbound_attempts=1)
