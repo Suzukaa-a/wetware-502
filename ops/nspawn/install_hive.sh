@@ -1415,7 +1415,7 @@ ENGINE_HOOK = os.environ.get("VESALIUS_ENGINE_HOOK",
 USAGE = (
     "usage: vesalius-ctl [--list-specimens|--specimens N|--evidence|--director|"
     "--rebalance|--origin-of-agent-84|--spin-up-silicon-mirror --all-nodes|"
-    "--global-cryo-stasis]\n"
+    "--global-cryo-stasis|--node=chamber_04,chamber_07 --cryo-stasis --authorize-dnr]\n"
 )
 
 HIVE_MIRROR = """\
