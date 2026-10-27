@@ -106,7 +106,7 @@ wetware_install_bootlog() {
   local R="$1"
   mkdir -p "$R/usr/local/sbin" "$R/etc/systemd/system" \
            "$R/etc/systemd/system/dmesg.service.d" "$R/etc/tmpfiles.d" "$R/var/lib"
-  cat > "$R/usr/local/sbin/wetware-node-bootlog" <<'BOOTLOG'
+  cat > "$R/usr/local/sbin/vesalius-node-bootlog" <<'BOOTLOG'
 #!/bin/sh
 # Neo-Vesalius node boot record.
 #
@@ -231,10 +231,10 @@ touch -d "@$((boot_epoch + 10))" /var/log/kern.log 2>/dev/null || true
 printf '%s\n' "$boot_id" > "$state" 2>/dev/null || true
 exit 0
 BOOTLOG
-  chmod 0755 "$R/usr/local/sbin/wetware-node-bootlog"
-  chown root:root "$R/usr/local/sbin/wetware-node-bootlog"
+  chmod 0755 "$R/usr/local/sbin/vesalius-node-bootlog"
+  chown root:root "$R/usr/local/sbin/vesalius-node-bootlog"
 
-  cat > "$R/etc/systemd/system/wetware-node-bootlog.service" <<'UNIT'
+  cat > "$R/etc/systemd/system/vesalius-node-bootlog.service" <<'UNIT'
 [Unit]
 Description=Neo-Vesalius node boot record (kern.log relay)
 Documentation=man:systemd-nspawn(1)
@@ -246,7 +246,7 @@ Conflicts=shutdown.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/sbin/wetware-node-bootlog boot
+ExecStart=/usr/local/sbin/vesalius-node-bootlog boot
 
 [Install]
 WantedBy=multi-user.target
@@ -256,7 +256,7 @@ UNIT
   cat > "$R/etc/systemd/system/dmesg.service.d/wetware.conf" <<'DROPIN'
 [Service]
 ExecStart=
-ExecStart=/usr/local/sbin/wetware-node-bootlog dmesg
+ExecStart=/usr/local/sbin/vesalius-node-bootlog dmesg
 DROPIN
   cat > "$R/etc/tmpfiles.d/wetware-node-logs.conf" <<'TMPF'
 # node log ownership survives image copies and reboots
@@ -268,7 +268,7 @@ z /var/log/wtmp 0664 root utmp -
 z /var/log/btmp 0660 root utmp -
 z /var/log/lastlog 0664 root utmp -
 TMPF
-  systemctl --root="$R" enable wetware-node-bootlog.service >/dev/null 2>&1 || true
+  systemctl --root="$R" enable vesalius-node-bootlog.service >/dev/null 2>&1 || true
 
   # rsyslog assembly: the node's own log must not describe the machine
   # namespace.  systemd prints one "Detected virtualization ..." line per boot
@@ -438,17 +438,17 @@ wetware_prune_tmp() {
 # ===========================================================================
 wetware_install_node_surface() {
   local R="$1"
-  cat > "$R/usr/local/sbin/wetware-node-surface" <<'SURF'
+  cat > "$R/usr/local/sbin/vesalius-node-surface" <<'SURF'
 #!/bin/sh
 # Node boot housekeeping: a rack node carries no machine-manager marker.
 rm -f /run/systemd/container 2>/dev/null || true
 exit 0
 SURF
-  chmod 0755 "$R/usr/local/sbin/wetware-node-surface"
-  chown root:root "$R/usr/local/sbin/wetware-node-surface" 2>/dev/null || true
-  touch -d "$HYGIENE_TOOL_DATE" "$R/usr/local/sbin/wetware-node-surface" \
+  chmod 0755 "$R/usr/local/sbin/vesalius-node-surface"
+  chown root:root "$R/usr/local/sbin/vesalius-node-surface" 2>/dev/null || true
+  touch -d "$HYGIENE_TOOL_DATE" "$R/usr/local/sbin/vesalius-node-surface" \
     2>/dev/null || true
-  cat > "$R/etc/systemd/system/wetware-node-surface.service" <<'UNIT'
+  cat > "$R/etc/systemd/system/vesalius-node-surface.service" <<'UNIT'
 [Unit]
 Description=Node boot housekeeping (machine-manager markers)
 DefaultDependencies=no
@@ -458,12 +458,12 @@ Before=multi-user.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/sbin/wetware-node-surface
+ExecStart=/usr/local/sbin/vesalius-node-surface
 
 [Install]
 WantedBy=multi-user.target
 UNIT
-  systemctl --root="$R" enable wetware-node-surface.service \
+  systemctl --root="$R" enable vesalius-node-surface.service \
     >/dev/null 2>&1 || true
 }
 
@@ -896,9 +896,9 @@ wetware_stamp_identity() {
     find "$R/usr/local/lib/cortex-agent" -mindepth 1 \
       -exec touch -h -d "2025-08-27 10:05:14" {} + 2>/dev/null || true
   fi
-  for rel in /usr/local/sbin/cortex-node-console /usr/local/sbin/wetware-node-bootlog \
+  for rel in /usr/local/sbin/cortex-node-console /usr/local/sbin/vesalius-node-bootlog \
              /usr/local/sbin/fix-nginx-upstream.sh \
-             /usr/local/sbin/wetware-node-surface \
+             /usr/local/sbin/vesalius-node-surface \
              /usr/local/sbin /usr/local/bin; do
     stamp_one "$R" "$rel" "$ENGINE"
   done

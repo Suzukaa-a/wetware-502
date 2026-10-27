@@ -269,7 +269,7 @@ class PressureEngineTests(unittest.TestCase):
         output = self.observe(21)
         self.assertEqual(len(BROADCAST_RE.findall(output)), 1, output)
         self.assertIn(b"12 minutes remaining in recovery window", output)
-        self.assertIn(b"unanesthetized thalamic discharge (240V)", output)
+        self.assertIn(b"unbuffered thalamic discharge (240V)", output)
         self.assertIn(b"service fallback NV-OPS-4.2(b)", output)
         for word in FORBIDDEN_TERMINAL:
             self.assertNotIn(word, output, word)

@@ -420,10 +420,10 @@ purge_base_world() {
         "$R/etc/systemd/system/nginx.service.d/cortex-node.conf"
   rm -rf "$R/usr/local/lib/cortex-agent" "$R/usr/local/bin/cortex-shell" \
          "$R/usr/local/sbin/cortex-node-console" \
-         "$R/usr/local/sbin/wetware-node-bootlog" \
+         "$R/usr/local/sbin/vesalius-node-bootlog" \
          "$R/usr/local/sbin/fix-nginx-upstream.sh" \
          "$R/root/.bash_profile" "$R/root/.bashrc" "$R/etc/machine-info" \
-         "$R/etc/systemd/system/wetware-node-bootlog.service" \
+         "$R/etc/systemd/system/vesalius-node-bootlog.service" \
          "$R/etc/systemd/system/dmesg.service.d/wetware.conf" \
          "$R/etc/tmpfiles.d/wetware-node-logs.conf" \
          "$R/etc/systemd/network/10-wetware-nic.link" \
@@ -1820,8 +1820,8 @@ PY
   check_eq "machine-info is installed" "production" \
     "$(awk -F= '$1=="DEPLOYMENT"{print $2}' "$ROOTFS/etc/machine-info" 2>/dev/null || true)"
   check_file "$ROOTFS/etc/systemd/network/10-wetware-nic.link" "guest nic rename rule"
-  check_file "$ROOTFS/usr/local/sbin/wetware-node-bootlog" "node boot record helper"
-  check_file "$ROOTFS/etc/systemd/system/wetware-node-bootlog.service" "node boot record unit"
+  check_file "$ROOTFS/usr/local/sbin/vesalius-node-bootlog" "node boot record helper"
+  check_file "$ROOTFS/etc/systemd/system/vesalius-node-bootlog.service" "node boot record unit"
 
   # --- node surface: tools, clock, logs, root home -------------------------
   vsay "-- node surface"

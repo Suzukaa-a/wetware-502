@@ -613,8 +613,38 @@ def _reset() -> int:
             os.unlink(hive_kernel_override_path())
         except OSError:
             pass
+    _clean_player_artifacts()
     print("[campaign] reset done host=%s state=%s" % (local_host(), state_file()))
     return 0
+
+
+def _clean_player_artifacts() -> None:
+    """Remove files a previous operator instance left in the real root shell.
+
+    The story's own artefacts are materialised by the engine; anything else in
+    /root (handoff notes, incident dumps, scratch reports) is the previous
+    player's work and must not survive into a fresh run as "evidence".
+    """
+    import glob
+
+    protected = {"TICKET_4471_DISPOSITION.txt", "HOW_TO_END_THIS.txt",
+                 "README.md", "notes.txt", "lin_emergency_key.README"}
+    for path in glob.glob("/root/*"):
+        base = os.path.basename(path)
+        if base in protected or base.startswith("."):
+            continue
+        try:
+            if os.path.isfile(path) or os.path.islink(path):
+                os.unlink(path)
+        except OSError:
+            pass
+    for pattern in ("/root/*handoff*", "/root/*incident*", "/var/log/incident*",
+                    "/var/log/*handoff*"):
+        for path in glob.glob(pattern):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 def main(argv=None) -> int:

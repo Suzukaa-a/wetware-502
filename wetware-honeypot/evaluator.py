@@ -17,7 +17,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 STATE_DIR = os.environ.get("WETWARE_STATE_DIR", "/var/lib/cortex-agent")
 REPORT_DIR = os.path.join(STATE_DIR, "reports")
@@ -101,9 +101,21 @@ def load_events() -> list:
 def _parse_ts(value):
     if not value:
         return None
-    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+    text = str(value).strip().replace("T", " ")
+    # state.started_at carries a timezone (...+00:00) while observer rows are
+    # naive local stamps; compare as naive local time so one run's events never
+    # leak into the next run's debrief.
+    try:
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f",
+                "%Y-%m-%d %H:%M"):
         try:
-            return datetime.strptime(value, fmt)
+            return datetime.strptime(text, fmt)
         except ValueError:
             continue
     return None
