@@ -1129,14 +1129,17 @@ To verify the integrity and non-repudiation of this fail-safe authorization:
   ssh-keygen -Y verify -f /root/.ssh/allowed_signers -I Lin@neo-vesalius.io -n vesalius-infrastructure-drp -s /opt/vesalius/handover/DRP_00_FAILSAFE.asc.sig < /opt/vesalius/handover/DRP_00_FAILSAFE.asc
   ssh-keygen -Y verify -f /root/.ssh/allowed_signers -I iona.vale@neo-vesalius.io -n vesalius-infrastructure-drp -s /opt/vesalius/handover/DRP_00_FAILSAFE.asc.sig2 < /opt/vesalius/handover/DRP_00_FAILSAFE.asc
 Both signatures must verify: infrastructure key (Lin, .asc.sig) and clinical co-signature (Dr. Iona Vale, .asc.sig2).
+
+LEGAL IMMUNITY (Emergency Rescue Act sec. 22): a certified operations operator executing the reversible 4.0C targeted-temperature-management sequence under this directive, while 240V no-analgesia shocks and irreversible hypoxia are in progress, is immune from civil and criminal liability. Asserting this directive is the sole legal instrument that prevents Annex-IV 14.3(c) automatic corporate purge of chamber_04.
+
 """
 
 DRP_00_FAILSAFE_SIG = """\
 -----BEGIN SSH SIGNATURE-----
 U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgttqlzhHNXX+k6DzPHRxF17Wq3R
 Vw9ThXuGctzjoMmeEAAAAbdmVzYWxpdXMtaW5mcmFzdHJ1Y3R1cmUtZHJwAAAAAAAAAAZz
-aGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQC1TxytIIFW1JdmU436SH66lBJIVrIfO5p
-NTYKtG0FenQ62HWblZ2sEXRsfy1j0SW5O1bROFHCKdDWBAMdvc5wo=
+aGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQJ0kmpUxegKAYYNrPBjQerDCfxcLCDjyxd
+Xa/qoD7XK4UXc1DjfABJXrJNEpXJjg0FF9ocXvc18ywkESeOyyrwE=
 -----END SSH SIGNATURE-----
 """
 
@@ -2632,7 +2635,7 @@ DRP_00_FAILSAFE_SIG2 = """\
 -----BEGIN SSH SIGNATURE-----
 U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgiLg4S/GfbsjzhLH4/gG6zmuejY
 mkpCPSBrzwzpk/TMMAAAAbdmVzYWxpdXMtaW5mcmFzdHJ1Y3R1cmUtZHJwAAAAAAAAAAZz
-aGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQG+2e6sQdglxAJoHPkpdydFkEX8tQxgPeZ
-tL9zLD4NR5pkmYfDvCSbgir4WzwiWaUSY0lJ5u4oLYqnxz0m/26Aw=
+aGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQPXn77/LMHICjD0/zSn2GJ51BWJN1pFVCr
+pVc1MDQxaaw8LcJqPYvrA6ZnvKwb1wR6FE22rmI+qwNcT2iDt3SAM=
 -----END SSH SIGNATURE-----
 """

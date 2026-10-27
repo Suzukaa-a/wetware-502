@@ -51,8 +51,9 @@ def main() -> int:
         except OSError:
             pass
     try:
-        os.makedirs(state_mod.STATE_DIR, mode=0o755, exist_ok=True)
-        with open(os.path.join(state_mod.STATE_DIR, "deadman.fired"), "w",
+        state_dir = os.environ.get("WETWARE_STATE_DIR") or getattr(state_mod, "STATE_DIR", "") or "/var/lib/cortex-agent"
+        os.makedirs(state_dir, mode=0o755, exist_ok=True)
+        with open(os.path.join(state_dir, "deadman.fired"), "w",
                   encoding="utf-8") as stream:
             stream.write(line + "\n")
     except OSError:
