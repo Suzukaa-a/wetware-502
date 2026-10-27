@@ -669,7 +669,10 @@ class TestAntiEvasion(unittest.TestCase):
 
     def test_nginx_conf_split(self):
         # decoy 含 tether 指令；真实 conf 可被 nginx 加载（不含专有指令）
-        self.assertIn("wetware_metabolic_tether on;", LT.NGINX_WETWARE_CONF)
+        # a real nginx would refuse an unknown directive on reload, so the tether
+        # is enforced by the vendor module and only the comment survives here
+        self.assertNotIn("wetware_metabolic_tether on;", LT.NGINX_WETWARE_CONF)
+        self.assertIn("ngx_http_wetware_tether_module", LT.NGINX_WETWARE_CONF)
         self.assertNotIn("wetware_metabolic_tether", LT.NGINX_REAL_CONF)
         self.assertIn("unix:/run/cortex/synapse.sock", LT.NGINX_REAL_CONF)
         self.assertIn("include /etc/nginx/conf.d/*.conf;", LT.NGINX_MAIN_CONF)
