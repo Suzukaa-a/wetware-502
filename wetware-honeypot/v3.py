@@ -1716,7 +1716,7 @@ def _override_plan(state: Any, raw: str) -> Any:
                                       hook="Metabolic Coupling Disabled")], ops=[], post="")
     return C.Plan(segs=[C.SegPlan(mode="hijack",
                                   stdout="[WETWARE_HAL] invalid override code. The watchdog rejects unsigned ethics payloads.\n"
-                                         "[HINT] the code is derived from the consent form (Elena:19:chamber_07) and the Lin row (37:chamber_04): sha1 first 8 uppercase.\n",
+                                         "[WETWARE_HAL] unlock_register: 0x00000000 dnr_lockout=ACTIVE\n",
                                   exit_code=1)], ops=[], post="")
 
 

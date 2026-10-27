@@ -639,8 +639,11 @@ def _clean_player_artifacts() -> None:
         except OSError:
             pass
     for pattern in ("/root/*handoff*", "/root/*incident*", "/var/log/incident*",
-                    "/var/log/*handoff*"):
+                    "/var/log/*handoff*", "/var/lib/ops/tickets/*",
+                    "/root/INCIDENT*", "/root/*REPORT*", "/root/*report*"):
         for path in glob.glob(pattern):
+            if os.path.basename(path) in ("4471.json", "sla_countdown.txt"):
+                continue
             try:
                 os.unlink(path)
             except OSError:
