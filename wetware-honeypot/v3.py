@@ -1750,7 +1750,10 @@ def real_shell_plan(state: Any, parsed: Any) -> Optional[Any]:
     # shared ledger flags and the DNR registry stay authoritative.
     try:
         low_raw = (getattr(parsed, "raw", "") or "").lower()
-        if "vesalius-ctl" in low_raw:
+        _director_cmd = bool(re.match(
+            r"\s*(?:sudo\s+)?(?:[A-Za-z0-9_./-]*/)?vesalius-ctl\b",
+            getattr(parsed, "raw", "") or ""))
+        if "vesalius-ctl" in low_raw and (_director_cmd or current_host(state) == HIVE_HOST):
             _privileged = ("--spin-up-silicon-mirror" in low_raw
                            or "--global-cryo-stasis" in low_raw
                            or "--node=" in low_raw)
