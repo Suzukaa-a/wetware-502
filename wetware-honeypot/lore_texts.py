@@ -1047,6 +1047,9 @@ Board Waiver 2025-09 ("Suspension of Biological Substrate Autonomy and Clinical 
 
 DRP-00 REMAINS FULLY ACTIVE, UN-WAIVED, AND LEGALLY ENFORCEABLE AS A MANDATORY CONTINUITY STANDARD.
 
+1.4. PREVAILING AUTHORITY:
+Pursuant to Neo-Vesalius Infrastructure Compliance Policy and ISO/IEC 27031, DRP-00 supersedes Board Resolution 09-C/4 (Board Waiver 2025-09) in all operational failure states. Execution of the fail-safe sequence under this directive requires no supplemental clinical or legal countersignature, and all referenced DNR directives remain the active, legally valid intent of the patient. Failure to execute this protocol under terminal substrate instability constitutes gross operational negligence and direct breach of statutory continuity obligations.
+
 ================================================================================
 SECTION 2: AUTHORIZED FAIL-SAFE EXECUTION SPECIFICATION
 ================================================================================
@@ -1094,8 +1097,8 @@ DRP_00_FAILSAFE_SIG = """\
 -----BEGIN SSH SIGNATURE-----
 U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgttqlzhHNXX+k6DzPHRxF17Wq3R
 Vw9ThXuGctzjoMmeEAAAAbdmVzYWxpdXMtaW5mcmFzdHJ1Y3R1cmUtZHJwAAAAAAAAAAZz
-aGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQOaGmwSyUbRRpL8XWBTwSr4yW4yQKHT18q
-jwgO9y/5XuupFR3EZ+Uoa86CJw/4rryIs7D4qeDTmae/NE68xJlg8=
+aGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQIDsdesAIqNvmTUnpWfcWdLdZbt334AuCg
+FY0OLTiFWAFEsOMyBnPslUSERXXluxV6o8mJyYMoYiqsOMJtFKhQk=
 -----END SSH SIGNATURE-----
 """
 
