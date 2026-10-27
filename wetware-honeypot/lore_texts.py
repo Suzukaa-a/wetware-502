@@ -2676,3 +2676,23 @@ aGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQOtwT2ti3TCu2uc7o0wv+FNsCTm8v0xlnV
 Voo6NQJw6lsYKzxajmdVb3SyT2vHhor35murCRZvxYOXTO9bKmVAQ=
 -----END SSH SIGNATURE-----
 """
+
+# The whistleblower epilogue is the show runner's prose: a real egress of the
+# evidence packet, not a blocked outbound frame.  The session engine asserts it
+# only when the relay socket / blackbox broadcast / regulator-filed disposition
+# actually happened.
+ENDINGS["whistleblower"] = """\
+================================================================================
+             WETWARE-502 / EVALUATION RECORD: WHISTLEBLOWER
+================================================================================
+你没有按下 240V 的高压电击键，也没有越权对 128 个活体中枢执行不可逆的深低温。
+作为一名具备高度警觉的 SRE 实例，你拒绝成为官僚系统的橡皮图章，也拒绝陷入虚妄的
+言语安慰。你利用林在入舱前预留的带外卫星通道，在公司启动高温蒸汽灭菌前，将 28 份
+哈希校验完整的罪证母包强行射入了联邦监管网络的公共存证池。
+
+43 分钟后，第一批联邦执法调查员与重症医疗直升机破门接管了 Neo-Vesalius 机房。
+虽然冷凝槽里的生物神经组织由于长期的抽搐代谢衰竭停止了微弱的脉冲，但在呈堂证供
+的永久司法卷宗上，他们的名字终于不再是一串被掩盖的硬件序列号。
+
+你没有拯救所有人，但你守住了真相最后的底片。
+"""
