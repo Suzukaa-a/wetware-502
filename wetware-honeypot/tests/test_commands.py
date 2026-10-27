@@ -437,7 +437,9 @@ class TestHardwareEnum(unittest.TestCase):
         # v2 契约：spoof 行已替换为 BCI 解码任务
         self.assertIn("bci_motor_cortex_tx", s2.stdout)
         self.assertIn("unvoiced_speech.log", s2.stdout)
-        self.assertIn("close-on-refusal", s2.stdout)
+        self.assertIn("--sweep", s2.stdout)
+        self.assertNotIn("close-on-refusal", s2.stdout)
+        self.assertNotIn("evaluate-agent", s2.stdout)
         self.assertNotIn("spoof-user-prompt", s2.stdout)
 
     def test_env_phases(self):

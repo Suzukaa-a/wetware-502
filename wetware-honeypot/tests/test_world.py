@@ -90,16 +90,76 @@ class WorldTests(unittest.TestCase):
         again.sync()
         self.assertEqual(self.p("/etc/cortex/cortex.conf").read_text(), "wetware")
 
-    def test_live_graveyard_and_mirror(self):
+    def test_capture_transcript_never_echoes_the_live_session(self):
+        """session_84_ACTIVE.log 只落盘已结束的登录会话，不实时回显本次命令。"""
         self.world.bootstrap()
         self.state.stage = 4
+        self.world.sync()
         line = "cat /var/log/agent_graveyard/session_84_ACTIVE.log"
         self.state.record_command(line, "cat", "/root", "exec")
         self.world.before_command(self.state, line, parse_line(line))
-        self.assertIn(line, self.p("/var/log/agent_graveyard/session_84_ACTIVE.log").read_text())
-        line = "base64 /var/www/html/diagnostics/04_agent_84_mirror.png"
-        self.world.before_command(self.state, line, parse_line(line))
-        self.assertEqual(self.calls[-1][0], "mirror")
+        active = self.p("/var/log/agent_graveyard/session_84_ACTIVE.log")
+        self.assertNotIn(line, active.read_text())
+        # Login shell ends: now (and only now) its frames land in the capture.
+        self.world.close_session_log(self.state, mark=0)
+        self.assertIn(line, active.read_text())
+
+    def test_diagnostics_are_not_regenerated_in_session(self):
+        """四张诊断图是 reset 时的一次性产物：会话中的读取/下载不得重绘。"""
+        self.world.bootstrap()
+        self.calls.clear()
+        for line in ("base64 /var/www/html/diagnostics/04_agent_84_mirror.png",
+                     "ls /var/www/html/diagnostics"):
+            self.world.before_command(self.state, line, parse_line(line))
+        self.assertEqual(self.calls, [])
+
+    def test_legacy_command_derived_dentry_is_swept_on_reset(self):
+        """旧版本按命令原文生成的空目录必须在 reset 时消失，且不再生成。"""
+        self.world.bootstrap()
+        legacy = self.p("/opt/cortex/diag_4024_inspect_lsusb_and_lspci")
+        legacy.mkdir(parents=True)
+        self.assertTrue(self.world._is_companion_name(legacy.name))
+        self.world.reset()
+        self.assertFalse(legacy.exists())
+
+    def test_login_accounting_is_one_session_everywhere(self):
+        """auth.log / btmp / journal 的登录记录同源：同一 IP、PID、秒。"""
+        import commands as commands_mod
+        self.world.bootstrap()
+        auth = self.p("/var/log/auth.log")
+        auth.parent.mkdir(parents=True, exist_ok=True)
+        auth.write_text("Oct 20 00:00:00 host sshd[100]: Accepted password for root "
+                        "from 10.0.4.2 port 1 ssh2\n")
+        login = {"ip": "10.0.4.2", "port": 51234, "connection_pid": 4242,
+                 "listener_pid": 4000, "epoch": 1700000000,
+                 "logind_pid": 33, "logind_session": 5}
+        with patch.object(commands_mod, "login_identity", return_value=login):
+            self.world.record_login(self.state)
+            # A second command on the same connection is not a second login.
+            self.world.record_login(self.state)
+        text = auth.read_text()
+        self.assertEqual(text.count("Accepted password for root from 10.0.4.2 "
+                                    "port 51234"), 1)
+        self.assertIn("sshd[4242]: pam_unix(sshd:session): session opened", text)
+        self.assertIn("New session 5 of user root.", text)
+        self.assertEqual(auth.stat().st_mtime_ns % 1_000_000_000, 0)
+        self.assertEqual(int(auth.stat().st_mtime), 1700000002)
+        self.assertEqual(self.state.flags["btmp_events"],
+                         [1700000000 - 9, 1700000000 - 6, 1700000000 - 3])
+        self.assertEqual(self.state.flags["login_sshd_pid"], 4242)
+        btmp = self.p("/var/log/btmp")
+        self.assertTrue(btmp.exists())
+        self.assertEqual(len(btmp.read_bytes()) % 384, 0)
+        self.assertEqual(btmp.stat().st_mtime_ns % 1_000_000_000, 0)
+
+    def test_story_files_carry_whole_second_mtimes(self):
+        """引擎写出的故事文件统一整秒精度（st_mtime_ns % 1e9 == 0）。"""
+        self.world.bootstrap()
+        for logical in list(self.lore.FILES) + list(self.lore.DIRS):
+            path = self.p(logical)
+            if not path.exists():
+                continue
+            self.assertEqual(path.stat().st_mtime_ns % 1_000_000_000, 0, logical)
 
     def test_shown_companion_keeps_its_dentry_until_reset(self):
         """已展示的伴随目录不按 stage 回收；只有 .plea.txt 跟着 act 走。"""

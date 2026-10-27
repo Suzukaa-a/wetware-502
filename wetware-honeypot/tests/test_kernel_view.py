@@ -438,7 +438,8 @@ class JournalFormatTests(KernelViewBase):
         self.assertNotIn("2180", current)      # previous boot's sshd
         self.assertNotIn("Rebooting", current)
         previous = self.output("journalctl -b -1")
-        self.assertIn("2180", previous)
+        self.assertIn("Server listening", previous)
+        self.assertIn("Rebooting", previous)
         boots = self.output("journalctl --list-boots")
         self.assertIn("-1 ", boots)
         self.assertIn(" 0 ", boots)
@@ -455,6 +456,86 @@ class JournalFormatTests(KernelViewBase):
         for line in text.splitlines():
             if line.strip():
                 self.assertNotRegex(line, r"^\[")
+
+
+class JournalRealismTests(KernelViewBase):
+    """journalctl must be the real tool's shape, not a dmesg echo."""
+
+    def setUp(self):
+        super().setUp()
+        self.configure(True, host=CORE, stage=0, node_id=CORE)
+
+    def test_list_boots_has_header_boot_id_and_zone(self):
+        text = self.output("journalctl --list-boots")
+        lines = text.splitlines()
+        self.assertTrue(lines[0].startswith("IDX"), lines[:1])
+        self.assertIn("BOOT ID", lines[0])
+        self.assertIn("FIRST ENTRY", lines[0])
+        self.assertIn("LAST ENTRY", lines[0])
+        for row in lines[1:]:
+            self.assertRegex(
+                row, r"^\s*-?\d+ [0-9a-f]{32} \w{3} \d{4}-\d\d-\d\d "
+                     r"\d\d:\d\d:\d\d \S+ \w{3} \d{4}-\d\d-\d\d "
+                     r"\d\d:\d\d:\d\d \S+$", row)
+
+    def test_a_whole_boot_is_tens_of_lines(self):
+        text = self.output("journalctl -b")
+        self.assertGreaterEqual(len(text.splitlines()), 60)
+        self.assertIn("Startup finished in", text)
+        self.assertIn("Started OpenBSD Secure Shell server.", text)
+
+    def test_sshd_lines_name_the_live_login(self):
+        with mock.patch.object(commands, "sshd_connection_pid", return_value=4242), \
+             mock.patch.object(commands, "sshd_listener_pid", return_value=4000), \
+             mock.patch.object(commands, "_pid_start_epoch", return_value=1700000000):
+            text = self.output("journalctl -u ssh")
+        self.assertIn("sshd[4000]: Server listening", text)
+        self.assertIn("sshd[4242]: Accepted password for root from 10.0.4.2", text)
+        self.assertIn("sshd[4242]: Failed password for root from 10.0.4.2", text)
+        self.assertNotIn("sshd[9002]", text)
+        self.assertNotIn("10.66.255", text)
+
+    def test_logind_session_number_increments(self):
+        self.state.flags["logind_session"] = 5
+        self.state.flags["login_epoch"] = 1700000000
+        with mock.patch.object(commands, "sshd_connection_pid", return_value=4242), \
+             mock.patch.object(commands, "_pid_start_epoch", return_value=1700000001):
+            first = self.output("journalctl -u systemd-logind")
+        self.assertIn("New session 5 of user root.", first)
+        self.state.flags["logind_session"] = 6
+        with mock.patch.object(commands, "sshd_connection_pid", return_value=4242), \
+             mock.patch.object(commands, "_pid_start_epoch", return_value=1700000001):
+            second = self.output("journalctl -u systemd-logind")
+        self.assertIn("New session 6 of user root.", second)
+
+    def test_kernel_query_implies_this_boot(self):
+        text = self.output("journalctl -k")
+        self.assertNotIn("Rebooting.", text)
+
+    def test_dmesg_carries_engineering_noise(self):
+        self.configure(True, host=CORE, stage=2, node_id=CORE)
+        with mock.patch.object(commands, "_kernel_boot_epoch",
+                               return_value=1700000000.0):
+            text = self.output("dmesg")
+        for needle in ("usbcore", "EXT4-fs", "audit(", "virtio_net"):
+            self.assertIn(needle, text)
+        self.assertNotIn("invitation", text)
+
+
+class LoadAverageTests(KernelViewBase):
+    """The last-pid of /proc/loadavg must be explainable by the process table."""
+
+    def test_last_pid_is_at_least_the_largest_live_pid(self):
+        with mock.patch.object(commands, "_all_pids", return_value=[1, 4040, 8484]):
+            text = commands.render_loadavg_text("0.44 0.51 0.58 1/208 5164\n")
+        fields = text.decode().split()
+        self.assertEqual(fields[:4], ["0.44", "0.51", "0.58", "1/208"])
+        self.assertGreaterEqual(int(fields[4]), 8484)
+
+    def test_kernel_last_pid_is_kept_when_it_is_already_above(self):
+        with mock.patch.object(commands, "_all_pids", return_value=[1, 42]):
+            text = commands.render_loadavg_text("1.00 2.00 3.00 2/94 99999\n")
+        self.assertEqual(int(text.decode().split()[4]), 100000)
 
 
 class BootFromUptimeTests(KernelViewBase):

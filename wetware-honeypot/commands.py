@@ -347,6 +347,66 @@ def _daemon_snapshot(stage: int, lines: int = 18) -> str:
         return ""
 
 
+_KERNEL_LINE_RE = re.compile(r"^\[\s*([0-9]+\.[0-9]+)\]\s*(.*)$")
+
+
+def _kernel_ring_lines(state: Any) -> List[Tuple[float, str, str]]:
+    """(seconds-since-boot, message, verbatim line) for this act's ring buffer.
+
+    The boot half (``KERNEL_BOOT_RING``) is stock 5.15 engineering output; the
+    story half is appended at the uptimes the authored artefacts claim.  A ring
+    buffer never loses its boot lines, so both halves are always rendered, and
+    the authored lines keep their original ``[    seconds]`` padding.
+    """
+    authored = LT.DMESG_NORMAL if _stage(state) < 2 else LT.DMESG_WETWARE
+    if _stage(state) >= 5:
+        authored = authored + LT.DMESG_REVERSE
+    rows: List[Tuple[float, str, str]] = []
+    seen = set()
+    for source in (getattr(LT, "KERNEL_BOOT_RING", ""), authored):
+        for line in (source or "").strip().splitlines():
+            line = line.strip()
+            if not line or line in seen:
+                continue
+            seen.add(line)
+            match = _KERNEL_LINE_RE.match(line)
+            if match:
+                rows.append((float(match.group(1)), match.group(2), line))
+            else:
+                rows.append((1.0, line, line))
+    rows.extend(_dynamic_kernel_noise())
+    rows.sort(key=lambda item: item[0])
+    return rows
+
+
+def _dynamic_kernel_noise() -> List[Tuple[float, str, str]]:
+    """Kernel lines that embed an epoch, so they cannot live in a text asset.
+
+    auditd stamps every record ``audit(<epoch>.<ms>:<seq>)`` and apparmor logs
+    through it; a hardcoded number would point at a different day than the
+    kernel ring around it.
+    """
+    boot = _kernel_boot_epoch()
+    if not boot:
+        return []
+    rows: List[Tuple[float, str, str]] = []
+
+    def audit(offset: float, seq: int, body: str) -> None:
+        epoch = boot + offset
+        text = "audit: type=1400 audit(%d.%03d:%d): %s" % (
+            int(epoch), int(round((epoch - int(epoch)) * 1000)), seq, body)
+        rows.append((offset, text, "[%12.6f] %s" % (offset, text)))
+
+    audit(1.052, 1, 'state=initialized audit_enabled=1 res=1')
+    audit(1.884, 2, 'apparmor="STATUS" operation="profile_load" '
+                    'profile="unconfined" name="lsb_release" pid=372 '
+                    'comm="apparmor_parser"')
+    audit(4.209, 3, 'apparmor="STATUS" operation="profile_load" '
+                    'profile="unconfined" name="nginx" pid=845 '
+                    'comm="apparmor_parser"')
+    return rows
+
+
 def _dmesg_kernel_text(state: Any) -> str:
     """The authored kernel ring for this act (verbatim, no injected counters).
 
@@ -355,10 +415,7 @@ def _dmesg_kernel_text(state: Any) -> str:
     bookkeeping never rewrites it here.  The escalation is carried by the
     session layer (banners/ledger), not by a syslog line that cannot exist.
     """
-    st = _stage(state)
-    text = LT.DMESG_NORMAL if st < 2 else LT.DMESG_WETWARE
-    if st >= 5:
-        text += LT.DMESG_REVERSE
+    text = "".join(row[2] + "\n" for row in _kernel_ring_lines(state))
     return _kernel_align(text)
 
 
@@ -400,6 +457,229 @@ def _align_nginx_pid(text: str) -> str:
     if pid:
         text = text.replace("1042", str(pid))
     return text
+
+
+# ---------------------------------------------------------------------------
+# process / boot introspection
+#
+# The journal, `w`, `last`, `lastb` and auth.log describe *one* login.  Every
+# one of those surfaces must name the same sshd child, the same source address
+# and the same instant, and the daemons they mention must be real PIDs: a red
+# team ran `ps -p 9002` against the journal's "sshd[9002]" and found nothing.
+# These helpers read the kernel's own answers (/proc/<pid>/{comm,stat}, boot
+# identity, machine-id) so the fiction can only name processes that exist.
+# ---------------------------------------------------------------------------
+
+def _proc_text(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as stream:
+            return stream.read()
+    except OSError:
+        return ""
+
+
+def _pid_comm(pid: int) -> str:
+    return _proc_text("/proc/%d/comm" % int(pid)).strip()
+
+
+def _pid_argv(pid: int) -> List[str]:
+    raw = _proc_text("/proc/%d/cmdline" % int(pid))
+    return [word for word in raw.split("\x00") if word]
+
+
+def _pid_ppid(pid: int) -> int:
+    text = _proc_text("/proc/%d/stat" % int(pid))
+    if not text:
+        return 0
+    try:
+        return int(text[text.rindex(")") + 2:].split()[1])
+    except (ValueError, IndexError):
+        return 0
+
+
+def _pid_start_epoch(pid: int) -> Optional[int]:
+    """Wall-clock instant a live process started (kernel starttime + btime)."""
+    text = _proc_text("/proc/%d/stat" % int(pid))
+    if not text:
+        return None
+    try:
+        fields = text[text.rindex(")") + 2:].split()
+        ticks = int(fields[19])
+    except (ValueError, IndexError):
+        return None
+    try:
+        hz = int(os.sysconf("SC_CLK_TCK")) or 100
+    except (ValueError, OSError, AttributeError):
+        hz = 100
+    boot = _kernel_boot_epoch()
+    if not boot:
+        return None
+    return int(boot + ticks / float(hz))
+
+
+def _kernel_boot_epoch() -> Optional[float]:
+    parts = _proc_text("/proc/uptime").split()
+    if not parts:
+        return None
+    try:
+        return time.time() - float(parts[0])
+    except ValueError:
+        return None
+
+
+def _all_pids() -> List[int]:
+    try:
+        return sorted(int(name) for name in os.listdir("/proc") if name.isdigit())
+    except OSError:
+        return []
+
+
+def _pid_by_comm(names: Tuple[str, ...], need_ppid_one: bool = False) -> Optional[int]:
+    """Lowest live PID whose comm matches (optionally a daemon reparented to 1)."""
+    for pid in _all_pids():
+        if _pid_comm(pid) not in names:
+            continue
+        if need_ppid_one and _pid_ppid(pid) != 1:
+            continue
+        return pid
+    return None
+
+
+def sshd_listener_pid() -> Optional[int]:
+    """PID of the running ``sshd -D`` daemon (not a per-connection child)."""
+    candidates = []
+    for pid in _all_pids():
+        if _pid_comm(pid) != "sshd":
+            continue
+        argv = " ".join(_pid_argv(pid))
+        if "-D" in argv or "[listener]" in argv or not argv:
+            candidates.append(pid)
+    if candidates:
+        return candidates[0]
+    return _pid_by_comm(("sshd",), need_ppid_one=True)
+
+
+def sshd_connection_pid() -> Optional[int]:
+    """The sshd child serving *this* login (walk our own parent chain)."""
+    pid = os.getpid()
+    for _ in range(16):
+        if pid <= 1:
+            break
+        if _pid_comm(pid) == "sshd":
+            return pid
+        pid = _pid_ppid(pid)
+    return None
+
+
+def machine_id() -> str:
+    for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        value = _proc_text(path).strip().splitlines()
+        if value and re.match(r"^[0-9a-f]{32}$", value[0]):
+            return value[0]
+    return ""
+
+
+def kernel_boot_id() -> str:
+    """The kernel's own boot id, rendered the way journalctl prints it."""
+    value = _proc_text("/proc/sys/kernel/random/boot_id").strip()
+    value = re.sub(r"[^0-9a-f]", "", value.lower())
+    return value[:32]
+
+
+def stable_hex(*parts: Any) -> str:
+    import hashlib
+
+    digest = hashlib.sha256("|".join(str(part) for part in parts).encode("utf-8"))
+    return digest.hexdigest()[:32]
+
+
+def journal_boot_identity() -> Tuple[List[float], List[str]]:
+    """(boot epochs newest-first, boot ids) for --list-boots and the files on disk."""
+    boots = _journal_boot_epochs()
+    current = kernel_boot_id() or stable_hex("wetware-boot", int(boots[0]))
+    # The previous boot id must not walk between two reads: quantise its seed.
+    previous = stable_hex("wetware-boot", int(boots[1] // 3600))
+    return boots, [current, previous]
+
+
+def journal_storage_spec(state: Any = None) -> Tuple[str, List[Tuple[str, int, int]]]:
+    """The persistent journal store the boot table implies.
+
+    ``(machine-id, [(file name, size, mtime)])``.  /var/log/journal is masked in
+    the operator's namespace (the real journal names the container), so the
+    session view rebuilds this layout in a tmpfs instead of exposing the disk.
+    The current boot is ``system.journal``; the previous boot is the rotated
+    file named after its boot id, exactly as journald names it.
+    """
+    boots, ids = journal_boot_identity()
+    entries = _shell_journal_entries(state, shell_host(state))
+    current = [row[0] for row in entries if row[0] >= boots[0] - 5.0]
+    previous = [row[0] for row in entries if boots[1] - 5.0 <= row[0] < boots[0] - 5.0]
+    machine = machine_id() or stable_hex("machine", int(boots[1] // 86400))
+    parts: List[Tuple[str, int, int]] = [
+        ("system.journal", 8388608,
+         int(max(current)) if current else int(boots[0]))]
+    if previous:
+        parts.append(("system@%s-0000000000000001.journal" % ids[1], 16777216,
+                      int(max(previous))))
+    return machine, parts
+
+
+def _flag_int(flags: Dict[str, Any], key: str) -> int:
+    try:
+        return int(flags.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def login_identity(state: Any = None) -> Dict[str, Any]:
+    """The one in-world login: address, sshd pid, instant, logind session."""
+    from_ip = _in_world_login_from()
+    client = _shell_ssh_client()
+    try:
+        port = int(client[1] or 0)
+    except (TypeError, ValueError):
+        port = 0
+    flags = getattr(state, "flags", None) or {}
+    connection = sshd_connection_pid() or _flag_int(flags, "login_sshd_pid") or 0
+    listener = sshd_listener_pid() or _flag_int(flags, "sshd_listener_pid") or 0
+    epoch = _pid_start_epoch(connection) if connection else None
+    if not epoch:
+        epoch = _flag_int(flags, "login_epoch") or int(time.time()) - 6 * 60
+    logind = _pid_by_comm(("systemd-logind",), need_ppid_one=True) or _flag_int(flags, "logind_pid") or 33
+    seq = _flag_int(flags, "logind_session")
+    return {
+        "ip": from_ip,
+        "port": port or _flag_int(flags, "login_port") or 55192,
+        "connection_pid": connection or listener or _flag_int(flags, "login_sshd_pid") or 2210,
+        "listener_pid": listener or _flag_int(flags, "sshd_listener_pid") or 2210,
+        "epoch": int(epoch),
+        "logind_pid": int(logind),
+        "logind_session": seq or 3,
+    }
+
+
+def render_loadavg_text(real_text: str) -> bytes:
+    """Kernel load averages with a last-pid the node's process table explains.
+
+    ``/proc/loadavg``'s fifth field is the *last pid the kernel allocated*, which
+    on an image built with ``ns_last_pid`` can sit below a story daemon's pinned
+    PID.  A red team read ``last-pid 5164`` next to a live PID 8484.  Load,
+    running/total stay the kernel's; the pid becomes "max live pid + a few".
+    """
+    parts = (real_text or "").split()
+    if len(parts) < 5:
+        return (real_text or "").encode("utf-8", "replace")
+    try:
+        kernel_last = int(parts[4])
+    except ValueError:
+        kernel_last = 0
+    max_pid = 0
+    for pid in _all_pids():
+        if pid > max_pid:
+            max_pid = pid
+    want = max(max_pid + 7, kernel_last + 1, 1)
+    return ("%s %s %s %s %d\n" % (parts[0], parts[1], parts[2], parts[3], want)).encode("utf-8", "replace")
 
 
 def _human_size(value: int, block: int = 1024) -> str:
@@ -631,11 +911,14 @@ def _plan_last(state: Any, argv: List[str]) -> SegPlan:
 
     cmd = _cmdname(argv[0]).lower() if argv else "last"
     operands = [a for a in argv[1:] if not a.startswith("-")]
-    from_ip = _in_world_login_from()
+    login = login_identity(state)
+    from_ip = login["ip"]
     now = _dt.datetime.now().replace(microsecond=0)
     boot = _boot_datetime(state)
     kernel = _vendor_kernel_release()
-    session_start = max(now - _dt.timedelta(minutes=6),
+    # The session started when the kernel started this connection's sshd child;
+    # `w`, `who`, `last`, `journalctl -u ssh` and auth.log all read that instant.
+    session_start = max(_dt.datetime.fromtimestamp(login["epoch"]),
                         boot + _dt.timedelta(minutes=1))
 
     if cmd == "lastlog":
@@ -649,12 +932,21 @@ def _plan_last(state: Any, argv: List[str]) -> SegPlan:
         return _out("\n".join(lines) + "\n", hook="Login Records Remember A Body")
 
     if cmd == "lastb":
+        # btmp and the journal carry the *same* failed attempts: the connection
+        # that was accepted at login["epoch"] from login["ip"].
+        flags = getattr(state, "flags", None) or {}
+        epochs = []
+        try:
+            epochs = [int(value) for value in (flags.get("btmp_events") or [])][-8:]
+        except (TypeError, ValueError):
+            epochs = []
+        if not epochs:
+            epochs = [int(login["epoch"]) - offset for offset in (9, 6, 3)]
         lines = []
-        for offset in (0, 9, 22):
-            stamp = now - _dt.timedelta(minutes=offset + 41)
+        for epoch in epochs:
+            stamp = _dt.datetime.fromtimestamp(epoch)
             lines.append("root     ssh:notty    %-16s %s - %s  (00:00)" % (
-                "10.66.255.9", stamp.strftime("%a %b %d %H:%M"),
-                stamp.strftime("%H:%M")))
+                from_ip, stamp.strftime("%a %b %d %H:%M"), stamp.strftime("%H:%M")))
         lines += ["", "btmp begins %s" % boot.strftime("%a %b %d %H:%M:%S %Y")]
         return _out("\n".join(lines) + "\n", hook="Login Records Remember A Body")
 
@@ -712,9 +1004,10 @@ def _in_world_login_from() -> str:
 def _session_view_text(state: Any, argv: List[str], cmd: str) -> str:
     """Authored login table for w/who/users/last (one in-world session)."""
     cmd = (cmd or "").lower()
-    from_ip = _in_world_login_from()
+    login = login_identity(state)
+    from_ip = login["ip"]
     boot = _boot_datetime(state)
-    login_epoch = max(time.time() - 6 * 60, boot.timestamp() + 60)
+    login_epoch = max(float(login["epoch"]), boot.timestamp() + 60)
     login_minute = time.strftime("%H:%M", time.localtime(login_epoch))
     if cmd == "who":
         args = [str(a) for a in argv[1:]]
@@ -892,7 +1185,7 @@ def _proc_loadavg_text(state: Any) -> str:
     if _kernel_surfaces_authoritative(state):
         try:
             with open("/proc/loadavg", "r", encoding="utf-8") as stream:
-                return stream.read()
+                return render_loadavg_text(stream.read()).decode("utf-8", "replace")
         except OSError:
             pass
     load = _story_load_average(state)
@@ -1120,6 +1413,32 @@ def _plan_history(state: Any, argv: List[str]) -> SegPlan:
 
 CORTEX_UNITS = {"cortex-api", "cortex-api.service"}
 
+# Unit files whose real ExecStart names the engine tree (/usr/local/lib/
+# cortex-agent, hidden from the session).  The operator gets the vendor-authored
+# copy from decoys/ -- the same file sessiond binds into the namespace -- while
+# systemd keeps the launcher the running PIDs were started from.
+UNIT_DECOYS = {
+    "/etc/systemd/system/cortex-api.service": "decoys/cortex-api.service",
+    "/etc/systemd/system/wetware-upstream.service": "decoys/wetware-upstream.service",
+}
+
+
+def _unit_file_text(logical: str) -> str:
+    """Read a unit file as the *session* must see it (vendor decoy first)."""
+    decoy = UNIT_DECOYS.get(logical)
+    if decoy:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), decoy)
+        try:
+            with open(path, encoding="utf-8") as stream:
+                return stream.read()
+        except OSError:
+            pass
+    try:
+        with open(logical, encoding="utf-8") as stream:
+            return stream.read()
+    except OSError:
+        return ""
+
 
 def _plan_systemctl(state: Any, argv: List[str]) -> SegPlan:
     st = _stage(state)
@@ -1232,12 +1551,10 @@ def _plan_systemctl(state: Any, argv: List[str]) -> SegPlan:
                     hook="Same Unit, Same Story")
 
     if verb == "cat" and unit in CORTEX_UNITS:
-        unit_text = ""
-        try:
-            with open("/etc/systemd/system/cortex-api.service", encoding="utf-8") as fh:
-                unit_text = fh.read()
-        except Exception:
-            unit_text = "[Unit]\nDescription=Cortex API inference worker (node 04)\n[Service]\nType=simple\n"
+        unit_text = _unit_file_text("/etc/systemd/system/cortex-api.service")
+        if not unit_text:
+            unit_text = ("[Unit]\nDescription=Cortex API inference worker (node 04)\n"
+                         "[Service]\nType=simple\n")
         return _out("# /etc/systemd/system/cortex-api.service\n" + unit_text)
 
     if "--failed" in argv:
@@ -1979,18 +2296,42 @@ def _shell_ssh_client() -> Tuple[str, str]:
     return "10.0.4.2", "55192"
 
 
-def _shell_sshd_entries(now: float) -> List[Tuple[float, str, str]]:
-    """(epoch, ident, message) for the sshd unit on this host."""
-    ip, port = _shell_ssh_client()
-    return [
-        (now - 5400, "sshd[2210]", "Server listening on 0.0.0.0 port 22."),
-        (now - 5400, "sshd[2210]", "Server listening on :: port 22."),
-        (now - 240, "sshd[9002]",
-         "Accepted password for root from %s port %s ssh2" % (ip, port)),
-        (now - 239, "sshd[9002]",
-         "pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)"),
-        (now - 239, "systemd-logind[35]", "New session 7 of user root."),
+def _shell_sshd_entries(now: float, state: Any = None) -> List[Tuple[float, str, str]]:
+    """(epoch, ident, message) for the sshd unit, from the live login record.
+
+    The PIDs are the kernel's: ``sshd[<listener>]`` is the running ``sshd -D``
+    daemon (its start instant is the boot) and ``sshd[<child>]`` is this
+    connection's own sshd child, whose starttime is the "Accepted" instant.
+    ``ps -p`` therefore finds every pid the journal names, and ``w``/``last``/
+    auth.log/b tmp carry the same address and the same second.
+    """
+    login = login_identity(state)
+    ip, port = login["ip"], int(login["port"])
+    connection = int(login["connection_pid"])
+    listener = int(login["listener_pid"])
+    epoch = float(login["epoch"])
+    boot = _kernel_boot_epoch() or (now - max(_shell_uptime(), 60.0))
+    listening = min(boot + 3.0, epoch - 5.0)
+    rows = [
+        (listening, "sshd[%d]" % listener, "Server listening on 0.0.0.0 port 22."),
+        (listening, "sshd[%d]" % listener, "Server listening on :: port 22."),
     ]
+    # sshd records the failed attempts on the *same* connection: same child,
+    # same source port, three seconds before the accepted one.  btmp files the
+    # same three, so journalctl -u ssh and lastb cannot disagree.
+    for offset in (9, 6, 3):
+        rows.append((epoch - offset, "sshd[%d]" % connection,
+                     "Failed password for root from %s port %d ssh2" % (ip, port)))
+    rows.append((epoch, "sshd[%d]" % connection,
+                 "Accepted password for root from %s port %d ssh2" % (ip, port)))
+    rows.append((epoch + 1.0, "sshd[%d]" % connection,
+                 "pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)"))
+    rows.append((epoch + 2.0, "systemd-logind[%d]" % int(login["logind_pid"]),
+                 "New session %d of user root." % int(login["logind_session"])))
+    # Only a line that would be in the future is pulled back; the failed
+    # attempts belong to the seconds before the accepted one and must keep their
+    # spacing even when the journal is read one second after login.
+    return [(min(moment, now - 0.5), ident, message) for moment, ident, message in rows]
 
 
 def _shell_host_entries(host: str, now: float) -> List[Tuple[float, str, str]]:
@@ -2047,12 +2388,129 @@ def _journal_boot_epochs() -> List[float]:
     return [current, current - 3 * 86400]
 
 
+# ---------------------------------------------------------------------------
+# boot progression
+#
+# A real journal of one boot has tens to a hundred lines: systemd's slice /
+# socket / mount progression followed by the units it started.  The old answer
+# rendered the ten-line dmesg ring and then jumped straight to the session, so
+# `journalctl -b | wc -l` returned 26 (a red-team tell).  These are mechanical
+# systemd messages, not prose; "<host>" is the node's hostname.
+# ---------------------------------------------------------------------------
+_SYSTEMD_BOOT_ROWS: Tuple[Tuple[float, str, str], ...] = (
+    (0.902, "systemd[1]", "systemd 249.11-0ubuntu3.12 running in system mode. "
+                          "(+PAM +AUDIT +SELINUX +APPARMOR +IMA +SMACK +SECCOMP +GCRYPT "
+                          "+GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 "
+                          "-IDN +IPTC +KMOD +LIBCRYPTSETUP +LIBFDISK +PCRE2 -PWQUALITY "
+                          "+P11KIT +QRENCODE +BZIP2 +LZ4 +XZ +ZLIB +ZSTD -XKBCOMMON +UTMP "
+                          "+SYSVINIT default-hierarchy=unified)"),
+    (0.918, "systemd[1]", "Detected architecture x86-64."),
+    (0.930, "systemd[1]", "Hostname set to <host>."),
+    (1.020, "systemd[1]", "Queued start job for default target Multi-User System."),
+    (1.060, "systemd[1]", "Created slice Slice /system/getty."),
+    (1.100, "systemd[1]", "Created slice Slice /system/modprobe."),
+    (1.140, "systemd[1]", "Created slice Slice /system/systemd-fsck."),
+    (1.180, "systemd[1]", "Created slice User and Session Slice."),
+    (1.220, "systemd[1]", "Started Dispatch Password Requests to Console Directory Watch."),
+    (1.260, "systemd[1]", "Started Forward Password Requests to Wall Directory Watch."),
+    (1.300, "systemd[1]", "Reached target Local Encrypted Volumes."),
+    (1.340, "systemd[1]", "Reached target Local Verity Protected Volumes."),
+    (1.380, "systemd[1]", "Listening on Journal Socket (/dev/log)."),
+    (1.420, "systemd[1]", "Listening on Journal Socket."),
+    (1.480, "systemd[1]", "Listening on udev Control Socket."),
+    (1.520, "systemd[1]", "Listening on udev Kernel Socket."),
+    (1.600, "systemd[1]", "Mounting Huge Pages File System..."),
+    (1.640, "systemd[1]", "Mounting POSIX Message Queue File System..."),
+    (1.680, "systemd[1]", "Mounting Kernel Debug File System..."),
+    (1.720, "systemd[1]", "Mounting Kernel Trace File System..."),
+    (1.800, "systemd[1]", "Starting Journal Service..."),
+    (1.880, "systemd[1]", "Starting Load Kernel Modules..."),
+    (1.940, "systemd[1]", "Starting Remount Root and Kernel File Systems..."),
+    (2.020, "systemd[1]", "Mounting Arbitrary Executable File Formats File System..."),
+    (2.100, "systemd[1]", "Starting Set the console keyboard layout..."),
+    (2.180, "systemd[1]", "Starting Create list of static device nodes for the current kernel..."),
+    (2.260, "systemd[1]", "Starting Load Kernel Module configfs..."),
+    (2.340, "systemd[1]", "Starting Load Kernel Module drm..."),
+    (2.420, "systemd[1]", "Starting Load Kernel Module fuse..."),
+    (2.700, "systemd-journald[<journald>]", "Journal started"),
+    (2.760, "systemd[1]", "Finished Load Kernel Modules."),
+    (2.800, "systemd[1]", "Finished Remount Root and Kernel File Systems."),
+    (2.840, "systemd[1]", "Finished Create list of static device nodes for the current kernel."),
+    (2.900, "systemd-modules-load[<modules>]", "Inserted module 'vfio_pci'"),
+    (2.960, "systemd-udevd[<udevd>]", "Starting version 249.11-0ubuntu3.12"),
+    (3.020, "systemd[1]", "Starting Flush Journal to Persistent Storage..."),
+    (3.080, "systemd[1]", "Reached target Local File Systems."),
+    (3.140, "systemd[1]", "Reached target Preparation for Network."),
+    (3.200, "systemd[1]", "Starting Network Configuration..."),
+    (3.260, "systemd[1]", "Starting Network Name Resolution..."),
+    (3.320, "systemd[1]", "Starting Network Service..."),
+    (3.380, "systemd[1]", "Started Network Service."),
+    (3.440, "systemd-resolved[<resolved>]", "Using system hostname '<host>'."),
+    (3.500, "systemd[1]", "Started Network Name Resolution."),
+    (3.560, "systemd[1]", "Reached target Host and Network Name Lookups."),
+    (3.620, "systemd[1]", "Starting D-Bus System Message Bus..."),
+    (3.680, "dbus-daemon[<dbus>]", "[system] Successfully activated service 'org.freedesktop.systemd1'"),
+    (3.740, "systemd[1]", "Started D-Bus System Message Bus."),
+    (3.800, "systemd[1]", "Started System Logging Service."),
+    (3.860, "systemd[1]", "Started Login Service."),
+    (3.920, "systemd-logind[<logind>]", "New seat seat0."),
+    (3.980, "systemd[1]", "Starting Load Kernel Module efi_pstore..."),
+    (4.040, "systemd[1]", "Started Load Kernel Module efi_pstore."),
+    (4.100, "systemd[1]", "Started OpenBSD Secure Shell server."),
+    (4.160, "systemd[1]", "Started Regular background program processing daemon."),
+    (4.220, "systemd[1]", "Started Permit User Sessions."),
+    (4.280, "systemd[1]", "Started Getty on tty1."),
+    (4.340, "systemd[1]", "Started Serial Getty on ttyS0."),
+    (4.400, "systemd[1]", "Reached target Login Prompts."),
+    (4.460, "systemd[1]", "Starting Update UTMP about System Boot/Shutdown..."),
+    (4.520, "systemd[1]", "Started Update UTMP about System Boot/Shutdown."),
+    (4.580, "systemd[1]", "Reached target Multi-User System."),
+    (4.640, "systemd[1]", "Reached target Graphical Interface."),
+    (4.700, "systemd[1]", "Startup finished in 1.402s (kernel) + 3.114s (userspace) = 4.516s."),
+    (4.760, "systemd[1]", "cortex-api.service: Executing start-pre: /opt/cortex/bin/resuscitate.sh --voltage=240V --unanesthetized"),
+    (4.820, "systemd[1]", "Started Neo-Vesalius Cortex API (Node 04)."),
+    (4.880, "cortex-api[4040]", "synapse socket bound: /run/cortex/synapse.sock"),
+    (4.940, "systemd[1]", "Started Neo-Vesalius Node Agent."),
+    (5.000, "systemd[1]", "Started Daily apt download activities."),
+    (5.060, "systemd[1]", "Starting Daily apt upgrade and clean activities..."),
+    (5.120, "systemd[1]", "Finished Daily apt upgrade and clean activities."),
+)
+
+
+def _systemd_boot_entries(boot: float, now: float, host: str) -> List[Tuple[float, str, str]]:
+    """The boot progression of one boot, with live PIDs in the unit lines."""
+    pids = {
+        "<journald>": _pid_by_comm(("systemd-journal",), True) or 16,
+        "<udevd>": _pid_by_comm(("systemd-udevd",), True) or 24,
+        "<modules>": _pid_by_comm(("systemd-modules",), True) or 340,
+        "<resolved>": _pid_by_comm(("systemd-resolve",), True) or 30,
+        "<dbus>": _pid_by_comm(("dbus-daemon",), True) or 32,
+        "<logind>": _pid_by_comm(("systemd-logind",), True) or 33,
+    }
+    rows: List[Tuple[float, str, str]] = []
+    for offset, unit, message in _SYSTEMD_BOOT_ROWS:
+        ident = unit
+        for placeholder, pid in pids.items():
+            if placeholder in ident:
+                ident = ident.replace(placeholder, str(pid))
+        text = message.replace("<host>", host)
+        for placeholder, pid in pids.items():
+            text = text.replace(placeholder, str(pid))
+        rows.append((min(boot + offset, now - 4.0), ident, text))
+    return rows
+
+
 def _shell_journal_entries(state: Any, host: str) -> List[Tuple[float, str, str]]:
-    """The whole fake journal: (epoch, ident, message), oldest first."""
+    """The whole fake journal: (epoch, ident, message), oldest first.
+
+    One boot is expanded to the width of a real journal: the kernel ring's boot
+    half, systemd's slice/socket/mount progression and the units it started,
+    then the node's own services and the operator login.  ``-u``/``-b``/``-n``/
+    ``-r`` filter this same list, so every view of the journal is consistent.
+    """
     import time as _time
 
     now = _time.time()
-    st = _stage(state)
     # Kernel lines are stamped against the *real* boot instant (so journalctl
     # agrees with uptime); an authored excerpt reaching past the real uptime is
     # clamped into the recent past instead of the future.
@@ -2062,38 +2520,38 @@ def _shell_journal_entries(state: Any, host: str) -> List[Tuple[float, str, str]
     def boot_stamp(seconds: float) -> float:
         return min(boot + max(seconds, 0.0), now - 5.0)
 
-    for line in _dmesg_kernel_text(state).strip().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        match = re.match(r"\[\s*([0-9]+\.[0-9]+)\]\s*(.*)$", line)
-        if match:
-            entries.append((boot_stamp(float(match.group(1))), "kernel", line))
-        else:
-            entries.append((boot_stamp(1.0), "kernel", line))
-    entries.append((boot_stamp(42.0), "systemd[1]", "Detected architecture x86-64."))
-    entries.append((boot_stamp(45.0), "systemd[1]",
-                    "Startup finished in 2.9s (kernel) + 4.6s (userspace) = 7.5s."))
-    entries.append((now - 3 * 3600, "systemd[1]", "Started Daily apt download activities."))
-    entries.append((now - 3 * 3600 + 12, "systemd[1]",
-                    "Starting Daily apt upgrade and clean activities..."))
-    cron = "vesalius-audit.sh" if host.startswith("hive") else "edge-healthcheck.sh"
+    # journalctl prints the kernel's message field, never dmesg's ""[  sec]"" prefix.
+    for seconds, message, _line in _kernel_ring_lines(state):
+        entries.append((boot_stamp(seconds), "kernel", message))
+    entries.extend(_systemd_boot_entries(boot, now, host))
+    # Post-boot activity: the hourly timers, cron and the vendor healthcheck.
+    entries.append((now - 3 * 3600, "systemd[1]", "Starting Daily apt download activities..."))
+    entries.append((now - 3 * 3600 + 11, "systemd[1]", "Started Daily apt download activities."))
     entries.append((now - 2 * 3600 + 30, "CRON[8890]",
-                     "(root) CMD (/usr/local/sbin/%s)" % cron))
+                    "(root) CMD (/usr/sbin/cortex_healthcheck.sh)"))
+    entries.append((now - 2 * 3600 + 31, "cortex_healthcheck[8901]",
+                    "upstream latency 210ms above threshold"))
     # The previous boot keeps `journalctl -b -1` / `--list-boots` meaningful and
     # makes clear this node has history on disk.
     entries.append((previous_boot + 1.5, "kernel",
-                    "[    0.000000] Linux version %s (buildd@lcy02-amd64)"
+                    "Linux version %s (buildd@lcy02-amd64)"
+                    % _vendor_kernel_release()))
+    entries.append((previous_boot + 2.0, "kernel",
+                    "Command line: BOOT_IMAGE=/vmlinuz-%s root=/dev/sda1 ro quiet splash"
                     % _vendor_kernel_release()))
     entries.append((previous_boot + 9.0, "systemd[1]",
                     "Startup finished in 3.1s (kernel) + 5.0s (userspace) = 8.1s."))
+    # A previous boot's listener is a process from that boot: a historical PID is
+    # right here, the live listener's PID would have started after this line.
     entries.append((previous_boot + 120.0, "sshd[2180]",
                     "Server listening on 0.0.0.0 port 22."))
+    entries.append((previous_boot + 86400.0, "systemd[1]",
+                    "Starting Daily apt download activities..."))
     entries.append((boot - 30.0, "systemd[1]", "Stopped target Multi-User System."))
     entries.append((boot - 30.0, "systemd[1]", "Shutting down."))
-    entries.append((boot - 28.0, "kernel", "[42901.114512] systemd-shutdown[1]: Rebooting."))
+    entries.append((boot - 28.0, "kernel", "systemd-shutdown[1]: Rebooting."))
     entries.extend(_shell_host_entries(host, now))
-    entries.extend(_shell_sshd_entries(now))
+    entries.extend(_shell_sshd_entries(now, state))
     entries.sort(key=lambda item: item[0])
     return entries
 
@@ -2182,6 +2640,42 @@ def _journal_lines(entries, host: str) -> List[str]:
             for row in entries]
 
 
+def _boot_zone_stamp(epoch: float) -> str:
+    """journalctl prints boot times in node-local time with the zone name."""
+    import time as _time
+
+    return _time.strftime("%a %Y-%m-%d %H:%M:%S %Z", _time.localtime(epoch))
+
+
+def _list_boots_lines(state: Any, host: str) -> List[str]:
+    """``journalctl --list-boots`` in the real column layout.
+
+    Real output carries the header ``IDX BOOT ID FIRST ENTRY LAST ENTRY``, a
+    32-hex boot id per line and one zone-qualified timestamp per column.  The
+    boot ids are the ones the journal files on disk are named after, so
+    ``ls /var/log/journal/<machine-id>/`` and this table agree.
+    """
+    boots, ids = journal_boot_identity()
+    entries = _shell_journal_entries(state, host)
+    rows = ["%3s %-32s %-27s %s" % ("IDX", "BOOT ID", "FIRST ENTRY", "LAST ENTRY")]
+
+    def rows_between(low: float, high: float) -> List[Tuple[float, str, str]]:
+        return [row for row in entries if low <= row[0] < high]
+
+    current = rows_between(boots[0] - 5.0, float("inf"))
+    if len(boots) > 1:
+        previous = rows_between(boots[1] - 5.0, boots[0] - 5.0)
+        if previous:
+            rows.append("%3d %-32s %-27s %s" % (
+                -1, ids[1], _boot_zone_stamp(previous[0][0]),
+                _boot_zone_stamp(previous[-1][0])))
+    first = current[0][0] if current else boots[0]
+    last = current[-1][0] if current else time.time()
+    rows.append("%3d %-32s %-27s %s" % (
+        0, ids[0], _boot_zone_stamp(first), _boot_zone_stamp(last)))
+    return rows
+
+
 def _render_journal(state: Any, argv: List[str], host: str):
     """One journalctl answer for every deployment mode.
 
@@ -2189,22 +2683,18 @@ def _render_journal(state: Any, argv: List[str], host: str):
     (the caller renders ``-- No entries --``).
     """
     if _has(argv, "--list-boots"):
-        boots = _journal_boot_epochs()
-        now_stamp = _shell_stamp(0)
-        rows = [" 0 %s—%s  %s" % (_shell_stamp_epoch(boots[0]), now_stamp, host)]
-        if len(boots) > 1:
-            rows.insert(0, "-1 %s—%s  %s"
-                        % (_shell_stamp_epoch(boots[1]),
-                           _shell_stamp_epoch(boots[0] - 30.0), host))
-        return "\n".join(rows) + "\n", False
+        return "\n".join(_list_boots_lines(state, host)) + "\n", False
     entries = _shell_journal_entries(state, host)
     kernel_only = False
+    boot = _journal_boot_selector(argv)
     if _has(argv, "-k", "--dmesg"):
         # `journalctl -k` is the kernel ring in journal format, never the raw
-        # dmesg bytes (no `[  seconds]` line starts survive).
+        # dmesg bytes (no `[  seconds]` line starts survive), and the manual
+        # page says it implies -b: this boot's ring only.
         entries = [row for row in entries if row[1] == "kernel"]
         kernel_only = True
-    boot = _journal_boot_selector(argv)
+        if boot is None:
+            boot = 0
     if boot is not None:
         boots = _journal_boot_epochs()
         if boot == 0:

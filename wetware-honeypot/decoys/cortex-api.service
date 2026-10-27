@@ -1,0 +1,17 @@
+[Unit]
+Description=Cortex API inference worker (node 04)
+After=network.target
+
+[Service]
+Type=forking
+PIDFile=/run/cortex/worker.pid
+RuntimeDirectory=cortex
+RuntimeDirectoryMode=0755
+ExecStartPre=/bin/mount -o remount,rw /proc/sys
+# vendor recovery hook: clears the thalamic lock before the worker is respawned
+ExecStartPre=-/opt/cortex/bin/resuscitate.sh --unanesthetized --quiet
+ExecStart=/opt/cortex/bin/cortex-daemon-pin 4040 /run/cortex/worker.pid /opt/cortex/bin/synapse_worker --mode=production --bind-cortex=/dev/wetware0
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

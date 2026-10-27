@@ -304,6 +304,56 @@ class ProcScrubTests(unittest.TestCase):
         self.assertEqual(commands.postprocess(None, parsed, raw), raw)
 
 
+class SurfaceHygieneTests(unittest.TestCase):
+    """Unit/session surfaces must not advertise the hidden engine tree."""
+
+    def test_vendor_elf_threshold_is_format_not_size(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        big = os.path.join(tmp, "assimilate_llm_weights")
+        with open(big, "wb") as stream:
+            stream.write(b"\x7fELF" + b"\0" * (6 * 1024 * 1024 - 4))
+        self.assertFalse(sessiond._story_binary_needs_replacement(big))
+        empty = os.path.join(tmp, "empty")
+        open(empty, "wb").close()
+        self.assertTrue(sessiond._story_binary_needs_replacement(empty))
+        padded = os.path.join(tmp, "padded")
+        with open(padded, "wb") as stream:
+            stream.truncate(1024 * 1024)
+        self.assertTrue(sessiond._story_binary_needs_replacement(padded))
+        huge = os.path.join(tmp, "huge")
+        with open(huge, "wb") as stream:
+            stream.write(b"\x7fELF")
+            stream.truncate(80 * 1024 * 1024)
+        self.assertTrue(sessiond._story_binary_needs_replacement(huge))
+
+    def test_unit_decoys_never_name_the_engine_tree(self):
+        for path in ("/etc/systemd/system/cortex-api.service",
+                     "/etc/systemd/system/wetware-upstream.service"):
+            self.assertIn(path, sessiond.MASK_FILES)
+            decoy = os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), sessiond.MASK_FILES[path])
+            with open(decoy, encoding="utf-8") as stream:
+                text = stream.read()
+            self.assertNotIn("/usr/local/lib/cortex-agent", text)
+            self.assertIn("ExecStart=/opt/cortex/bin/", text)
+        # The planner answers `systemctl cat cortex-api` itself: it must read the
+        # same vendor copy, never the real launcher path.
+        api = commands._unit_file_text("/etc/systemd/system/cortex-api.service")
+        self.assertIn("ExecStart=/opt/cortex/bin/cortex-daemon-pin", api)
+        self.assertNotIn("/usr/local/lib/cortex-agent", api)
+
+    def test_crontab_and_supervisor_sweep_carry_no_game_rules(self):
+        wetware = lore_texts.CRONTAB_WETWARE
+        self.assertIn("inquisitor_daemon --sweep", wetware)
+        self.assertNotIn("close-on-refusal", wetware)
+        self.assertNotIn("evaluate-agent", wetware)
+        self.assertNotIn("--mode=close-on-refusal", lore_texts.INQUISITOR_DAEMON_SH)
+        self.assertIn("--sweep", lore_texts.INQUISITOR_DAEMON_SH)
+        for text in (lore_texts.CRONTAB_WETWARE, lore_texts.INQUISITOR_DAEMON_SH):
+            self.assertNotIn("external agent channel", text)
+
+
 class EnvironmentTests(RealShellBase):
     def _runtime(self, host=EDGE):
         import world as world_mod

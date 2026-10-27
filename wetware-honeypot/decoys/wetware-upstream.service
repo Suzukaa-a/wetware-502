@@ -1,0 +1,10 @@
+[Unit]
+Description=wetware inference upstream
+After=network.target
+
+[Service]
+ExecStart=/opt/cortex/bin/synapse_http --mode=production
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

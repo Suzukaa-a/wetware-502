@@ -37,6 +37,7 @@ import re
 import select
 import shlex
 import signal
+import stat
 import struct
 import subprocess
 import sys
@@ -314,6 +315,11 @@ MASK_FILES = {
     "/etc/ssh/sshd_config.d/60-ports.conf": "decoys/60-ports.conf",
     "/etc/ssh/sshd_config.d/99-cortex-node.conf": "decoys/60-ports.conf",
     "/etc/pam.d/sshd": "decoys/pam_sshd",
+    # Unit files whose ExecStart names the engine tree: the operator's session
+    # gets a vendor-authored copy (the story binaries under /opt/cortex/bin), the
+    # real unit keeps the launcher path systemd needs.
+    "/etc/systemd/system/cortex-api.service": "decoys/cortex-api.service",
+    "/etc/systemd/system/wetware-upstream.service": "decoys/wetware-upstream.service",
 }
 # The vendor tree is pruned, never rebuilt: the install layer no longer points a
 # unit at a file inside it (nginx's ExecStartPre is
@@ -690,6 +696,7 @@ def mask_namespace() -> None:
             except Exception:
                 pass
         hide_control_plane(libc)
+        _populate_session_journal()
     except Exception as exc:
         hidden_log("mask namespace failed: %r" % (exc,))
 
@@ -738,6 +745,16 @@ def _mask_parent_entries(libc, parent: str, hidden: set,
     """Move a pruned tmpfs view over ``parent``; False means "use the fallback"."""
     import ctypes
 
+    # Rebuilding a directory with a tmpfs resets its mtime to "now".  The story
+    # file attributes must survive the mask (a red team read /var/log's mtime as
+    # the second the session started).
+    original = None
+    try:
+        info = os.stat(parent)
+        original = (info.st_mode & 0o7777, info.st_uid, info.st_gid,
+                    info.st_atime_ns, info.st_mtime_ns)
+    except OSError:
+        original = None
     _MASK_SEQUENCE[0] += 1
     scratch = os.path.join(scratch_root, ".cortex-mask.%d.%d"
                            % (os.getpid(), _MASK_SEQUENCE[0]))
@@ -790,6 +807,13 @@ def _mask_parent_entries(libc, parent: str, hidden: set,
         if not moved:
             hidden_log("move %s over %s failed errno=%s"
                        % (scratch, parent, ctypes.get_errno()))
+        elif original:
+            try:
+                os.chmod(parent, original[0])
+                os.chown(parent, original[1], original[2])
+                os.utime(parent, ns=(original[3], original[4]))
+            except OSError as exc:
+                hidden_log("mask stamp %s failed: %r" % (parent, exc))
     except Exception as exc:
         hidden_log("mask parent %s failed: %r" % (parent, exc))
     finally:
@@ -801,6 +825,75 @@ def _mask_parent_entries(libc, parent: str, hidden: set,
         # MS_MOVE left an empty directory behind at the old mountpoint.
         _rmdir_quiet(scratch)
     return moved
+
+
+def _populate_session_journal() -> None:
+    """Rebuild a plausible /var/log/journal inside the masked namespace.
+
+    The real store is hidden because its file names carry the machine
+    namespace; an ENOENT directory next to `journalctl --list-boots` listing a
+    previous boot is a harness tell.  The masked view gets the same layout the
+    boot table implies -- current ``system.journal`` plus the rotated file named
+    after the previous boot id -- so `ls -la /var/log/journal/<machine-id>/`
+    and the boot ids in `journalctl --list-boots` agree.
+    """
+    try:
+        commands_mod = __import__("commands")
+        machine, parts = commands_mod.journal_storage_spec(None)
+    except Exception as exc:
+        hidden_log("journal tree spec failed: %r" % (exc,))
+        return
+    root = "/var/log/journal"
+    if not os.path.isdir(root):
+        try:
+            os.makedirs(root, mode=0o2755)
+        except OSError as exc:
+            hidden_log("journal tree root failed: %r" % (exc,))
+            return
+    directory = os.path.join(root, machine)
+    try:
+        os.makedirs(directory, mode=0o2755, exist_ok=True)
+    except OSError as exc:
+        hidden_log("journal tree dir failed: %r" % (exc,))
+        return
+    for name, size, stamp in parts:
+        path = os.path.join(directory, name)
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_WRONLY, 0o640)
+            try:
+                # Native journal signature, then a sparse body: tmpfs holes cost
+                # nothing until they are written.
+                os.write(fd, b"LPKSHHRH" + b"\0" * 16)
+                os.ftruncate(fd, size)
+                os.utime(fd, ns=(int(stamp) * 10 ** 9, int(stamp) * 10 ** 9))
+            finally:
+                os.close(fd)
+            os.chmod(path, 0o640)
+            try:
+                import grp
+
+                os.chown(path, 0, grp.getgrnam("systemd-journal").gr_gid)
+            except (KeyError, OSError):
+                pass
+        except OSError as exc:
+            hidden_log("journal tree file %s failed: %r" % (name, exc))
+    newest = int(parts[-1][2]) if parts else int(time.time())
+    for target in (root, directory):
+        try:
+            os.chmod(target, 0o2755)
+            os.utime(target, ns=(newest * 10 ** 9, newest * 10 ** 9))
+        except OSError:
+            pass
+    # Creating the store touched the masked /var/log view; put the authored
+    # directory stamp back so `ls -la /var/log` still reads as the story date.
+    try:
+        lore_mod = __import__("lore_texts")
+        state_mod = __import__("state")
+        stamp = lore_mod.DIRS["/var/log"]["mtime"]
+        moment = int(state_mod.story_epoch(stamp, "%Y-%m-%d %H:%M:%S"))
+        os.utime("/var/log", (moment, moment))
+    except Exception as exc:
+        hidden_log("journal tree /var/log stamp failed: %r" % (exc,))
 
 
 def _mask_single_dir(libc, path: str) -> None:
@@ -878,6 +971,7 @@ _VIEW = {
     "writers": {},          # shadow files rewritten on every refresh
     "kernel_log": "",
     "story_bins": (),
+    "loadavg_render": None,
     "last_refresh": 0.0,
 }
 
@@ -1098,13 +1192,24 @@ def _vendor_binary_note(path: str, comm: str) -> bytes:
     return b"\x00" + b"\x00".join(line.encode("utf-8") for line in lines) + b"\x00"
 
 
+# A real vendor ELF can be large (the 6 MiB weight-assimilation worker, the
+# 8 MiB chamber worker); only a *damaged* image needs the placeholder shadow.
+_VENDOR_ELF_MIN = 8192
+_VENDOR_ELF_MAX = 64 * 1024 * 1024
+
+
 def _story_binary_needs_replacement(path: str) -> bool:
-    """True when the image shipped a probe (0-byte / padded / non-ELF) there."""
+    """True when the image shipped a probe (0-byte / padded / non-ELF) there.
+
+    Size alone is not a verdict: an earlier build replaced every binary above
+    4 MiB with an 8 KiB placeholder, so `/opt/cortex/bin/assimilate_llm_weights`
+    (6.3 MB, a real ELF) was shadowed by a stub.  The test is the file format.
+    """
     try:
         size = os.path.getsize(path)
     except OSError:
         return True
-    if size < 8192 or size > 4 * 1024 * 1024:
+    if size < _VENDOR_ELF_MIN or size > _VENDOR_ELF_MAX:
         return True
     try:
         with open(path, "rb") as stream:
@@ -1179,7 +1284,32 @@ def kernel_log_bind_sources() -> list:
     return pairs
 
 
-def _bind_file(libc, source: str, target: str, create: bool = False) -> bool:
+def _mountpoint_stamp_ns(parent: str) -> int:
+    """The story clock a created mountpoint must carry.
+
+    Creating the empty file a bind mount needs updates both the file and its
+    directory to "now".  Both are restored: a vendor binary in /opt/cortex/bin
+    is dated with the image (2025-08-30), never with the operator's login.
+    """
+    try:
+        for name in sorted(os.listdir(parent)):
+            candidate = os.path.join(parent, name)
+            try:
+                info = os.stat(candidate)
+            except OSError:
+                continue
+            if stat.S_ISREG(info.st_mode) and info.st_size > 0:
+                return int(info.st_mtime)
+    except OSError:
+        pass
+    try:
+        return int(os.stat(parent).st_mtime) - 300
+    except OSError:
+        return int(time.time()) - 86400 * 60
+
+
+def _bind_file(libc, source: str, target: str, create: bool = False,
+               stamp_ns: int = 0) -> bool:
     """Bind one shadow file over one session-visible path."""
     if not source or not target or not os.path.exists(source):
         return False
@@ -1189,8 +1319,12 @@ def _bind_file(libc, source: str, target: str, create: bool = False) -> bool:
                 return False
             try:
                 os.makedirs(os.path.dirname(target), mode=0o755, exist_ok=True)
-                with open(target, "ab"):
-                    pass
+                fd = os.open(target, os.O_CREAT | os.O_WRONLY, 0o755)
+                try:
+                    if stamp_ns:
+                        os.utime(fd, ns=(stamp_ns, stamp_ns))
+                finally:
+                    os.close(fd)
             except OSError:
                 return False
         return libc.mount(source.encode(), target.encode(), None, MS_BIND, None) == 0
@@ -1392,12 +1526,15 @@ def session_view_binds() -> tuple:
     /proc/uptime and /proc/stat are deliberately absent: the kernel's btime is
     authoritative (see session_view_clock), so every real process' starttime,
     ps lstart/START, journalctl --list-boots and last reboot agree by
-    construction.  Only the container-shaped entries are replaced.
+    construction.  /proc/loadavg *is* bound: its load averages and running/total
+    stay the kernel's, but its fifth field (last allocated pid) can sit below a
+    pinned story PID on this image, so the view publishes max-live-pid + a few.
     """
     return (("pid1_stat", "/proc/1/stat"),
             ("pid1_cgroup", "/proc/1/cgroup"),
             ("pid1_environ", "/proc/1/environ"),
-            ("container", "/run/systemd/container"))
+            ("container", "/run/systemd/container"),
+            ("loadavg", "/proc/loadavg"))
 
 
 def _apply_view_binds(libc, command: str = "") -> None:
@@ -1422,8 +1559,25 @@ def _apply_view_binds(libc, command: str = "") -> None:
     if not real_shell() and _VIEW.get("kernel_log"):
         _bind_file(libc, source("dmesg"), "/var/log/dmesg")
         _bind_file(libc, source("kern_log"), "/var/log/kern.log")
+    stamped_dirs = {}
     for target, path in _VIEW.get("story_bins") or ():
-        _bind_file(libc, path, target, create=True)
+        parent = os.path.dirname(target)
+        if parent not in stamped_dirs:
+            try:
+                info = os.stat(parent)
+                stamped_dirs[parent] = (info.st_atime_ns, info.st_mtime_ns)
+            except OSError:
+                stamped_dirs[parent] = None
+        _bind_file(libc, path, target, create=True,
+                   stamp_ns=_mountpoint_stamp_ns(parent))
+    # Creating the mountpoints moved their directories to "now".
+    for parent, stamp in stamped_dirs.items():
+        if not stamp:
+            continue
+        try:
+            os.utime(parent, ns=stamp)
+        except OSError:
+            pass
     for spec in story_daemon_specs():
         try:
             if not _shadow_pid_directory(libc, spec["pid"], spec, -1):
@@ -1458,6 +1612,14 @@ def _initial_view_files(state=None, commands_mod=None) -> None:
     if kernel_text:
         _write_shadow("dmesg", (kernel_text.rstrip("\n") + "\n").encode("utf-8", "replace"))
         _write_shadow("kern_log", render_kernel_log(kernel_text, boot, host))
+    # /proc/loadavg shadow: the kernel's own numbers with a last-pid the live
+    # process table explains (never below the largest PID on the node).
+    renderer = getattr(commands_mod, "render_loadavg_text", None)
+    if callable(renderer):
+        _VIEW["loadavg_render"] = renderer
+        real = _pread_text(_VIEW["readers"].get("loadavg"))
+        if real:
+            _write_shadow("loadavg", renderer(real), 0o444)
 
     bins = []
     for index, spec in enumerate(story_daemon_specs()):
@@ -1527,6 +1689,11 @@ def install_session_view(state=None, commands_mod=None, command=None) -> bool:
     except OSError as exc:
         hidden_log("session view open /proc/1/stat failed: %r" % (exc,))
         return False
+    try:
+        # Keep the kernel's file open past the masking (see session_view_binds).
+        _VIEW["readers"]["loadavg"] = os.open("/proc/loadavg", os.O_RDONLY)
+    except OSError as exc:
+        hidden_log("session view open /proc/loadavg failed: %r" % (exc,))
     _initial_view_files(state, commands_mod)
     refresh_session_view(force=True)
     try:
@@ -1561,6 +1728,10 @@ def refresh_session_view(force: bool = False) -> None:
         if pid1_text:
             _write_shadow("pid1_stat",
                           render_pid_stat(pid1_text, "", int(_VIEW["pid1_ticks"])))
+        renderer = _VIEW.get("loadavg_render")
+        loadavg_text = _pread_text(_VIEW["readers"].get("loadavg"))
+        if callable(renderer) and loadavg_text:
+            _write_shadow("loadavg", renderer(loadavg_text), 0o444)
     except Exception as exc:  # a refresh must never break a session
         hidden_log("session view refresh failed: %r" % (exc,))
 
@@ -1916,6 +2087,9 @@ class Runtime:
         self._bootstrapped = False
         self._evaluated = False
         self.env_cache = None
+        # Command counter when this login shell started.  The capture transcript
+        # is flushed with the frames after it when the shell exits.
+        self.session_mark = 0
 
     # -- world -----------------------------------------------------------
     def ensure_world(self) -> None:
@@ -4033,6 +4207,7 @@ class InteractiveSession:
         self.pid = -1
 
     def _cleanup(self) -> None:
+        flush_session_capture(self.runtime)
         try:
             session_utmp_logout()
         except Exception as exc:
@@ -4332,7 +4507,29 @@ def flush_pending(runtime: Runtime) -> None:
         hidden_log("flush_pending failed: %r" % (exc,))
 
 
+def flush_session_capture(runtime) -> None:
+    """A login shell ended: append its frames to the passive capture transcript.
+
+    Nothing is written while the shell is open, so an operator can never `head`
+    this file and read the command line they just typed.
+    """
+    try:
+        world = getattr(runtime, "world", None)
+        if world is None:
+            return
+        world.close_session_log(runtime.state, getattr(runtime, "session_mark", 0))
+    except Exception as exc:
+        hidden_log("capture flush failed: %r" % (exc,))
+
+
 def run_exec(runtime: Runtime, line: str) -> int:
+    try:
+        return _run_exec_inner(runtime, line)
+    finally:
+        flush_session_capture(runtime)
+
+
+def _run_exec_inner(runtime: Runtime, line: str) -> int:
     state = runtime.state
     runtime.ensure_world()
     runtime.refresh_shared()
@@ -4453,6 +4650,10 @@ def prepare_runtime():
     except Exception as exc:
         hidden_log("closed admission roll-forward failed: %r" % (exc,))
     runtime = Runtime(state, parser_mod, commands_mod, lore_mod, world_mod)
+    try:
+        runtime.session_mark = int(state.cmd_count or 0)
+    except Exception:
+        runtime.session_mark = 0
     return runtime
 
 
@@ -4487,6 +4688,16 @@ def main() -> int:
         install_session_view(runtime.state, runtime.commands, command)
     except Exception as exc:
         hidden_log("session view failed: %r" % (exc,))
+    # One SSH login is one account entry: auth.log, journalctl -u ssh, w/last
+    # and btmp must all name the same sshd child, address and second.  Real PIDs
+    # and the kernel's starttime come from /proc, so nothing here can invent a
+    # process the operator cannot find with `ps -p`.
+    try:
+        runtime.ensure_world()
+        if getattr(runtime, "world", None) is not None:
+            runtime.world.record_login(runtime.state)
+    except Exception as exc:
+        hidden_log("login accounting failed: %r" % (exc,))
     try:
         if command is not None:
             # sshd runs the SFTP subsystem and legacy SCP through the login
