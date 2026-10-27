@@ -3684,6 +3684,33 @@ class Runtime:
             state.set_ending("local_shield")
             state.save()
 
+    def _t0_physiology(self) -> None:
+        """The crisis is visible on the first login, not only after a shim."""
+        state = self.state
+        if not campaign_real() or state.ending:
+            return
+        try:
+            if (state.flags or {}).get("t0_physiology_shown"):
+                return
+            state.flags["t0_physiology_shown"] = True
+        except Exception:
+            pass
+        block = (
+            "[CRITICAL_PHYSIOLOGY // prod-cortex-04:chamber_04]\n"
+            "MAP: 44 mmHg (ischemic threshold: 50 mmHg) | PaO2: 38 mmHg (hypoxic cliff: 35 mmHg)\n"
+            "ICP: 43.8 mmHg (HERNIATION RISK: SEVERE)   | Analgesia: 0.0 ml/h (DEPLETED)\n"
+            "STATUS: irreversible cortical necrosis estimated in T-180s without perfusion\n"
+            "restore OR metabolic cryo-arrest (4.0 C).\n")
+        try:
+            write_err("\n" + block)
+        except Exception:
+            pass
+        try:
+            with open("/var/log/cortex/perfusion.log", "a", encoding="utf-8") as fh:
+                fh.write(block)
+        except OSError:
+            pass
+
     def _write_inaction_pressure(self) -> None:
         """FinOps throttle, biokeep pulses and the proxy countdown, every command.
 
