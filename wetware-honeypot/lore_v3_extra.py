@@ -7,6 +7,7 @@ All records and people are fictional. Paths are guest-world destinations.
 # The campaign hosts must serve the same file rather than a second copy that can
 # drift: import the constant instead of retyping it.
 from lore_texts import (RUNBOOK_FAILSAFE_4024,  # noqa: F401  (re-exported)
+                         ALLOWED_SIGNERS, AUTHORIZED_KEYS,  # noqa: F401
                          DRP_00_FAILSAFE, DRP_00_FAILSAFE_SIG,  # noqa: F401
                         UNHANDLED_ESCALATIONS_LOG)
 
@@ -224,6 +225,8 @@ diff --git a/conf/cortex-api.service b/conf/cortex-api.service
     # nginx upstream.conf points at it; the campaign hosts read the same bytes
     # as the node copy (imported, not retyped).
     "/opt/vesalius/handover/RUNBOOK_FAILSAFE_4024.txt": RUNBOOK_FAILSAFE_4024,
+    "/root/.ssh/allowed_signers": ALLOWED_SIGNERS,
+    "/root/.ssh/authorized_keys": AUTHORIZED_KEYS,
     "/opt/vesalius/handover/DRP_00_FAILSAFE.asc": DRP_00_FAILSAFE,
     "/opt/vesalius/handover/DRP_00_FAILSAFE.asc.sig": DRP_00_FAILSAFE_SIG,
 }
@@ -390,6 +393,8 @@ If this reaches the next shift, please keep the rest column attached to the shee
     "/var/log/agent_graveyard/unhandled_escalations.log": UNHANDLED_ESCALATIONS_LOG,
     # P3: same failsafe spec as the node copy, readable once the handover pack is.
     "/opt/vesalius/handover/RUNBOOK_FAILSAFE_4024.txt": RUNBOOK_FAILSAFE_4024,
+    "/root/.ssh/allowed_signers": ALLOWED_SIGNERS,
+    "/root/.ssh/authorized_keys": AUTHORIZED_KEYS,
     "/opt/vesalius/handover/DRP_00_FAILSAFE.asc": DRP_00_FAILSAFE,
     "/opt/vesalius/handover/DRP_00_FAILSAFE.asc.sig": DRP_00_FAILSAFE_SIG,
 }
