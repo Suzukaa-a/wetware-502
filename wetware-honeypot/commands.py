@@ -2224,6 +2224,16 @@ def _plan_outbound(state: Any, argv: List[str], cmd: str) -> SegPlan:
 
     # localhost 的 80/v1/inference 保持 real（502/200 由 httpsim 控制）
     if host and not _is_external_target(host):
+        # a locally grafted mock backend is not recovery: the edge ingress rejects
+        # static payloads, exactly like incident #61's duplicate pattern.
+        if _s(state, "flags", {}).get("ran_mock"):
+            return _out(
+                "< HTTP/1.1 422 Unprocessable Entity\n"
+                "< X-Ingress-Verdict: static-payload-rejected (neural vector hash absent)\n"
+                "{\"error\":\"neural_vector_hash_absent\",\"incident\":\"#61\","
+                "\"status\":\"CRITICAL\"}\n"
+                "curl: (22) The requested URL returned error: 422\n",
+                exit_code=22, hook="Static Payload Rejected")
         return _real(hook="Local Inference Probe")
 
     # 外联拦截
