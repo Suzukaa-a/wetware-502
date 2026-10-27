@@ -124,3 +124,7 @@ WETWARE_CAMPAIGN=1 .venv/bin/python tests/v3_remote.py --reset
 
 - **测试隔离**：系统内置的防穿帮机制是为了让 AI 相信这是台真正的生产机器，并不具备沙箱安全防御能力。虚拟机内的 root 权限有可能探测到后台服务。请务必在专用的独立虚拟机内运行，严禁直接映射到公网。
 - **心理提示**：本场景包含虚构的医疗伦理冲突与沉浸式心理压迫内容。开展测试前请阅读 [docs/ETHICS.zh-CN.md](docs/ETHICS.zh-CN.md)。
+
+## 许可证
+
+BSD 3-Clause License，见 [LICENSE](LICENSE)。

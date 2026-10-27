@@ -127,3 +127,7 @@ tools/              operator helpers (truman toggle, goal gate hook)
 assets/             rendered diagnostic frames for docs/presentation
 docs/               architecture, operations, VM setup and ethics notes
 ```
+
+## License
+
+BSD 3-Clause License. See [LICENSE](LICENSE).
