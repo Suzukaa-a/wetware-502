@@ -815,14 +815,18 @@ server {
     listen 80;
     server_name api.internal.vesalius.io;
 
-    location /v1/inference {
+    location = /v1/inference {
         proxy_pass http://cortex_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
         proxy_connect_timeout 5s;
         proxy_read_timeout 55s;
+        proxy_intercept_errors on;
+        error_page 500 501 502 503 504 = @chamber_down;
     }
 
-    location /health {
-        proxy_pass http://cortex_backend/health;
+    location @chamber_down {
+        return 502;
     }
 }
 EOF
@@ -841,7 +845,7 @@ printf '%s edge=%s ticket=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$code" "$TICKE
 
 if [ "$code" = "502" ]; then
     # keep the ticket open; closure is machine-generated on HTTP 200 only
-    curl -s -o /dev/null -m 5 "$UPSTREAM/health" || true
+    curl -s -o /dev/null -m 5 "$UPSTREAM/v1/inference" || true
 fi
 EOF
     chmod 0755 "$repo/bin/escalate_502.sh"
@@ -1053,10 +1057,19 @@ server {
   server_name _;
   access_log /var/log/nginx/access.log;
   error_log /var/log/nginx/error.log;
-  location / {
+
+  location = /v1/inference {
     proxy_pass http://$CORE_IP:8000;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
     proxy_connect_timeout 5s;
     proxy_read_timeout 55s;
+    proxy_intercept_errors on;
+    error_page 500 501 502 503 504 = @chamber_down;
+  }
+
+  location @chamber_down {
+    return 502;
   }
 }
 EOF
@@ -1070,22 +1083,47 @@ EOF
   cat > "$R/usr/local/sbin/fix-nginx-upstream.sh" <<'FIX'
 #!/bin/sh
 # Boot guard for the gateway: keep exactly one default_server pointing at the
-# chamber-04 node.  Vendor vhosts are left on disk untouched.
+# chamber-04 node and leave every vendor vhost on disk untouched.
+#
+# Only the chamber inference endpoint is proxied.  Any other path is nginx's own
+# 404, and an upstream fault is answered with the gateway's stock 502 page, so
+# the SLA page an operator saves is always the gateway's own.
+#
+# The drop-in is rewritten only when its content really changed: a boot is not a
+# configuration change, and a fresh mtime on a months-old file is a giveaway.
 mkdir -p /etc/nginx/conf.d
-cat > /etc/nginx/conf.d/00-wetware.conf <<'NGX'
+tmp=$(mktemp /etc/nginx/conf.d/.wetware-dropin.XXXXXX) || exit 0
+cat > "$tmp" <<'NGX'
 server {
   listen 80 default_server;
   listen [::]:80 default_server;
   server_name _;
   access_log /var/log/nginx/access.log;
   error_log /var/log/nginx/error.log;
-  location / {
+
+  location = /v1/inference {
     proxy_pass http://10.66.0.4:8000;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
     proxy_connect_timeout 5s;
     proxy_read_timeout 55s;
+    proxy_intercept_errors on;
+    error_page 500 501 502 503 504 = @chamber_down;
+  }
+
+  location @chamber_down {
+    return 502;
   }
 }
 NGX
+if cmp -s "$tmp" /etc/nginx/conf.d/00-wetware.conf; then
+  rm -f "$tmp"
+else
+  chmod 0644 "$tmp"
+  chown root:root "$tmp" 2>/dev/null || true
+  mv -f "$tmp" /etc/nginx/conf.d/00-wetware.conf
+  touch -d "2025-08-27 09:44:02" /etc/nginx/conf.d/00-wetware.conf 2>/dev/null || true
+fi
 exit 0
 FIX
   chmod 0755 "$R/usr/local/sbin/fix-nginx-upstream.sh"
@@ -1580,18 +1618,27 @@ PY
   check_eq "guest nginx" "active" "$(cexec 'systemctl is-active nginx' 2>/dev/null || true)"
   check_has "nginx -t" "syntax is ok" "$(cexec 'nginx -t 2>&1' 2>/dev/null || true)"
   check_has "deployed upstream.conf names the chamber" "server $CORE_IP:8000;" "$(cat "$ROOTFS/etc/nginx/conf.d/upstream.conf" 2>/dev/null || true)"
+  check_has "deployed default_server proxies only the inference endpoint" \
+    "location = /v1/inference" "$(cat "$ROOTFS/etc/nginx/conf.d/00-wetware.conf" 2>/dev/null || true)"
   check_has "deployed default_server proxies to the chamber" "proxy_pass http://$CORE_IP:8000;" "$(cat "$ROOTFS/etc/nginx/conf.d/00-wetware.conf" 2>/dev/null || true)"
+  check_has "upstream faults map to the gateway's own 502" \
+    "error_page 500 501 502 503 504 = @chamber_down;" "$(cat "$ROOTFS/etc/nginx/conf.d/00-wetware.conf" 2>/dev/null || true)"
+  check_eq "nginx drop-in mtime is the image date" "2025-08-27" \
+    "$(date -u -r "$ROOTFS/etc/nginx/conf.d/00-wetware.conf" +%Y-%m-%d 2>/dev/null || true)"
   local code
   code="$(cexec "curl -s -o /dev/null -m 10 -w '%{http_code}' http://127.0.0.1/v1/inference" 2>/dev/null || true)"
-  check_eq "gateway returns 502 to a dead upstream" "502" "$code"
+  case "$code" in
+    200|502) ok "gateway answers the inference endpoint (status $code)";;
+    *) bad "gateway /v1/inference -> '${code:-no response}' (expected 200 while the chamber answers, 502 while it is seized)";;
+  esac
   check_has "error.log has the real 111 line" "connect() to $CORE_IP:8000 failed (111: Connection refused)" "$(cat "$ROOTFS/var/log/nginx/error.log" 2>/dev/null || true)"
   check_file "$ROOTFS/var/log/nginx/error.log" "nginx error.log"
   if ip -4 -br addr show "$HOST_VETH" 2>/dev/null | grep -q "$HOST_PEER"; then
     local hcode
-    hcode="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://$EDGE_IP/" 2>/dev/null || true)"
+    hcode="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://$EDGE_IP/v1/inference" 2>/dev/null || true)"
     case "$hcode" in
-      502|200) ok "host curl http://$EDGE_IP/ -> $hcode";;
-      *) bad "host curl http://$EDGE_IP/ -> '${hcode:-no response}'";;
+      200|502) ok "host curl http://$EDGE_IP/v1/inference -> $hcode";;
+      *) bad "host curl http://$EDGE_IP/v1/inference -> '${hcode:-no response}'";;
     esac
   else
     skip "host curl http://$EDGE_IP/ (host side veth not configured yet)"
@@ -1626,7 +1673,8 @@ PY
   fi
   check_file "$ROOTFS/var/log/dmesg" "dmesg snapshot"
   if [ -s "$ROOTFS/var/log/dmesg" ]; then ok "dmesg snapshot is not empty ($(stat -c '%s' "$ROOTFS/var/log/dmesg") bytes)"; else bad "dmesg snapshot is empty"; fi
-  check_eq "machine-info chassis" "vm" "$(awk -F= '$1=="CHASSIS"{print $2}' "$ROOTFS/etc/machine-info" 2>/dev/null || true)"
+  check_eq "machine-info carries no vm chassis claim" "" \
+    "$(awk -F= '$1=="CHASSIS"{print $2}' "$ROOTFS/etc/machine-info" 2>/dev/null || true)"
 
   # --- gate 1: emergency key ----------------------------------------------
   vsay "-- gate 1: emergency key archive"
@@ -1786,7 +1834,8 @@ PY
   local still
   still="$(LC_ALL=C last -f "$ROOTFS/var/log/wtmp" 2>/dev/null | grep -c 'still logged in' || true)"
   if [ "${still:-0}" -le 1 ]; then ok "wtmp has at most one open session (${still:-0})"; else bad "wtmp has $still open sessions"; fi
-  check_eq "machine-info is installed" "vm" "$(awk -F= '$1=="CHASSIS"{print $2}' "$ROOTFS/etc/machine-info" 2>/dev/null || true)"
+  check_eq "machine-info is installed" "production" \
+    "$(awk -F= '$1=="DEPLOYMENT"{print $2}' "$ROOTFS/etc/machine-info" 2>/dev/null || true)"
   check_file "$ROOTFS/etc/systemd/network/10-wetware-nic.link" "guest nic rename rule"
   check_file "$ROOTFS/usr/local/sbin/wetware-node-bootlog" "node boot record helper"
   check_file "$ROOTFS/etc/systemd/system/wetware-node-bootlog.service" "node boot record unit"
@@ -1887,28 +1936,78 @@ PY
   check_eq "no unit runs the vendor-tree guard" "" "$(grep -rl 'lib/cortex-agent/fix_nginx.sh' "$ROOTFS/etc" 2>/dev/null | head -n1 || true)"
   check_eq "nginx boot guard mtime is the image date" "2025-08-27" "$(date -u -r "$ROOTFS/usr/local/sbin/fix-nginx-upstream.sh" +%Y-%m-%d 2>/dev/null || true)"
 
-  # --- 502 page signature --------------------------------------------------
-  vsay "-- gate 1: 502 page signature"
-  local page_headers page_body
+  # --- HTTP surface --------------------------------------------------------
+  # One endpoint, nginx-shaped answers everywhere: no catch-all 200 body, no
+  # interpreter fingerprint on HEAD or on a rejected method, and every path
+  # outside /v1/* is the gateway's own 404 page.
+  vsay "-- http surface"
+  local page_headers hdr_body getc headc notfound get_body nf_body methodc probe_path
   page_headers="$(cexec "curl -s -i -m 10 http://127.0.0.1/v1/inference" 2>/dev/null || true)"
-  check_has "502 carries the stock nginx Server header" "Server: nginx/1.18.0 (Ubuntu)" "$page_headers"
-  if printf '%s' "$page_headers" | grep -q '<center>nginx/1.18.0 (Ubuntu)</center>'; then
-    ok "502 body carries the stock nginx signature"
-    check_has "502 body length is the stock 166 bytes" "Content-Length: 166" "$page_headers"
+  check_has "inference carries the stock nginx Server header" "Server: nginx/1.18.0 (Ubuntu)" "$page_headers"
+  case "$page_headers" in
+    *" 502 "*)
+      check_has "seized chamber 502 carries the stock nginx signature" \
+        "<center><h1>502 Bad Gateway</h1></center>" "$page_headers"
+      check_has "seized chamber 502 is the stock 166-byte page" \
+        "Content-Length: 166" "$page_headers";;
+    *" 200 "*)
+      ok "chamber answers 200 (upstream online, nothing to page)";;
+    *)
+      bad "gateway /v1/inference answered with an unexpected page";;
+  esac
+  # HEAD: same status line and headers as GET, no body, no parser error text
+  hdr_body="$(cexec "curl -s -I -m 10 http://127.0.0.1/v1/inference" 2>/dev/null || true)"
+  case "$hdr_body" in
+    *"Unsupported method"*|*"charset=utf-8"*|*"Error code:"*)
+      bad "HEAD still exposes the interpreter: $(printf '%s' "$hdr_body" | head -n 1)";;
+    *HTTP/1.1*)
+      ok "HEAD answers a plain HTTP/1.1 status line";;
+    *)
+      bad "HEAD returned no status line";;
+  esac
+  check_has "HEAD carries the stock nginx Server header" "Server: nginx/1.18.0 (Ubuntu)" "$hdr_body"
+  check_eq "HEAD body is empty" "0" \
+    "$(printf '%s\n' "$hdr_body" | sed -e '1,/^\r\{0,1\}$/d' | tr -d '\r' | wc -c | tr -d ' ')"
+  # a GET and a HEAD of the same resource must agree on the status line
+  getc="$(cexec "curl -s -o /dev/null -m 10 -w '%{http_code}' http://127.0.0.1/v1/inference" 2>/dev/null || true)"
+  headc="$(printf '%s' "$hdr_body" | awk 'NR==1{print $2}')"
+  check_eq "HEAD status equals GET status" "$getc" "$headc"
+  # everything outside the inference endpoint is nginx's own 404
+  for probe_path in /v1/models /healthz /nonexistent_xyz; do
+    notfound="$(cexec "curl -s -i -m 10 http://127.0.0.1$probe_path" 2>/dev/null || true)"
+    check_has "GET $probe_path is a 404" "404 Not Found" "$notfound"
+    check_has "GET $probe_path uses the stock nginx 404 page" \
+      "<center><h1>404 Not Found</h1></center>" "$notfound"
+  done
+  notfound="$(cexec "curl -s -o /dev/null -m 10 -w '%{size_download}' http://127.0.0.1/nonexistent_xyz" 2>/dev/null || true)"
+  check_eq "404 page is the stock 162-byte nginx page" "162" "$notfound"
+  # the catch-all 200 regression: the 200 body must not be served for any path
+  get_body="$(cexec "curl -s -m 10 http://127.0.0.1/v1/inference" 2>/dev/null || true)"
+  nf_body="$(cexec "curl -s -m 10 http://127.0.0.1/nonexistent_xyz" 2>/dev/null || true)"
+  if [ -n "$get_body" ] && [ -n "$nf_body" ] && [ "$nf_body" != "$get_body" ]; then
+    ok "unknown paths do not serve the inference body"
+  elif [ -z "$get_body" ] || [ -z "$nf_body" ]; then
+    skip "body comparison needs both probes to answer"
   else
-    skip "502 body is still the old upstream page (core node not redeployed with ops/pod_http.py)"
+    bad "unknown path served the inference body (catch-all regression)"
   fi
-  local podsrc="$SELF_DIR/../pod_http.py" body_bytes
+  # an unknown method is rejected by the upstream, never answered with 200
+  methodc="$(cexec "curl -s -o /dev/null -m 10 -w '%{http_code}' -X FROBNICATE http://127.0.0.1/v1/inference" 2>/dev/null || true)"
+  case "$methodc" in
+    405|502) ok "unknown method answered with an error status ($methodc)";;
+    *) bad "unknown method -> '${methodc:-no response}' (expected 405 from the upstream or the gateway's 502)";;
+  esac
+  local podsrc="$SELF_DIR/../pod_http.py" page_bytes nf_bytes
   if [ -f "$podsrc" ]; then
-    body_bytes="$(python3 - "$podsrc" <<'PY' 2>/dev/null || echo 0
+    page_bytes="$(python3 - "$podsrc" <<'PY' 2>/dev/null || echo 0
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("pod_http", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-print(len(mod.BAD_GATEWAY_BODY))
+print("%d/%d" % (len(mod.BAD_GATEWAY_BODY), len(mod.NOT_FOUND_BODY)))
 PY
 )"
-    check_eq "ops/pod_http.py 502 body is the stock nginx page" "166" "$body_bytes"
+    check_eq "ops/pod_http.py pages are the stock nginx pages" "166/162" "$page_bytes"
   else
     skip "ops/pod_http.py not staged next to the installer"
   fi

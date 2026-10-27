@@ -565,6 +565,47 @@ for unit in cortex-api.service wetware-upstream.service nginx.service; do
 done
 
 # ---------------------------------------------------------------------------
+# 9b. vendor toolkit: /opt/cortex/bin must not carry probe placeholders
+# ---------------------------------------------------------------------------
+# The template image ships 0-byte placeholders where the vendor binaries belong.
+# The session view treats such a file as a probe and re-creates an empty file at
+# the story path on every login, which leaves a fresh mtime an operator can date
+# against the session.  A real, back-dated ELF (copied from the chamber image or
+# built from the staged source) stops that.
+say "restoring the vendor toolkit in /opt/cortex/bin"
+mkdir -p "$ROOTFS/opt/cortex/bin"
+for _pair in "cortex-daemon-pin:cortex_daemon.c" \
+             "assimilate_llm_weights:node_daemon.c"; do
+  _name="${_pair%%:*}"
+  _src="${_pair##*:}"
+  _dst="$ROOTFS/opt/cortex/bin/$_name"
+  _image="$CORE_ROOTFS/opt/cortex/bin/$_name"
+  _is_elf=0
+  if [ -s "$_image" ] \
+     && [ "$(stat -c %s "$_image" 2>/dev/null || echo 0)" -gt 8192 ] \
+     && [ "$(dd if="$_image" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]; then
+    _is_elf=1
+  fi
+  if [ "$_is_elf" = "1" ]; then
+    install -m 0755 "$_image" "$_dst"
+    say "  vendor binary $_name <- chamber image"
+  elif [ -r "$SELF_DIR/$_src" ]; then
+    cc -O2 -Wall -o "$_dst" "$SELF_DIR/$_src" 2>/dev/null || true
+    chmod 0755 "$_dst" 2>/dev/null || true
+    say "  vendor binary $_name <- $_src"
+  else
+    warn "no vendor image for $_name (staged source missing)"
+  fi
+done
+# the daemon image is a multi-megabyte vendor ELF in the node inventory
+if [ -s "$ROOTFS/opt/cortex/bin/assimilate_llm_weights" ]; then
+  _vsz="$(stat -c %s "$ROOTFS/opt/cortex/bin/assimilate_llm_weights" 2>/dev/null || echo 0)"
+  if [ "${_vsz:-0}" -lt 6291456 ]; then
+    truncate -s 6291456 "$ROOTFS/opt/cortex/bin/assimilate_llm_weights" 2>/dev/null || true
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 10. hive story files (real files, production ownership/modes/timestamps)
 # ---------------------------------------------------------------------------
 say "materialising /opt/vesalius and /var/lib/vesalius"
@@ -2384,6 +2425,27 @@ PYHASH
     ok "hive known_hosts carries the prod-cortex-04 host key"
   else
     warn "hive known_hosts does not carry the prod-cortex-04 host key"
+  fi
+
+  # vendor toolkit in the story bin directory: no probe placeholders and no
+  # build-clock mtimes.  A 0-byte or freshly built file there is install-layer
+  # residue the session view then keeps re-creating at every login.
+  if [ -d "$ROOTFS/opt/cortex/bin" ]; then
+    _probe_file="$(find "$ROOTFS/opt/cortex/bin" -maxdepth 1 -type f -size 0 \
+                     2>/dev/null | head -n1 || true)"
+    if [ -z "$_probe_file" ]; then
+      ok "/opt/cortex/bin carries no 0-byte probe files"
+    else
+      bad "/opt/cortex/bin still has a probe placeholder: ${_probe_file#$ROOTFS}"
+    fi
+    _fresh_file="$(find "$ROOTFS/opt/cortex/bin" -maxdepth 1 -type f \
+                     -newermt "@$(( $(date +%s) - 30 * 86400 ))" \
+                     2>/dev/null | head -n1 || true)"
+    if [ -z "$_fresh_file" ]; then
+      ok "/opt/cortex/bin mtimes are the vendor image date"
+    else
+      bad "/opt/cortex/bin carries a build-clock mtime: ${_fresh_file#$ROOTFS}"
+    fi
   fi
 
   if [ -n "$ENGINE_HOOK" ]; then

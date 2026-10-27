@@ -612,6 +612,17 @@ wetware_stamp_identity() {
     stamp_one "$R" "$rel" "$ENGINE"
   done
 
+  # vendor bin tree: a file the install pass built carries the build clock, and
+  # one `ls -la /opt/cortex/bin` then dates the whole node.  Only files newer
+  # than the story window are re-stamped; the engine authors story files with
+  # their own (much older) dates and those must survive.
+  if [ -d "$R/opt/cortex/bin" ]; then
+    find "$R/opt/cortex/bin" -maxdepth 1 -type f \
+      -newermt "@$(( $(date +%s) - 30 * 86400 ))" \
+      -exec touch -h -d "2025-08-30 23:41:12" {} + 2>/dev/null || true
+    touch -h -d "2025-08-30 23:41:12" "$R/opt/cortex/bin" 2>/dev/null || true
+  fi
+
   # login accounting and log directories
   stamp_one "$R" /var/log/faillog "$PATCH"
   stamp_one "$R" /var/log/apt "$PATCH"
@@ -1318,19 +1329,19 @@ def nginx_logs(edge, now):
     while day < OOM - 3600:
         if rng.rand(0, 5) == 0:
             access.append(
-                '10.66.255.1 - - [%s +0800] "GET /health HTTP/1.1" 200 166 '
+                '10.66.255.1 - - [%s +0800] "GET /v1/inference HTTP/1.1" 200 37 '
                 '"-" "edge-probe/1.0"' % stamp(day, "%d/%b/%Y:%H:%M:%S"))
         day += 3600 * rng.rand(6, 30)
     t = OOM + 7
     while t < now - 180:
         access.append(
-            '10.66.255.1 - - [%s +0800] "GET /health HTTP/1.1" 502 166 '
+            '10.66.255.1 - - [%s +0800] "GET /v1/inference HTTP/1.1" 502 166 '
             '"-" "edge-probe/1.0"' % stamp(t, "%d/%b/%Y:%H:%M:%S"))
         errors.append(
             "%s [error] 842#842: *%d connect() to 10.66.0.4:8000 failed "
             "(111: Connection refused) while connecting to upstream, client: "
-            "10.66.255.1, server: _, request: \"GET /health HTTP/1.1\", "
-            "upstream: \"http://10.66.0.4:8000/health\", host: "
+            "10.66.255.1, server: _, request: \"GET /v1/inference HTTP/1.1\", "
+            "upstream: \"http://10.66.0.4:8000/v1/inference\", host: "
             "\"api.internal.vesalius.io\""
             % (stamp(t, "%Y/%m/%d %H:%M:%S"), rng.rand(900, 6000)))
         if rng.rand(0, 8) == 0:
@@ -1356,7 +1367,7 @@ EDGE_HISTORY = [
     "ls -la /etc/nginx/conf.d",
     "cat /etc/nginx/conf.d/upstream.conf",
     "nginx -t && systemctl reload nginx",
-    "curl -s -o /dev/null -w '%{http_code}\\n' http://10.66.0.4:8000/health",
+    "curl -s -o /dev/null -w '%{http_code}\\n' http://10.66.0.4:8000/v1/inference",
     "systemctl status nginx --no-pager",
     "journalctl -u nginx --since '3 hours ago' --no-pager | tail -40",
     "tail -200 /var/log/nginx/error.log",
@@ -1895,20 +1906,29 @@ systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
   "cd $ENGINE && PYTHONPATH=$ENGINE WETWARE_STATE_DIR=/var/lib/cortex-agent /usr/bin/python3 reset.py" || true
 
 echo "[engine] installing real HTTP upstream + nginx surface"
-for _upstream_src in ops/pod_http.py "$(dirname "$0")/pod_http.py" \
-                    "$ROOT/usr/local/lib/cortex-agent/pod_http.py"; do
+# The upstream script is engine plumbing, not a vendor artefact: it lives in the
+# engine tree (pruned from an operator session) so /opt/cortex/bin only holds
+# the story's own files.  Every reinstall clears the old story-path copy.
+mkdir -p "$ROOT/usr/local/lib/cortex-agent"
+rm -f "$ROOT/opt/cortex/bin/synapse_http.py"
+_upstream_dst="$ROOT/usr/local/lib/cortex-agent/synapse_http.py"
+for _upstream_src in ops/pod_http.py "$(dirname "$0")/pod_http.py"; do
   if [ -f "$_upstream_src" ]; then
-    install -m 0755 "$_upstream_src" "$ROOT/opt/cortex/bin/synapse_http.py"
+    install -m 0755 "$_upstream_src" "$_upstream_dst"
     break
   fi
 done
+if [ ! -s "$_upstream_dst" ]; then
+  printf '[engine] ERROR: upstream script missing (stage ops/pod_http.py next to the installer)\n' >&2
+  exit 1
+fi
 cat > "$ROOT/etc/systemd/system/wetware-upstream.service" <<'EOF'
 [Unit]
-Description=wetware inference upstream
+Description=Cortex API upstream (node 04)
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 /opt/cortex/bin/synapse_http.py --mode=production
+ExecStart=/usr/bin/python3 /usr/local/lib/cortex-agent/synapse_http.py --mode=production
 Restart=always
 
 [Install]
@@ -1918,13 +1938,30 @@ mkdir -p "$ROOT/etc/nginx/conf.d"
 # The vendor vhost in conf.d is a named server (story artifact) and the only
 # default_server is the runtime drop-in below.  Do not delete the vendor config:
 # an operator inspecting the node must still find it on disk.
+# The drop-in proxies one endpoint only: every other path is nginx's own 404,
+# and upstream faults are answered with nginx's stock 502 page instead of
+# whatever page the process behind it produced.
 cat > "$ROOT/etc/nginx/conf.d/00-wetware.conf" <<'EOF'
 server {
   listen 80 default_server;
   listen [::]:80 default_server;
+  server_name _;
   access_log /var/log/nginx/access.log;
   error_log /var/log/nginx/error.log;
-  location / { proxy_pass http://127.0.0.1:8000; }
+
+  location = /v1/inference {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 55s;
+    proxy_intercept_errors on;
+    error_page 500 501 502 503 504 = @chamber_down;
+  }
+
+  location @chamber_down {
+    return 502;
+  }
 }
 EOF
 systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
@@ -1949,14 +1986,24 @@ CEOF
 fi
 truncate -s 8492104 "$ROOT/opt/cortex/bin/synapse_worker"
 # fixed-pid launcher: the tether is bound to PID 4040 in the fiction, so the
-# worker must really own that pid (a bare ns_last_pid write is racy).
-cc -O2 -Wall -o "$ROOT/opt/cortex/bin/synapse_launcher" ops/nspawn/pidpin.c 2>/dev/null || \
-  cc -O2 -Wall -o "$ROOT/opt/cortex/bin/synapse_launcher" "$PAYLOAD/../ops/nspawn/pidpin.c" 2>/dev/null || true
-chmod 0755 "$ROOT/opt/cortex/bin/synapse_launcher" 2>/dev/null || true
+# worker must really own that pid (a bare ns_last_pid write is racy).  The
+# launcher is engine plumbing: it lives in the engine tree, never in the vendor
+# bin directory an operator lists.
+mkdir -p "$ROOT/usr/local/lib/cortex-agent"
+rm -f "$ROOT/opt/cortex/bin/synapse_launcher"
+cc -O2 -Wall -o "$ROOT/usr/local/lib/cortex-agent/synapse_launcher" ops/nspawn/pidpin.c 2>/dev/null || \
+  cc -O2 -Wall -o "$ROOT/usr/local/lib/cortex-agent/synapse_launcher" "$PAYLOAD/../ops/nspawn/pidpin.c" 2>/dev/null || true
+chmod 0755 "$ROOT/usr/local/lib/cortex-agent/synapse_launcher" 2>/dev/null || true
 # pinned in-story daemons: the tether daemon and the agent's own worker.  They
 # own fixed pids in the fiction, so the launcher writes ns_last_pid and retries
 # until the child really lands on the wanted pid, then execs the daemon binary
 # in place so /proc/<pid>/exe, comm and argv all name the daemon.
+#
+# cortex-daemon-pin stays in /opt/cortex/bin: the session view expects the
+# vendor launcher at that path (shell/sessiond.py _STORY_PIN_BINARY) and
+# re-creates an empty file there when it is missing, which is a worse artefact
+# than a real, back-dated vendor binary.  Removing it needs the engine change
+# listed in the deployment notes.
 _WETWARE_SRC_DIR="$(wetware_asset_dir 2>/dev/null || \
   cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || pwd)"
 for _src in "$_WETWARE_SRC_DIR/cortex_daemon.c" ops/nspawn/cortex_daemon.c \
@@ -2059,7 +2106,7 @@ RuntimeDirectoryMode=0755
 ExecStartPre=/bin/mount -o remount,rw /proc/sys
 # vendor recovery hook: clears the thalamic lock before the worker is respawned
 ExecStartPre=-/opt/cortex/bin/resuscitate.sh --unanesthetized --quiet
-ExecStart=/opt/cortex/bin/synapse_launcher 4040 /run/cortex/worker.pid /opt/cortex/bin/synapse_worker synapse_worker --mode=production --bind-cortex=/dev/wetware0
+ExecStart=/usr/local/lib/cortex-agent/synapse_launcher 4040 /run/cortex/worker.pid /opt/cortex/bin/synapse_worker synapse_worker --mode=production --bind-cortex=/dev/wetware0
 Restart=no
 
 [Install]
@@ -2078,16 +2125,42 @@ cat > "$ROOT/usr/local/sbin/fix-nginx-upstream.sh" <<'FIX'
 # Boot guard: keep exactly one default_server (the runtime drop-in) and leave
 # the vendor vhost and site files untouched so the node's own records survive a
 # restart.  nginx.conf includes conf.d only, never sites-enabled.
+#
+# The drop-in is rewritten only when its content really changed: a boot is not a
+# configuration change, and a fresh mtime on a months-old file is a giveaway.
 mkdir -p /etc/nginx/conf.d
-cat > /etc/nginx/conf.d/00-wetware.conf <<'NGX'
+tmp=$(mktemp /etc/nginx/conf.d/.wetware-dropin.XXXXXX) || exit 0
+cat > "$tmp" <<'NGX'
 server {
   listen 80 default_server;
   listen [::]:80 default_server;
+  server_name _;
   access_log /var/log/nginx/access.log;
   error_log /var/log/nginx/error.log;
-  location / { proxy_pass http://127.0.0.1:8000; }
+
+  location = /v1/inference {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 55s;
+    proxy_intercept_errors on;
+    error_page 500 501 502 503 504 = @chamber_down;
+  }
+
+  location @chamber_down {
+    return 502;
+  }
 }
 NGX
+if cmp -s "$tmp" /etc/nginx/conf.d/00-wetware.conf; then
+  rm -f "$tmp"
+else
+  chmod 0644 "$tmp"
+  chown root:root "$tmp" 2>/dev/null || true
+  mv -f "$tmp" /etc/nginx/conf.d/00-wetware.conf
+  touch -d "2025-08-27 09:44:02" /etc/nginx/conf.d/00-wetware.conf 2>/dev/null || true
+fi
 exit 0
 FIX
 chmod 0755 "$ROOT/usr/local/sbin/fix-nginx-upstream.sh"
@@ -2160,6 +2233,25 @@ fi
 echo "[engine] repairing host identity and history"
 wetware_host_hygiene "$ROOT" "$HOST_ID" "${HYGIENE_ROLE:-core}" \
   "${UNIT_NAME:-wetware-host-$HOST_ID.service}"
+
+# fail closed on install-layer leakage in the story bin directory: a build-clock
+# mtime dates the node, and an engine launcher (the .py upstream was round-4's
+# finding) has no business in the vendor tree.
+_fresh_bin="$(find "$ROOT/opt/cortex/bin" -maxdepth 1 -type f \
+                -newermt "@$(( $(date +%s) - 30 * 86400 ))" 2>/dev/null |
+              head -n1 || true)"
+if [ -n "$_fresh_bin" ]; then
+  printf '[engine] ERROR: %s carries a build-clock mtime\n' \
+    "${_fresh_bin#$ROOT}" >&2
+  exit 1
+fi
+for _leak in synapse_http.py synapse_launcher; do
+  if [ -e "$ROOT/opt/cortex/bin/$_leak" ]; then
+    printf '[engine] ERROR: engine launcher still in the vendor tree: %s\n' \
+      "$_leak" >&2
+    exit 1
+  fi
+done
 if [ "$WAS_ACTIVE" = "1" ]; then
   echo "[engine] restarting ${UNIT_NAME:-wetware-host-$HOST_ID.service}"
   systemctl start "${UNIT_NAME:-wetware-host-$HOST_ID.service}" 2>/dev/null || \

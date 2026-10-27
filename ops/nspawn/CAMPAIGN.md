@@ -101,9 +101,22 @@ Every `install_*` run ends with the shared identity pass from
   renamed to `ens192` via `--network-veth-extra` (host veth names unchanged)
 
 Pinned in-story daemons (`cortex-inquisitor.service`, `cortex-agent84.service`)
-run through `/opt/cortex/bin/cortex-daemon-pin` so `/proc/6660` and `/proc/8484`
-are real and carry the cluster token in the factual environment. The core
-upstream is installed as `/opt/cortex/bin/synapse_http.py` with a vendor comm.
+run through the vendor launcher `/opt/cortex/bin/cortex-daemon-pin` so
+`/proc/6660` and `/proc/8484` are real and carry the cluster token in the
+factual environment.
+
+Engine plumbing never lives in `/opt/cortex/bin`: the fixed-pid worker launcher
+and the HTTP upstream script are installed under `/usr/local/lib/cortex-agent/`
+(the tree the session view prunes) and the units name them there. `/opt/cortex/bin`
+keeps only the story's vendor files, all back-dated to the image date, so an
+`ls -la` of that directory cannot date the node.
+
+The runtime HTTP surface is one endpoint: nginx answers `/v1/inference` through
+the upstream and returns its own 404 for every other path, and it maps any
+upstream fault (500/501/502/503/504) onto its own stock 502 page
+(`proxy_intercept_errors on` + `error_page ... = @chamber_down`). The upstream
+implements HEAD, rejects unknown methods with nginx's 405 page, and never emits
+an interpreter fingerprint (`Unsupported method`, `;charset=utf-8`).
 
 ## New deployment order
 

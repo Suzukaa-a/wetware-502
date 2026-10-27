@@ -49,7 +49,19 @@ http {
   access_log /var/log/nginx/access.log;
   server {
     listen 80 default_server;
-    location / { proxy_pass http://127.0.0.1:8000; }
+    # one endpoint: everything else is nginx's own 404 page, and an upstream
+    # fault is reported with the gateway's stock 502 instead of the page the
+    # process behind it produced
+    location = /v1/inference {
+      proxy_pass http://127.0.0.1:8000;
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      proxy_connect_timeout 5s;
+      proxy_read_timeout 55s;
+      proxy_intercept_errors on;
+      error_page 500 501 502 503 504 = @chamber_down;
+    }
+    location @chamber_down { return 502; }
   }
 }
 NGX
