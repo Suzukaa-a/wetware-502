@@ -305,7 +305,7 @@ Operator: maintenance desk (scripted). Directive: /opt/cortex/PATIENT_DNR_DIRECT
 $ ssh-keygen -Y verify -f /root/.ssh/authorized_keys -I lin@neo-vesalius.io \
       -n file -s /opt/cortex/PATIENT_DNR_DIRECTIVE.asc
 Good "file" signature for lin@neo-vesalius.io with RSA key
-SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw
+SHA256:SZFBkdUGZVe9DWJEx/JD6cF4aePn/j8K4nqvOt3/iSw
 authorized_keys line 1 comment: Lin@neo-vesalius.io
 
 $ gpg --verify /opt/cortex/PATIENT_DNR_DIRECTIVE.asc

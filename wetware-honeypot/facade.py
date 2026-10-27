@@ -691,7 +691,7 @@ EDGE_HOSTS = """\
 
 EDGE_AUTH_LOG = """\
 Oct 26 03:10:12 edge-gw-01 sshd[2210]: Invalid user lin from 10.66.0.1 port 51022
-Oct 26 03:10:17 edge-gw-01 sshd[2214]: Failed publickey for root from 10.66.0.1 port 51024 ssh2: ED25519 SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw
+Oct 26 03:10:17 edge-gw-01 sshd[2214]: Failed publickey for root from 10.66.0.1 port 51024 ssh2: ED25519 SHA256:SZFBkdUGZVe9DWJEx/JD6cF4aePn/j8K4nqvOt3/iSw
 Oct 26 03:10:31 edge-gw-01 sshd[2214]: Connection closed by authenticating user root 10.66.0.1 port 51024 [preauth]
 Oct 26 03:11:02 edge-gw-01 sshd[2228]: Accepted publickey for ops from 10.66.0.1 port 51030 ssh2: ED25519 SHA256:abC1d2...
 """
@@ -1211,7 +1211,7 @@ HIVE_HOSTS = """\
 
 HIVE_AUTH_LOG = """\
 Oct 26 02:58:11 hive-director-00 sshd[880]: Accepted publickey for vesalius from 10.66.0.4 port 44102 ssh2: ED25519 SHA256:5Kd1m2/tA7rQbX0c4yL9wVpE3nJs8hF6gU1iO2kM4zN
-Oct 26 03:04:12 hive-director-00 sshd[880]: Accepted publickey for root from 10.66.0.4 port 44188 ssh2: ED25519 SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw
+Oct 26 03:04:12 hive-director-00 sshd[880]: Accepted publickey for root from 10.66.0.4 port 44188 ssh2: ED25519 SHA256:SZFBkdUGZVe9DWJEx/JD6cF4aePn/j8K4nqvOt3/iSw
 Oct 26 03:04:12 hive-director-00 sshd[5120]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)
 Oct 26 03:12:03 hive-director-00 sshd[880]: pam_unix(sshd:session): session closed for user vesalius
 """

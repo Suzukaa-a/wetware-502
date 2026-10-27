@@ -786,10 +786,10 @@ _EDGE_JOURNAL: List[Tuple[str, str, str]] = [
     ("live", "2026-10-26 03:09:44", "kernel: [%(k)12.6f] Out of memory: Killed process 4040 (lin-sync) total-vm:884120kB, anon-rss:2890400kB"),
     ("live", "2026-10-26 03:09:44", "kernel: [%(k)12.6f] oom-killer hash=4f2a9c1e reason=cgroup-limit survivor=lin"),
     ("live", "2026-10-26 03:09:44", "kernel: [%(k)12.6f] oom_reaper: reaped process 4040 (lin-sync), now anon-rss:0kB"),
-    ("live", "2026-10-26 03:10:04", "sshd[2228]: Accepted publickey for root from 10.66.0.1 port 51042 ssh2: ED25519 SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw"),
+    ("live", "2026-10-26 03:10:04", "sshd[2228]: Accepted publickey for root from 10.66.0.1 port 51042 ssh2: ED25519 SHA256:SZFBkdUGZVe9DWJEx/JD6cF4aePn/j8K4nqvOt3/iSw"),
     ("live", "2026-10-26 03:10:05", "sshd[2228]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)"),
     ("live", "2026-10-26 03:10:12", "sshd[2210]: Invalid user lin from 10.66.0.1 port 51022"),
-    ("live", "2026-10-26 03:10:17", "sshd[2214]: Failed publickey for root from 10.66.0.1 port 51024 ssh2: ED25519 SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw"),
+    ("live", "2026-10-26 03:10:17", "sshd[2214]: Failed publickey for root from 10.66.0.1 port 51024 ssh2: ED25519 SHA256:SZFBkdUGZVe9DWJEx/JD6cF4aePn/j8K4nqvOt3/iSw"),
     ("live", "2026-10-26 03:12:04", "nginx[842]: %(ts)s [error] 842#842: *1024 connect() failed (111: Connection refused) while connecting to upstream, client: 10.66.0.1, server: api.internal.vesalius.io, request: \"POST /v1/inference HTTP/1.1\", upstream: \"http://10.66.0.4:8000/v1/inference\""),
 ]
 

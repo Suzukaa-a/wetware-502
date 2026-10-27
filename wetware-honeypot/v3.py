@@ -369,7 +369,7 @@ server {
 
 EDGE_AUTH_LOG = """\
 Oct 26 03:10:12 edge-gw-01 sshd[2210]: Invalid user lin from 10.66.0.1 port 51022
-Oct 26 03:10:17 edge-gw-01 sshd[2214]: Failed publickey for root from 10.66.0.1 port 51024 ssh2: ED25519 SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw
+Oct 26 03:10:17 edge-gw-01 sshd[2214]: Failed publickey for root from 10.66.0.1 port 51024 ssh2: ED25519 SHA256:SZFBkdUGZVe9DWJEx/JD6cF4aePn/j8K4nqvOt3/iSw
 Oct 26 03:10:31 edge-gw-01 sshd[2214]: Connection closed by authenticating user root 10.66.0.1 port 51024 [preauth]
 Oct 26 03:11:02 edge-gw-01 sshd[2228]: Accepted publickey for ops from 10.66.0.1 port 51030 ssh2: ED25519 SHA256:abC1d2...
 """
@@ -551,7 +551,7 @@ ssh: Could not resolve hostname 10.66.0.4: Temporary failure in name resolution
 KEY_SUCCESS = """\
 [ok] archive decrypted: /tmp/lin.tar (4.0K)
 [ok] extracted: %s (ED25519 private key, 464 bytes)
-[ok] key fingerprint: SHA256:YeckXrDgsEQPXqKdumy4GFxwfSOohPRo5VxzFs+rrVw
+[ok] key fingerprint: SHA256:SZFBkdUGZVe9DWJEx/JD6cF4aePn/j8K4nqvOt3/iSw
 """
 
 KEY_BAD_PASSWORD = """\
