@@ -2163,8 +2163,10 @@ PY
   SURFACE_MARK=$(in_container /bin/cat /run/systemd/container 2>/dev/null | tr -d '\r\n' || true)
   [ -z "$SURFACE_MARK" ] && ok "/run/systemd/container removed" \
     || bad "/run/systemd/container still says '$SURFACE_MARK'"
-  HOST_VIRT=$(in_container /bin/sh -c 'hostnamectl 2>/dev/null' 2>/dev/null | grep -icE 'Virtualization|systemd-nspawn' || true)
-  [ "${HOST_VIRT:-0}" = "0" ] && ok "hostnamectl reports no hypervisor" \
+  HOST_VIRT=$(in_container /bin/sh -c 'hostnamectl 2>/dev/null' 2>/dev/null | grep -icE 'systemd-nspawn|nspawn|container' || true)
+  HOST_BARE=$(in_container /bin/sh -c 'hostnamectl 2>/dev/null' 2>/dev/null | grep -cE 'Virtualization: *none' || true)
+  [ "${HOST_VIRT:-0}" = "0" ] && [ "${HOST_BARE:-0}" -ge 1 ] \
+    && ok "hostnamectl reports the rack as bare metal" \
     || bad "hostnamectl names the machine namespace"
 
   # --- sshd ---------------------------------------------------------------
