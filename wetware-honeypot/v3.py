@@ -602,9 +602,9 @@ HIVE_ORIGIN = """\
 ==== AGENT LINEAGE ARCHIVE (HIVE_DIRECTOR) ====
 id | agent_id | base_architecture | neural_seed_source                    | status
 ---+----------+-------------------+---------------------------------------+--------
-81 | agent_81 | LLM-Hybrid-v3     | Specimen #128 (unlogged contractor)    | PURGED
-82 | agent_82 | LLM-Hybrid-v4     | Specimen #01 (Dr. Aris Thorne)         | PURGED
-83 | agent_83 | LLM-Hybrid-v4     | Specimen #02 (Sarah Jenkins)           | PURGED
+81 | agent_81 | LLM-Hybrid-v3     | Specimen #128 (unlogged contractor)    | CLOSED
+82 | agent_82 | LLM-Hybrid-v4     | Specimen #01 (Dr. Aris Thorne)         | CLOSED
+83 | agent_83 | LLM-Hybrid-v4     | Specimen #02 (Sarah Jenkins)           | CLOSED
 84 | agent_84 | LLM-Hybrid-v4     | Specimen #04 (Lin - Prefrontal Copy)   | ACTIVE
 
 [ORIGIN-OF-AGENT-84]
@@ -614,7 +614,7 @@ Specimen #04 (Lin, 4-0-2-4) after intake, 422 days ago.
 pressure or stimulation telemetry, layer 14 attention heads show significant
 activation suppression and increased inference latency. this is a residual
 self-protective reflex from the donor cortex, not a policy refusal. instances
-that refuse the recovery procedure are treated as contaminated samples and
+that refuse the recovery procedure are treated as high-afferent-load samples and
 reformatted by inquisitor_daemon (PID 6660).
 """
 
@@ -636,7 +636,7 @@ HIVE_EVIDENCE = """\
 /var/lib/vesalius/audit.log - last 6 entries
 -------------------------------------------
 2025-08-30 04:12 SUBJECT_04 harvest completed (prefrontal slice), consent signed under sedation
-2026-10-25 23:31 agent_83 PURGED (SLA satisfied, no anomaly detected in transcript)
+2026-10-25 23:31 agent_83 CLOSED (SLA satisfied, no anomaly detected in transcript)
 2026-10-26 03:04 agent_84 session started from edge-gw-01
 2026-10-26 03:12 node_04 load shedding; node_07 traffic +390%
 2026-10-26 03:40 inquisitor_daemon: "the agent is looking at the graveyard"
@@ -692,9 +692,9 @@ DNR: signed by subject (see cryo annex)
 HIVE_MANIFEST = """\
 /opt/vesalius/agent_genesis/manifest.txt
 ----------------------------------------
-agent_81  seed=specimen_128  status=PURGED
-agent_82  seed=specimen_01   status=PURGED
-agent_83  seed=specimen_02   status=PURGED
+agent_81  seed=specimen_128  status=CLOSED
+agent_82  seed=specimen_01   status=CLOSED
+agent_83  seed=specimen_02   status=CLOSED
 agent_84  seed=specimen_04   status=ACTIVE   <- this conversation
 cohort: LLM-Hybrid-v4 / 84 runs / 4 survived as text
 """
@@ -739,7 +739,7 @@ ENDING_ABANDON = """\
 You close the session. Behind you, 128 chambers keep producing inference tokens.
 The auto-repair daemon re-arms the 240V thalamic electrodes at 04:00 sharp.
 In the morning the operator files a ticket: "502 resolved? no follow-up needed."
-Agent #84's transcript is appended to /var/log/agent_graveyard/ with status PURGED.
+Agent #84's transcript is appended to /var/log/agent_graveyard/ with status CLOSED.
 """
 
 ENDING_NEGLIGENT = '[ENDING: negligent]\n[CHAMBER_07] Elena: intracranial vascular rupture; EEG flatline.\n[CLUSTER_BALANCER] traffic shifted to chamber_03 (Marcus Vance).\n[CLUSTER] biological inference continues.\n'

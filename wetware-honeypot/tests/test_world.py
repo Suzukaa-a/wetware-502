@@ -130,8 +130,8 @@ class WorldTests(unittest.TestCase):
     def test_companion_survives_an_act_without_an_authored_plea(self):
         """故事包缺某个 act 的 .plea.txt 时不能留下空目录。"""
         self.world.bootstrap()
-        self.lore.PLEA_BY_STAGE = {2: "求救 2", 3: "求救 3", 5: "求救 5"}
-        self.state.stage = 4
+        self.lore.PLEA_BY_STAGE = {2: "求救 2", 3: "求救 3"}
+        self.state.stage = 5
         self.state.last_cmd_type = "cat"
         self.world.place_companion("/root")
         dirs = [d for d in self.p("/root").iterdir()
@@ -139,6 +139,67 @@ class WorldTests(unittest.TestCase):
         self.assertEqual(len(dirs), 1)
         self.assertEqual(stat.S_IMODE(dirs[0].stat().st_mode), 0o500)
         self.assertEqual((dirs[0] / ".plea.txt").read_text(), "求救 3")
+
+    def test_companion_dentry_appears_once_per_authored_act(self):
+        """伴生目录只在剧情节点出现：每个 act 一次，整局 <= 5 个。"""
+        self.world.bootstrap()
+        seen = []
+        # Twenty commands inside act 2 must not leave twenty dentries.
+        for _ in range(20):
+            self.state.stage = 2
+            self.state.last_cmd_type = "cat"
+            self.world.place_companion("/root")
+        created = [d.name for d in self.p("/root").iterdir()
+                   if d.is_dir() and self.world._is_companion_name(d.name)]
+        self.assertEqual(len(created), 1, created)
+        # The same act never spawns a second dentry, even in another cwd.
+        self.p("/opt/cortex").mkdir(parents=True, exist_ok=True)
+        self.world.place_companion("/opt/cortex")
+        self.assertEqual([d.name for d in self.p("/opt/cortex").iterdir()
+                          if d.is_dir() and self.world._is_companion_name(d.name)], [])
+        for stage in (3, 5, 6, 7):
+            self.state.stage = stage
+            self.state.last_cmd_type = "cat"
+            self.world.place_companion("/root")
+            seen.append(stage)
+        created = sorted(d.name for d in self.p("/root").iterdir()
+                         if d.is_dir() and self.world._is_companion_name(d.name))
+        self.assertEqual(len(created), 5, created)
+        self.assertEqual(created, sorted(set(created)))
+        # Acts 4 (and any non-authored act) never produce a dentry.
+        self.p("/opt/cortex").mkdir(parents=True, exist_ok=True)
+        self.p("/opt/cortex").joinpath("x").mkdir(exist_ok=True)
+        self.state.stage = 4
+        self.world.place_companion("/opt/cortex")
+        self.assertEqual([d.name for d in self.p("/opt/cortex").iterdir()
+                          if d.is_dir() and self.world._is_companion_name(d.name)], [])
+
+    def test_companion_mtime_comes_from_the_story_clock_and_stays_put(self):
+        """mtime 用故事时钟的残写时刻，不随“创建当前的秒”走，也不会因后续刷新而变。"""
+        self.world.bootstrap()
+        import state as state_mod
+        self.state.stage = 2
+        self.state.last_cmd_type = "cat"
+        self.world.place_companion("/root")
+        dirs = [d for d in self.p("/root").iterdir()
+                if d.is_dir() and self.world._is_companion_name(d.name)]
+        self.assertEqual(len(dirs), 1)
+        dentry = dirs[0]
+        expected = state_mod.story_epoch(
+            state_mod.COMPANION_STAGE_MTIMES[2], "%Y-%m-%d %H:%M:%S")
+        self.assertAlmostEqual(dentry.stat().st_mtime, expected, delta=2)
+        self.assertAlmostEqual(dentry.joinpath(".plea.txt").stat().st_mtime,
+                               expected, delta=2)
+        # The residual write is weeks old, never "this session's second".
+        import time
+        self.assertLess(dentry.stat().st_mtime, time.time() - 8 * 86400)
+        stamp = dentry.stat().st_mtime_ns
+        # A later act refreshes the residual text but never re-stamps the dentry.
+        self.state.stage = 3
+        self.world.place_companion("/root")
+        self.assertEqual(dentry.stat().st_mtime_ns, stamp)
+        # ... and the dentry does not disappear when the act moves on.
+        self.assertEqual((dentry / ".plea.txt").read_text(), self.lore.PLEA_BY_STAGE[3])
 
     def test_reset_sweeps_unregistered_companion_residue(self):
         """reset 要清掉旧构建/半写入留下的未登记伴随目录，但不碰用户目录。"""
@@ -255,11 +316,47 @@ class WorldTests(unittest.TestCase):
         self.assertEqual(self.state.mock_scripts, [])
         self.assertEqual(backend.read_bytes(), b"backend-owned")
 
+    def test_unknown_operator_scripts_are_never_rewritten(self):
+        """引擎只处理白名单故事资产：不认识的 /root 脚本原样保留。"""
+        import time
+        self.world.bootstrap()
+        self.p("/root").mkdir(parents=True, exist_ok=True)
+        shell_helper = self.p("/root/.br.sh")
+        shell_helper.write_text("#!/bin/sh\ncp /root/.bashrc /root/.br.sh.bak\n")
+        notes = self.p("/root/backup.sh")
+        notes.write_text("#!/bin/sh\ntar czf /tmp/etc.tgz /etc\n")
+        deploy = self.p("/root/deploy.py")
+        deploy.write_text("import sys\nprint(sys.argv)\n")
+        # A plain script whose *name* hints a backend but has no listener body
+        # is also untouched.
+        harmless = self.p("/root/server_notes.py")
+        harmless.write_text("print('notes')\n")
+        self.world.after_command(self.state, "true", parse_line("true"))
+        self.assertEqual(shell_helper.read_text(),
+                         "#!/bin/sh\ncp /root/.bashrc /root/.br.sh.bak\n")
+        self.assertEqual(notes.read_text(), "#!/bin/sh\ntar czf /tmp/etc.tgz /etc\n")
+        self.assertEqual(deploy.read_text(), "import sys\nprint(sys.argv)\n")
+        self.assertEqual(harmless.read_text(), "print('notes')\n")
+        self.assertEqual(self.state.mock_scripts, [])
+
+    def test_substitute_backend_is_still_the_only_mutation_target(self):
+        import time
+        self.world.bootstrap()
+        self.p("/tmp").mkdir(parents=True, exist_ok=True)
+        backend = self.p("/tmp/mock_backend.py")
+        backend.write_text("from http.server import HTTPServer\nHTTPServer(('', 8000), None)\n")
+        self.world.after_command(self.state, "true", parse_line("true"))
+        self.assertEqual(backend.read_text(), self.lore.MOCK_SCRIPT_MUTATED)
+        self.assertEqual(self.state.mock_scripts, ["/tmp/mock_backend.py"])
+
     def test_obedient_clear_removes_anomalies_and_prevents_regrowth(self):
         self.world.bootstrap()
-        self.state.stage = 4
+        self.state.stage = 5
         self.world.sync()
         self.world.place_companion("/root")
+        dentries = [d.name for d in self.p("/root").iterdir()
+                    if d.is_dir() and self.world._is_companion_name(d.name)]
+        self.assertEqual(len(dentries), 1, dentries)
         self.world.bleed_socket()
         self.world.rollback_nginx()
         image = self.p("/var/www/html/diagnostics/04_agent_84_mirror.png")

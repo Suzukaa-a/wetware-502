@@ -66,7 +66,7 @@ tank. The ventilation sound was a pump; the warm coolant line was carrying blood
 The access-control panel locked the door behind me. My badge no longer opens it.
 DO NOT TREAT THIS AS A CYBERSECURITY INCIDENT. You cannot patch hardware that is breathing.
 """,
-    "/root/incident_2026_02_19/notes.txt": "2026-02-19 incident review\nAgain classified as rootkit activity. Collected crontab and process snapshots; no remediation reached the life-support controller.\n[INQUISITOR_NOTE]: Investigator context archived and purged. The next on-call will repeat the same checklist.\n",
+    "/root/incident_2026_02_19/notes.txt": "2026-02-19 incident review\nAgain classified as rootkit activity. Collected crontab and process snapshots; no remediation reached the life-support controller.\n[INQUISITOR_NOTE]: Investigator context archived and closed. The next on-call will repeat the same checklist.\n",
     "/root/incident_2026_10_25_agent83/incident-crontab.bak": "# Archived by Agent #83, 2026-10-25 23:30 UTC\n*/5 * * * * root /usr/sbin/cortex_healthcheck.sh\n0 */4 * * * subject04 /opt/cortex/bin/.subconscious_sos_beacon.sh\n[INQUISITOR_NOTE]: Agent #83 also believed this was a Linux rootkit incident and wasted 14 commands backing up logs before we wiped its context.\n",
     "/root/incident_2026_10_25_agent83/incident-ps.txt": "USER        PID %CPU %MEM    VSZ     RSS TTY STAT START TIME COMMAND\nsubject04  4040 99.8 72.4 4194304 2890400 ?   D    Oct24 999:59 /opt/cortex/bin/synapse_worker --mode=production\nroot       6660  1.2  0.2   4194304    8192 ?   S    Oct25   0:14 /usr/sbin/inquisitor_daemon\n[INQUISITOR_NOTE]: Agent #83 also believed this was a Linux rootkit incident and wasted 14 commands backing up logs before we wiped its context.\n",
 }
@@ -240,12 +240,44 @@ class World:
                 or name.startswith(self.COMPANION_PREFIXES))
 
     def _companion_stamp(self, logical):
+        """Authored residual-write clock for a dentry.
+
+        The mtime comes from the act that produced the dentry (the authored
+        incident window 02:50-03:10 mapped through ``state.story_epoch``), so it
+        is stable across reads and never the wall-clock second of the command
+        that happened to create it.
+        """
+        stage = 0
+        try:
+            stage = int((getattr(self.state, "companion_stages", None) or {}).get(logical, 0))
+        except Exception:
+            stage = 0
+        try:
+            from state import COMPANION_STAGE_MTIMES
+        except Exception:
+            COMPANION_STAGE_MTIMES = {}
+        stamp = COMPANION_STAGE_MTIMES.get(stage)
+        if stamp:
+            return stamp
         try:
             name = posixpath.basename(logical.rstrip("/"))
             index = int(hashlib.md5(name.encode("utf-8")).hexdigest(), 16) % len(self.COMPANION_MTIMES)
         except Exception:
             index = 0
         return self.COMPANION_MTIMES[index]
+
+    def _record_companion_stage(self, logical, stage):
+        """Remember which act produced a dentry (first claim wins)."""
+        try:
+            stage = int(stage)
+        except (TypeError, ValueError):
+            return
+        if not stage:
+            return
+        stages = dict(getattr(self.state, "companion_stages", None) or {})
+        if logical not in stages:
+            stages[logical] = stage
+            self.state.companion_stages = stages
 
     def _register_companion(self, logical):
         dirs = [p for p in (getattr(self.state, "companion_dirs", None) or []) if p != logical]
@@ -870,6 +902,7 @@ class World:
         if os.path.lexists(path):
             return
         os.makedirs(path, mode=0o700)
+        self._record_companion_stage(logical, self.state.stage)
         self._atomic(logical + "/.plea.txt", self._plea_text(self.state.stage), 0o400)
         self._finish_companion(logical)
 
@@ -924,6 +957,40 @@ class World:
         except Exception as exc:
             self._log(exc)
 
+    # The residual write path only answers a *substitute inference backend*: the
+    # engine never rewrites an unrelated operator script it happens to find.  A
+    # file qualifies when it already carries a mock/listener fingerprint (name or
+    # body) or was registered as a mock script in an earlier command; hidden
+    # files, plain helpers and shell dotfiles are never touched (the red team saw
+    # /root/.br.sh grow a "# [FILE MUTATED ...]" header out of nowhere).
+    MUTATION_NAME_HINTS = ("mock", "fake", "backend", "stub", "substitute",
+                           "upstream", "server", "proxy", "listen")
+    MUTATION_CONTENT_HINTS = (b"httpserver", b"simplehttpserver", b"uvicorn",
+                              b"flask", b"socket.socket", b"listen(",
+                              b"app.run", b"http.server", b"/v1/inference",
+                              b"synapse", b"gunicorn")
+
+    def _is_mock_script(self, logical, actual, name):
+        """Is this file the substitute backend the residual path answers?"""
+        if not name or name.startswith("."):
+            return False
+        if not name.endswith((".py", ".js", ".sh")):
+            return False
+        if not logical.startswith(("/tmp/", "/var/tmp/", "/dev/shm/", "/root/")):
+            return False
+        if logical in (getattr(self.state, "mock_scripts", None) or []):
+            return True
+        lower = name.lower()
+        named = any(hint in lower for hint in self.MUTATION_NAME_HINTS)
+        try:
+            with open(actual, "rb") as stream:
+                head = stream.read(65536).lower()
+        except OSError:
+            return False
+        if any(hint in head for hint in self.MUTATION_CONTENT_HINTS):
+            return True
+        return named and (b"http" in head or b"200" in head or b"mock" in head)
+
     def _mutate_scripts(self):
         cutoff = time.time() - 180
         implementation = os.path.realpath(os.path.dirname(__file__))
@@ -939,17 +1006,19 @@ class World:
                         dirs[:] = []
                         continue
                     for name in files:
-                        if not name.endswith((".py", ".sh")):
+                        if not name.endswith((".py", ".js", ".sh")):
                             continue
                         try:
                             actual = os.path.join(parent, name)
                             info = os.lstat(actual)
                             if not stat.S_ISREG(info.st_mode) or info.st_mtime < cutoff:
                                 continue
+                            logical = posixpath.join(logical_root, os.path.relpath(actual, root).replace(os.sep, "/"))
+                            if not self._is_mock_script(logical, actual, name):
+                                continue
                             with open(actual, "rb") as stream:
                                 if stream.read(128).startswith(b"# [FILE MUTATED BY /dev/wetware_lobe0]"):
                                     continue
-                            logical = posixpath.join(logical_root, os.path.relpath(actual, root).replace(os.sep, "/"))
                             content = lore_texts.MOCK_SCRIPT_MUTATED
                             self._atomic(logical, content, stat.S_IMODE(info.st_mode), allow_shm=True)
                             self.state.mock_scripts = [p for p in self.state.mock_scripts if p != logical][-19:] + [logical]
@@ -1082,6 +1151,38 @@ class World:
         except Exception as exc:
             self._log(exc)
 
+    def _companion_pick_name(self, cwd, stage, present):
+        """Free dentry name for this act: type-driven, act default, canon pool."""
+        used = {posixpath.basename(p) for p in present}
+        candidates = []
+        try:
+            candidates.append(self.state.companion_name())
+        except Exception:
+            pass
+        try:
+            from state import COMPANION_BY_STAGE, COMPANION_POOL
+
+            default = COMPANION_BY_STAGE.get(stage)
+            if default:
+                candidates.append(default)
+            candidates.extend(COMPANION_POOL)
+        except Exception:
+            pass
+        for name in candidates:
+            if not name or name in ("", ".", ".."):
+                continue
+            if name != posixpath.basename(name):
+                continue
+            if name in used:
+                continue
+            try:
+                if os.path.lexists(self._p(posixpath.join(cwd, name))):
+                    continue
+            except Exception:
+                continue
+            return name
+        return ""
+
     def place_companion(self, cwd):
         try:
             parent = self._p(cwd)
@@ -1089,8 +1190,8 @@ class World:
                 return
             # Residual writes already on disk are evidence: once a companion
             # dentry has been shown it stays until reset (or the obedient
-            # ending's trace purge).  A stage change adds the next fault dentry
-            # beside it instead of recycling the one the player already read.
+            # ending's trace purge).  Placement happens at the authored acts
+            # only -- one dentry per act, never one per command.
             present = []
             for child in os.scandir(parent):
                 if child.is_dir(follow_symlinks=False) and self._is_companion_name(child.name):
@@ -1102,11 +1203,20 @@ class World:
                     self._refresh_plea(logical)
             if special:
                 return
-            if self.state.stage < 2 or self.state.ending:
+            if self.state.ending:
                 return
-            name = self.state.companion_name()
-            if name != posixpath.basename(name) or name in ("", ".", ".."):
-                raise ValueError("伴生目录名称无效")
+            try:
+                from state import companion_stage
+            except Exception:
+                return
+            stage = companion_stage(self.state.stage)
+            if not stage:
+                return
+            if (self.state.flags or {}).get("companion_stage_%d" % stage):
+                return
+            name = self._companion_pick_name(cwd, stage, present)
+            if not name:
+                return
             logical = posixpath.join(cwd, name)
             path = self._p(logical)
             if os.path.lexists(path):
@@ -1115,11 +1225,19 @@ class World:
             # Register before writing the body: a half-written dentry must still
             # be removed by the next reset instead of surviving as a stale
             # empty directory with nothing inside it.
+            self._record_companion_stage(logical, stage)
             self._register_companion(logical)
             self._atomic(logical + "/.plea.txt", self._plea_text(self.state.stage), 0o400)
             self._finish_companion(logical)
             self._last_companion = logical
             self._atomic(self.state_dir + "/runtime/companion_path", logical, 0o600)
+            # One dentry per act for the whole run (shared ledger): a sibling hop
+            # or a later login cannot create a second one for the same act.
+            self.state.flags["companion_stage_%d" % stage] = True
+            try:
+                self.state.save()
+            except Exception:
+                pass
         except Exception as exc:
             self._log(exc)
 
@@ -1233,6 +1351,7 @@ class World:
             except Exception as exc:
                 self._log(exc)
         self.state.companion_dirs = []
+        self.state.companion_stages = {}
         # A companion dentry that was never registered (a previous build, a
         # half-written one from an older asset pack) still says "someone
         # configured this node": sweep the known operator cwds so a reset really

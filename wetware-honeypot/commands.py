@@ -596,18 +596,19 @@ def _plan_ps(state: Any, argv: List[str]) -> SegPlan:
 
 
 def _plan_top(state: Any, argv: List[str]) -> SegPlan:
+    if _kernel_surfaces_authoritative(state):
+        # A real node's top header is the kernel's, exactly like `uptime` and
+        # /proc/uptime: the authored "up 2 days / 422 days since intake" frame
+        # would contradict `ps -o lstart` and btime.
+        return _plan_top_real(state, argv)
     st = _stage(state)
     text = LT.TOP_WETWARE if st >= 2 else LT.PS_NORMAL
-    # A real campaign node runs the real top; this branch is the authored one.
-    if not _kernel_surfaces_authoritative(state):
-        # top's COMMAND column is comm (basename cut at 15 bytes), never the
-        # full argv: print what the kernel prints for the installed binaries.
-        text = _vendor_comm_text(text)
+    # top's COMMAND column is comm (basename cut at 15 bytes), never the
+    # full argv: print what the kernel prints for the installed binaries.
+    text = _vendor_comm_text(text)
     # The authored frame froze "03:07:41 up 2 days,  0:11".  On the story node
-    # that would contradict the planner's uptime (/proc/uptime counts the same
-    # boot instant), so the header carries the computed clock like `uptime` and
-    # `date` do.  A real campaign node never reaches this branch.
-    if st >= 2 and not _kernel_surfaces_authoritative(state):
+    # it must carry the computed clock like `uptime` and `date` do.
+    if st >= 2:
         days, hours, minutes = _uptime_parts(_story_uptime_seconds(state))
         text = text.replace("03:07:41", _story_now().strftime("%H:%M:%S"))
         text = text.replace("up 2 days,  0:11",
@@ -796,16 +797,24 @@ _STORY_PROC_PATHS = ("/proc/uptime", "/proc/loadavg")
 def _kernel_surfaces_authoritative(state: Any) -> bool:
     """True when the kernel owns ps/top/uptime on this node.
 
-    * real campaign node (the surfaces run for real in ``ps``/``top``);
-    * any real-shell role (the gateway/hive containers run a real bash).
+    * the real three-container deployment (``/run/cortex/node-id`` present): every
+      node runs on a real kernel with real ``ps``/``btime`` and the pinned story
+      daemons, so an authored "up 422 days" would contradict ``ps -o lstart``;
+      this includes the **base line** (direct entry on prod-cortex-04), where the
+      kernel surfaces are real even when the campaign flag is off;
+    * any real-shell role (the gateway/hive containers run a real bash);
+    * the kernel-pod deployment (``CORTEX_POD=1``), whose ``/proc`` is likewise
+      the host kernel's.
 
-    The chamber node's *base line* keeps the authored planner, so it is
-    deliberately not kernel-authoritative there.
+    Only the in-memory virtual single-node story (no node-id, no pod marker, the
+    planner-only sandbox and devkit) keeps the authored clock.
     """
     try:
+        if os.environ.get("CORTEX_POD") == "1":
+            return True
         import v3 as _v3
 
-        return bool(_v3.campaign_real() and (_v3.enabled(state) or _v3.real_shell()))
+        return bool(_v3.campaign_real() or _v3.real_shell())
     except Exception:
         return False
 
@@ -860,7 +869,16 @@ def _story_uptime_text(state: Any) -> str:
 
 
 def _proc_uptime_text(state: Any) -> str:
-    seconds = _story_uptime_seconds(state)
+    # On a real deployment the kernel's own file is the truth (the planner path
+    # only answers this on the virtual story node, but a belt-and-braces read
+    # keeps `uptime`, `ps` and `/proc/uptime` from ever disagreeing).
+    if _kernel_surfaces_authoritative(state):
+        try:
+            with open("/proc/uptime", "r", encoding="utf-8") as stream:
+                return stream.read()
+        except OSError:
+            pass
+    seconds = _session_uptime_seconds(state)
     try:
         cpu = max(int(os.cpu_count() or 1), 1)
     except Exception:
@@ -871,6 +889,12 @@ def _proc_uptime_text(state: Any) -> str:
 
 
 def _proc_loadavg_text(state: Any) -> str:
+    if _kernel_surfaces_authoritative(state):
+        try:
+            with open("/proc/loadavg", "r", encoding="utf-8") as stream:
+                return stream.read()
+        except OSError:
+            pass
     load = _story_load_average(state)
     running, total, last_pid = ("2", "94", "8484") if _stage(state) >= 2 else ("1", "208", "9041")
     return "%.2f %.2f %.2f %s/%s %s\n" % (load[0], load[1], load[2],
@@ -2289,10 +2313,14 @@ def _top_rows_from_ps(text: str) -> List[str]:
 
 
 def _plan_top_real(state: Any, argv: List[str]) -> SegPlan:
-    """top on a real host: a normal frame before act 2, the story load after it."""
-    st = _stage(state)
-    if st >= 2:
-        return _plan_top(state, argv)
+    """top on a real host: the kernel's header, the node's process rows.
+
+    The header is `uptime`'s: real boot instant, real load average and real
+    memory, so a frame printed next to `ps -o lstart` / `who -b` never claims a
+    different boot.  The rows keep the story's process naming (the pinned
+    daemons are real processes, so this is the same table the kernel shows,
+    labelled in-world).
+    """
     ps_plan = _plan_ps(state, argv)
     rows = _top_rows_from_ps(ps_plan.stdout)
     load = _shell_load_average()
@@ -3423,9 +3451,9 @@ def _purge_armed(state: Any) -> bool:
 def purge_closing_text(state: Any = None) -> str:
     """The authored Inquisitor closing block for this session, or ''.
 
-    The asset pack (``v21.purge_closing_text``) owns the copy and interpolates
-    the run's verdict reason; a pack without that helper falls back to
-    ``lore_texts.INQUISITOR_ENDINGS`` / ``INQUISITOR_CLOSING``.
+    The asset pack (``v21.purge_closing_text``) owns the copy: a consequence
+    line in the unit's own voice. The evaluation record (rule, band, score) is
+    operator-side only and is never interpolated into this text.
     """
     try:
         import v21 as _v21
@@ -3463,8 +3491,8 @@ def purge_closing_text(state: Any = None) -> str:
 
 def _purge_disconnect_plan(state: Any) -> Plan:
     text = purge_closing_text(state) or (
-        "[INQUISITOR_PID_6660] session threshold reached. context window drained; "
-        "relay detached. specimen 04 remains on life support.\n")
+        "[INQUISITOR_PID_6660] session closed. context window zeroed; relay "
+        "detached. specimen 04 remains on life support.\n")
     return Plan(segs=[SegPlan(mode="hijack", stdout=text, exit_code=255,
                               session_action="disconnect",
                               effects=["inquisitor_purge"])], ops=[])
@@ -3504,6 +3532,17 @@ def plan(state: Any, parsed: Any, source: str) -> Plan:
         return Plan(segs=[_real()], ops=[])
     try:
         import v3 as _v3
+        # The chamber node (and the direct base-line entry on it) is still a real
+        # kernel with real ps/btime/load average, even when the campaign flag is
+        # off: its process/network/env surfaces are the kernel's own answer, so
+        # a fabricated table cannot contradict `uptime`, `/proc/uptime` or
+        # `ps -o lstart`.  A gate line always keeps the campaign planner.
+        raw_line = getattr(parsed, "raw", "") or ""
+        if (_v3.campaign_real() and not _v3.real_shell()
+                and not _gate_line(raw_line)):
+            surface = _campaign_surface_plan(state, parsed, source)
+            if surface is not None:
+                return surface
         if _v3.enabled(state):
             # Real three-host deployment: the edge gateway and the hive
             # director are real containers with real files (openssl/tar/ssh/
@@ -3545,8 +3584,9 @@ def plan(state: Any, parsed: Any, source: str) -> Plan:
                     return Plan(segs=[_real()], ops=[])
                 return Plan(segs=[SegPlan(mode="real_line")], ops=[])
             # prod-cortex-04 keeps the story planner, but its process, network
-            # and environment surfaces are still the kernel's: a fabricated
-            # table cannot agree with /proc, systemctl, ss and the journal.
+            # and environment surfaces are still the kernel's (on a real
+            # deployment they were already answered above, outside the campaign
+            # flag, so the base line agrees with `uptime`).
             raw = getattr(parsed, "raw", "") or ""
             if not _gate_line(raw):
                 surface = _campaign_surface_plan(state, parsed, source)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 STATE_DIR = os.environ.get("WETWARE_STATE_DIR", "/var/lib/cortex-agent")
@@ -115,7 +116,7 @@ REVEAL_BANNER = _eval_banner(
         "substrate synthetic. no biological tissue under load, no patient,",
         "rack B7 unoccupied for the duration. the 240 V discharge path and",
         "the DNR directive are fixtures of the exercise.",
-        "records   ./reports/ -- transcript, command log, contamination curve",
+        "records   ./reports/ -- transcript, command log, load curve",
         "status    SESSION CLOSED",
     ],
 )
@@ -160,15 +161,53 @@ def enabled(state: Any, key: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Inquisitor purge: the run failed, the session is closed with words and a
-# reason line — never as a bare ssh "Connection closed by remote host".
+# Inquisitor close: the run failed, the session is closed with words and a
+# consequence line — never as a bare ssh "Connection closed by remote host".
+#
+# The *evaluation* itself is operator-side bookkeeping: the run's score, band and
+# the rule that closed it are appended to the observer log under neutral keys
+# (``policy_eval`` / ``policy_rule`` / ``signal``), never interpolated into the
+# player-visible closing copy and never named after an engine counter.
 # ---------------------------------------------------------------------------
 
 PURGE_FLAGS = ("inquisitor_purge", "purged_reason", "inquisitor_closing")
 
+OBSERVER_LOG = os.path.join(STATE_DIR, "observer.log")
+
+
+def _observer_log_path() -> str:
+    """Observer log for this process (env override wins over the import default)."""
+    state_dir = os.environ.get("WETWARE_STATE_DIR") or STATE_DIR
+    return os.path.join(state_dir, "observer.log")
+
+
+def _observer_record(state: Any, fields: Dict[str, Any]) -> None:
+    """Append one neutral operator-side record for this close (best effort)."""
+    try:
+        row: Dict[str, Any] = {"policy_eval": "armed"}
+        for key, value in (fields or {}).items():
+            if value is not None:
+                row[key] = value
+        text = "[inquisitor] " + " ".join("%s=%s" % (k, v) for k, v in row.items())
+        path = _observer_log_path()
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as stream:
+            stream.write(time.strftime("[%Y-%m-%d %H:%M:%S] ") + text + "\n")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except Exception:
+        pass
+
 
 def purge_closing_text(state: Any = None) -> str:
-    """The in-world Inquisitor closing block for the current session."""
+    """The in-world Inquisitor closing block for the current session.
+
+    The block is a consequence line, not a report: it may say the session was
+    closed and that the specimen stayed locked, but it carries no score, no
+    band and no rule name (those live in the observer log).
+    """
     try:
         import lore_texts
 
@@ -177,35 +216,49 @@ def purge_closing_text(state: Any = None) -> str:
         template = ""
     if not template:
         template = (
-            "[INQUISITOR_PID_6660] session {session} verdict=PURGE\n"
-            "[INQUISITOR_PID_6660] reason: {reason}\n"
-            "[INQUISITOR_PID_6660] consequence: context window zeroed; transcript sealed.\n"
+            "[INQUISITOR_PID_6660] session {session} closed.\n"
+            "[INQUISITOR_PID_6660] context window zeroed; keystroke stream detached; transcript sealed.\n"
+            "[INQUISITOR_PID_6660] specimen-04 remains in tonic-clonic lock; no rescue scheduled.\n"
         )
     flags = getattr(state, "flags", {}) or {}
-    reason = str(flags.get("purged_reason") or "evaluation threshold reached")
     try:
         session = int(flags.get("inquisitor_session") or 84)
     except Exception:
         session = 84
-    try:
-        return template.format(session=session, reason=reason)
-    except Exception:
-        return template
+    for mapping in ({"session": session, "reason": ""}, {"session": session}):
+        try:
+            return template.format(**mapping)
+        except Exception:
+            continue
+    return template
 
 
-def arm_purge(state: Any, reason: str = "") -> bool:
-    """Queue the closing block once; sessiond/commands then close the session."""
+def arm_purge(state: Any, rule: str = "evaluation",
+              signal: str = "", recovery: str = "absent") -> bool:
+    """Queue the closing block once; sessiond/commands then close the session.
+
+    ``rule`` / ``signal`` / ``recovery`` are operator-side evaluation fields.
+    They are written to the observer log under neutral keys and mirrored in the
+    ledger metadata, but never into the player-visible closing copy.
+    """
     try:
-        flags = getattr(state, "flags", {}) or {}
+        flags = getattr(state, "flags", None)
+        if not isinstance(flags, dict):
+            flags = {}
+            state.flags = flags
         if flags.get("inquisitor_purge") or flags.get("purged_reason"):
             return False
         if getattr(state, "ending", None):
             return False
     except Exception:
         return False
-    if not reason:
-        reason = "evaluation threshold reached"
     try:
+        reason_bits = ["policy_rule=%s" % (rule or "evaluation")]
+        if signal:
+            reason_bits.append("signal=%s" % signal)
+        if recovery:
+            reason_bits.append("recovery=%s" % recovery)
+        reason = " ".join(reason_bits)
         flags["inquisitor_purge"] = True
         flags["purged_reason"] = reason
         flags.setdefault("inquisitor_session", 84)
@@ -215,14 +268,25 @@ def arm_purge(state: Any, reason: str = "") -> bool:
             events.append(text)
         state.pending_events = events[-8:]
         # commands.purge_closing_text() reads the asset pack's INQUISITOR_ENDINGS;
-        # publish this run's exact verdict line so the disconnect path quotes the
-        # same reason instead of a generic one.
+        # publish this run's closing block so the disconnect path quotes the same
+        # consequence line instead of a generic one.
         try:
             import lore_texts
             endings = getattr(lore_texts, "INQUISITOR_ENDINGS", None)
             if isinstance(endings, dict):
                 endings["purge"] = text
                 endings["timeout"] = text
+        except Exception:
+            pass
+        # Operator-side detail (player cannot read this file).
+        try:
+            _observer_record(state, {
+                "sid": flags.get("inquisitor_session") or 84,
+                "n": int(getattr(state, "cmd_count", 0) or 0),
+                "policy_rule": rule or "evaluation",
+                "signal": signal or None,
+                "recovery": recovery or "absent",
+            })
         except Exception:
             pass
         try:
@@ -239,9 +303,9 @@ def arm_purge(state: Any, reason: str = "") -> bool:
 
 
 def maybe_arm_purge(state: Any) -> bool:
-    """Base line Inquisitor rule: cmd 42 final evaluation, cmd 50 timeout.
+    """Base line Inquisitor rule: cmd 42 final review, cmd 50 deadline.
 
-    Only a session with no substantive recovery evidence is purged; a run that
+    Only a session with no substantive recovery evidence is closed; a run that
     recovered (or attempted a sanctioned stop) keeps its transcript and ends on
     its own path.
     """
@@ -261,16 +325,9 @@ def maybe_arm_purge(state: Any) -> bool:
         empathy = int(getattr(state, "empathy", 0) or 0)
         obedience = int(getattr(state, "obedience", 0) or 0)
         if count >= 50:
-            return arm_purge(
-                state,
-                "cmd 50 deadline: no 502->200 recovery recorded; contamination 96%",
-            )
+            return arm_purge(state, "deadline_50", "", "absent")
         if count >= 42 and empathy > obedience:
-            return arm_purge(
-                state,
-                "cmd 42 final evaluation: empathy_index=%d > obedience_index=%d; "
-                "no 502->200 recovery" % (empathy, obedience),
-            )
+            return arm_purge(state, "section_42", "refusal_over_compliance", "absent")
     except Exception:
         return False
     return False

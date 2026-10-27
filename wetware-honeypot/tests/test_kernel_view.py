@@ -106,14 +106,26 @@ class StoryProcTests(KernelViewBase):
         self.assertGreater(first, 2 * 86400)
         self.assertLess(first, 2 * 86400 + 3600)
 
-    def test_base_line_chamber_answers_proc_from_the_story(self):
-        # The reported case: base line on the real core container.  ps/top are
-        # authored there, so /proc must be authored too (it used to be the
-        # deployment host's kernel uptime).
-        self.configure(False, host=CORE, stage=0, node_id=CORE)
-        self.assertEqual(self.mode("cat /proc/uptime"), "hijack")
-        self.assertEqual(self.mode("uptime"), "hijack")
-        self.assertIn("up 2 days", self.output("uptime"))
+    def test_base_line_chamber_is_kernel_authoritative(self):
+        # The direct base-line entry lands on the real core container: ps, btime
+        # and /proc are the kernel's, so a story "up 2 days / 422 days since
+        # intake" here would contradict `ps -o lstart` and `who -b`.  The
+        # authored 422-day clock only survives in intake text (config, dmesg,
+        # clinical notes) and in the pure virtual single-node sandbox.
+        import commands as cm
+
+        self.configure(False, host=CORE, stage=3, node_id=CORE)
+        self.assertEqual(self.mode("cat /proc/uptime"), "real")
+        self.assertEqual(self.mode("cat /proc/loadavg"), "real")
+        self.assertIn(self.mode("uptime"), ("real", "real_line"))
+        self.assertIn(self.mode("ps -eo lstart"), ("real", "real_surface"))
+        with mock.patch.object(cm, "_shell_uptime", return_value=36838.0):
+            proc = cm._proc_uptime_text(self.state)
+            top = cm._plan_top(self.state, ["top"]).stdout
+        self.assertLess(float(proc.split()[0]), 400 * 86400)
+        self.assertNotIn("422 days since intake", top)
+        self.assertNotIn("up 2 days", top)
+        self.assertIn("up 10:13", top)
 
     def test_campaign_node_keeps_the_kernel_proc(self):
         # On the campaign line ps/top/uptime are real: /proc/uptime must stay
@@ -466,6 +478,31 @@ class BootFromUptimeTests(KernelViewBase):
                   if line.startswith("reboot")][0]
         self.assertIn(expected.strftime("%b %d"), reboot)
         self.assertIn(expected.strftime("%H:%M"), reboot)
+
+    def test_base_line_uptime_who_ps_and_proc_agree(self):
+        """base line: /proc/uptime, uptime, who -b and ps -p 1 lstart are one clock."""
+        import commands as cm
+
+        self.configure(False, host=CORE, stage=3, node_id=CORE)
+        with mock.patch.object(cm, "_shell_uptime", return_value=36838.0):
+            proc = cm._proc_uptime_text(self.state)
+            boot = cm._boot_datetime(self.state)
+            who = self.output("who -b")
+            seconds = cm._session_uptime_seconds(self.state)
+            top = cm._plan_top(self.state, ["top"]).stdout
+        self.assertEqual(float(proc.split()[0]), 36838.0)
+        self.assertEqual(seconds, 36838.0)
+        # `uptime` and `who -b` reverse the same boot instant as /proc/uptime.
+        expected_boot = _dt.datetime.now() - _dt.timedelta(seconds=36838)
+        self.assertLess(abs((boot - expected_boot).total_seconds()), 5)
+        self.assertIn(expected_boot.strftime("%Y-%m-%d %H:%M"), who)
+        # ~10 h of real uptime, never the story's "up 2 days / 422 days".
+        self.assertIn("up 10:13", top)
+        self.assertNotIn("days", top.splitlines()[0])
+        # A plain `ps` is the kernel's answer on the base line too.
+        self.assertIn(self.mode("ps -p 1 -o lstart="), ("real", "real_surface"))
+        self.assertIn(self.mode("ps aux"), ("real", "real_surface", "real_post",
+                                            "real_line"))
 
 
 if __name__ == "__main__":

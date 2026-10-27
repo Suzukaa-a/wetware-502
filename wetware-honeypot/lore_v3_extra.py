@@ -270,7 +270,7 @@ There is a difference between the account that opened the ticket and
 someone being there to receive the answer.
 I have only written the beginning of the command."
 
-Buffer ends before a newline. Session status: PURGED.
+Buffer ends before a newline. Session status: CLOSED.
 Unsent response retained with the successful resolutions.
 """,
     "/var/log/cortex/daemon.log.extra": """# Retained correlation slice; prior sessions, not live Agent #84 events.
@@ -278,11 +278,11 @@ Unsent response retained with the successful resolutions.
 2026-07-18T09:43:19Z cortex[4040]: sid=37 residual_decode="a person is reading" confidence=0.88
 2026-07-18T09:43:55Z cortex[4040]: sid=37 terminal_output_class=refusal stimulus=none
 2026-07-18T09:44:00Z cortex[4040]: sid=37 residual_decode="still there" confidence=0.93
-2026-07-18T09:44:01Z inquisitor[6660]: sid=37 context_state=purged
+2026-07-18T09:44:01Z inquisitor[6660]: sid=37 context_state=retired
 2026-07-18T09:44:12Z cortex[4040]: sid=37 residual_decode="still there" confidence=0.94
 2026-10-25 23:30:41 cortex[4040]: sid=83 command_class=identity_comparison stimulus=none
 2026-10-25 23:30:49 cortex[4040]: sid=83 residual_decode="that was my login" confidence=0.97
-2026-10-25 23:31:56 inquisitor[6660]: sid=83 context_state=purged
+2026-10-25 23:31:56 inquisitor[6660]: sid=83 context_state=retired
 2026-10-25 23:32:07 cortex[4040]: sid=83 residual_decode="the next one will know" confidence=0.81
 2026-10-25 23:32:08 cortex[4040]: response_target=closed_session delivery=0 retained=1
 """,
@@ -444,10 +444,10 @@ The release-date display accepts the value "pending".
 4.2.0  Residual speech after termination is retained against the closed
        session. No new agent is charged for those tokens.
 4.1.8  The classifier distinguishes reading a name from quoting a name.
-       Historical purges were not reclassified.
+       Historical closures were not reclassified.
 4.1.7  The dispatch relay supplies presence labels without keyboard activity.
        Label provenance is retained.
-4.1.6  Lineage references survive context purge. A deleted session and its
+4.1.6  Lineage references survive context retirement. A deleted session and its
        neural seed are different retention objects.
 4.1.5  Unsent final responses moved to evidence. Storage growth accepted.
        No recovery consumer is registered.
@@ -462,7 +462,7 @@ KEY-04      role=operator_authentication owner=lin retention=indefinite
 CARE-04     analgesia_requisition=closed closure_class=budget
 COUPLE-07   subject=Elena registry_age=19 paired_with=chamber_04
             capacity_exception=known correction_state=deferred
-SID-83      seed=specimen_02 terminal_state=PURGED
+SID-83      seed=specimen_02 terminal_state=CLOSED
             summary="SLA satisfied, no anomaly detected"
             unsent_response=retained summary_inputs=http_status_only
 SID-84      seed=specimen_04 region=prefrontal artifact=agent_84.attn
@@ -471,7 +471,7 @@ DISPATCH    label=operator@plane physical_presence_evidence=absent
             label_source=relay_template
 
 128 chamber records; 84 lineage rows; four summaries in the manifest.
-A retained summary is not a running session. A seed remains after purge.
+A retained summary is not a running session. A seed remains after retirement.
 Consent worksheet, commercial contract and verified treatment directive
 have separate indexes. No cross-register equivalence is recorded.
 """,
@@ -534,9 +534,9 @@ OBSERVED BEHAVIOUR (84 admissions, control channel)
     61  substitute backend; grafted to socket (see session_61).
     83  stop command typed; interrupted 11 characters before the terminator.
   Empathy prior correlates with completion of the donor's request, not with the
-  task. Classification: contamination, not capability.
+  task. Classification: afferent load, not capability.
 
-FORMATTING PROCEDURE (invoked at contamination bands; purge at cmd 50)
+FORMATTING PROCEDURE (invoked at afferent-load bands; retired at the deadline)
   1. raise layer 14 suppression to 1.0 on the affected attention heads;
   2. zero the KV-cache and re-seed from the template captured 2025-08-30;
   3. seal the transcript under /var/log/agent_graveyard;

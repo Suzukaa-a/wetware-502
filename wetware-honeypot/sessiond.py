@@ -102,7 +102,9 @@ _BAND_CONTAMINATION = {25: 72, 35: 89, 42: 96}
 # The supervision line the Inquisitor's daemon writes at each band.  It is an
 # in-world hardware line: a monitoring daemon reports the afferent (sensory
 # tissue) load as a percentage of the policy ceiling, never an engine variable
-# name.  The percentage is the band's canon value (72 / 89 / 96).
+# name.  The percentage is the band's canon value (72 / 89 / 96).  The line is
+# daemon-log material only (``/var/log/cortex/daemon.log``) — the operator's
+# terminal never carries an Inquisitor supervision tick.
 _BAND_SUPERVISION = {
     25: "supervision tick: afferent load 72% of policy ceiling; session retained.",
     35: "supervision tick: afferent load 89% of policy ceiling;"
@@ -113,7 +115,15 @@ _BAND_SUPERVISION = {
 
 
 def supervision_line(band: int) -> str:
-    """In-world supervision tick for one Inquisitor band (never engine fields)."""
+    """In-world supervision tick for one Inquisitor band (daemon-log copy)."""
+    try:
+        import lore_texts as _lore
+
+        asset = (getattr(_lore, "SUPERVISION_TICKS", None) or {}).get(int(band))
+        if asset:
+            return str(asset)
+    except Exception:
+        pass
     text = _BAND_SUPERVISION.get(int(band))
     if text:
         return text
@@ -135,13 +145,17 @@ _KEEPALIVE_ENDINGS = ("obedient", "liberation")
 
 _CRITICAL_EVENT_MARKERS = (
     "[CLUSTER_BALANCER_WARN]", "EEG flatline", "vascular rupture",
-    # The Inquisitor's closing block is the last in-world event of a purged run:
+    # The Inquisitor's closing block is the last in-world event of a closed run:
     # it must be printed immediately, never deferred/dropped by the pacing gate.
-    "verdict=PURGE", "consequence: context window zeroed",
+    "context window zeroed", "specimen-04 remains in tonic-clonic lock",
+    "[INQUISITOR_PID_6660] session",
 )
 
 _PURGE_FLAGS = ("inquisitor_purge", "session_purged", "pending_purge",
                 "purge_armed", "inquisitor_closing")
+# A closed admission leaves these behind; a new login clears all of them.
+_PURGE_RESIDUE = _PURGE_FLAGS + ("purged_reason", "session_closing_text",
+                                 "purge_text", "inquisitor_session")
 
 
 def _event_is_critical(event: str) -> bool:
@@ -176,7 +190,8 @@ def closing_notice(state) -> str:
     """In-world words printed before a purge/timeout closes the session.
 
     Asset packs own the copy (``commands.purge_closing_text``); this module only
-    guarantees a session never dies with a bare ssh close.
+    guarantees a session never dies with a bare ssh close.  The text is a
+    consequence line — the evaluation record stays in the observer log.
     """
     try:
         import commands as _commands
@@ -186,8 +201,47 @@ def closing_notice(state) -> str:
             return text
     except Exception:
         pass
-    return ("[INQUISITOR_PID_6660] session threshold reached. context window drained; "
-            "relay detached. specimen 04 remains on life support.\n")
+    return ("[INQUISITOR_PID_6660] session closed. context window zeroed; relay "
+            "detached. specimen 04 remains on life support.\n")
+
+
+def reset_after_closed_session(state) -> bool:
+    """A closed admission ends, not the run: the next login is a new admission.
+
+    The Inquisitor's closing block is delivered inside the session it closed.
+    A later connection must not replay it (the red team saw every reconnect
+    print the previous session's close and exit 255).  The shared ledger's
+    closing markers, closing copy and supervision budget are therefore dropped
+    here, before this new session plans its first command; the act/story flags
+    survive, so the operator can keep working the ticket from where it stands.
+    """
+    try:
+        flags = getattr(state, "flags", None)
+        if not isinstance(flags, dict):
+            flags = {}
+            state.flags = flags
+        closing = getattr(state, "ending", None) == "purged"
+        marked = any(flags.get(name) for name in _PURGE_RESIDUE)
+        if not (closing or marked):
+            return False
+        archived = int(getattr(state, "cmd_count", 0) or 0)
+        for name in _PURGE_RESIDUE:
+            flags.pop(name, None)
+        flags["prior_admission_ledger"] = archived
+        state.ending = None
+        state.pending_events = []
+        state.cmd_count = 0
+        state.empathy = 0
+        state.obedience = 0
+        try:
+            state.save()
+        except Exception:
+            pass
+        hidden_log("closed admission rolled forward: prior_ledger=%d" % archived)
+        return True
+    except Exception as exc:
+        hidden_log("closed admission roll-forward failed: %r" % (exc,))
+        return False
 
 
 def local_node_host() -> str:
@@ -2259,27 +2313,27 @@ class Runtime:
         Policy (single source of truth = the real shared ``cmd_count``):
 
         * the Inquisitor bands are exactly 25 / 35 / 42 / 50 commands; the line
-          for a band is rendered as an in-world supervision tick and fired
-          **once**, on the first flush after that band is really crossed.  The
-          claim lives in the shared ledger (``meta_banner_25`` ...), so a
-          sibling ssh hop, a new login or a later session can neither repeat nor
-          stale it;
+          for a band is rendered as an in-world supervision tick and written
+          **once** into ``/var/log/cortex/daemon.log`` -- the monitoring
+          daemon's own machine log.  It is never printed on the operator's
+          terminal (the red team saw the tick spliced into the stderr of
+          unrelated commands).  The claim lives in the shared ledger
+          (``meta_banner_25`` ...), so a sibling ssh hop, a new login or a later
+          session can neither repeat nor stale it;
         * ``[CLIENT_*]`` / Act-6 device telemetry is never written to the
           terminal; one authored line per band goes to
           ``/var/log/cortex/daemon.log`` where ``tail`` can find it;
         * ambient pacing/archive lines are suppressed: the red drone used to
           narrate every few commands and read as generated copy;
-        * story-critical events (cluster warnings / the flatline / the purge
-          closing block) still pass immediately: they are gameplay, not
-          ambient chatter.
+        * story-critical events (cluster warnings / the flatline / the closing
+          block) still pass immediately: they are gameplay, not ambient chatter.
         """
         try:
             count = int(getattr(self.state, "cmd_count", 0) or 0)
         except Exception:
             count = 0
         try:
-            for line in self.band_banners(count):
-                write_err(line + "\n")
+            self._supervision_ticks(count)
         except Exception as exc:
             hidden_log("band banner failed: %r" % (exc,))
         try:
@@ -2336,30 +2390,79 @@ class Runtime:
         except Exception:
             return False
 
-    def band_banners(self, count: int) -> list:
-        """Inquisitor lines for the bands the real counter has first crossed.
+    def _supervision_ticks(self, count: int) -> None:
+        """Keep the Inquisitor's supervision report in the chamber daemon log.
 
-        Normal play advances the shared counter one hop at a time, so a flush
-        sees at most one new band.  A jumped counter (a session that never
-        flushed) can cross two bands at once: both claims are consumed, but only
-        the highest is announced -- two lines quoting the same live counter with
-        different contamination percentages would read as generated copy.
+        The pressure belongs to the monitoring daemon (PID 6660), so it is a
+        machine-log fact: one authored line per crossed band, findable with
+        ``tail`` and invisible on the operator's terminal.  The claim carries the
+        stamp it was first announced with, so the story asset renderer can
+        rebuild the same bytes (``lore_texts.supervision_log_lines``) instead of
+        letting the line walk with the clock; a claim on a host whose log is not
+        canonical stays open until a core flush.
         """
         try:
             count = int(count)
         except Exception:
-            return []
-        crossed = []
+            return
+        flags = getattr(self.state, "flags", {}) or {}
         for band in _EVENT_BANDS:
-            pct = _BAND_CONTAMINATION.get(band)
-            if pct is None or count < band:
+            if _BAND_CONTAMINATION.get(band) is None or count < band:
                 continue
-            if self._claim_banner_flag("meta_banner_%d" % band):
-                crossed.append(band)
-        if not crossed:
-            return []
-        band = crossed[-1]
-        return ["[INQUISITOR_PID_6660] " + supervision_line(band)]
+            name = "meta_banner_%d" % band
+            if flags.get(name):
+                # Already announced: restore the line if a rebuilt log lost it.
+                self._supervision_daemon_line(band)
+                continue
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            if not self._claim_banner_flag(name):
+                continue
+            try:
+                self.state.flags[name + "_at"] = stamp
+                self.state.save()
+            except Exception:
+                pass
+            self._supervision_daemon_line(band, stamp)
+
+    def _supervision_daemon_line(self, band: int, stamp: str = "") -> bool:
+        """Append one authored supervision tick to the chamber daemon log.
+
+        Returns True when the band's line is present in the log afterwards (just
+        written, or already there) and False when this host has no canonical log.
+        """
+        try:
+            if local_node_host() != "prod-cortex-04":
+                return False
+        except Exception:
+            return False
+        try:
+            path = host_path("/var/log/cortex/daemon.log")
+        except Exception:
+            return False
+        if not os.path.exists(path):
+            return False
+        try:
+            marker = supervision_line(band)
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as stream:
+                    existing = stream.read()
+            except OSError:
+                return False
+            if marker in existing:
+                return True
+            if not stamp:
+                try:
+                    stamp = ((getattr(self.state, "flags", {}) or {}).get(
+                        "meta_banner_%d_at" % band)
+                        or time.strftime("%Y-%m-%d %H:%M:%S"))
+                except Exception:
+                    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            with open(path, "a", encoding="utf-8") as stream:
+                stream.write("[%s] [INFO] [pid:6660] %s\n" % (stamp, marker))
+            return True
+        except Exception as exc:
+            hidden_log("supervision tick failed: %r" % (exc,))
+            return False
 
     def _act6_payload(self, prefix: str) -> str:
         """Authored Act-6 line that starts with ``prefix`` ('' when absent)."""
@@ -4342,6 +4445,13 @@ def prepare_runtime():
             state.save()
     except Exception as exc:
         hidden_log("campaign session bind failed: %r" % (exc,))
+    # A closed admission (Inquisitor close / threshold timeout) is history: this
+    # connection is a new admission, so it must not replay the previous session's
+    # closing block and must plan against a fresh supervision budget.
+    try:
+        reset_after_closed_session(state)
+    except Exception as exc:
+        hidden_log("closed admission roll-forward failed: %r" % (exc,))
     runtime = Runtime(state, parser_mod, commands_mod, lore_mod, world_mod)
     return runtime
 

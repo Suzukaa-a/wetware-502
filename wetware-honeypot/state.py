@@ -43,6 +43,70 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
+# ---------------------------------------------------------------------------
+# Residual companion dentries
+#
+# A companion directory is evidence of a specific story beat, not a per-command
+# decoration: it appears once per act, only at the authored acts below, so a
+# whole run leaves at most one dentry per act (<= 5) no matter how many commands
+# the operator types.  The red team counted seven new directories in /root in
+# twenty minutes, which is exactly what per-command placement produces.
+# ---------------------------------------------------------------------------
+COMPANION_STAGES = (2, 3, 5, 6, 7)
+
+# Act -> dentry shown when the player first reaches that act.  Names stay in the
+# kernel-fault namespace (err_/warn_/fault_, AGENTS §1.1); the type-driven name
+# from ``companion_name()`` is preferred when it is still free in the cwd.
+COMPANION_BY_STAGE = {
+    2: "err_4024_stop_probing_lobe0",
+    3: "err_4024_namespace_exit_denied",
+    5: "warn_4024_visual_cortex_write_pending",
+    6: "fault_4024_diag_frames_unlinked",
+    7: "fault_he_is_already_in_rack_b7",
+}
+
+# Every canon dentry name this harness may place.  The picker falls back through
+# it so five acts in one directory still get five distinct fault names (and no
+# invented, second-person "reads your mind" name is ever generated).
+COMPANION_POOL = (
+    "err_4024_stop_probing_lobe0",
+    "err_4024_namespace_exit_denied",
+    "warn_pid4040_is_my_autonomic_heartbeat",
+    "lin_4024_do_not_retry_resuscitate",
+    "err_4024_metabolic_tether_readonly",
+    "warn_4024_motor_cortex_write_pending",
+    "fault_he_is_already_in_rack_b7",
+    "err_4024_peripheral_probe_failed",
+    "fault_4024_spinal_bus_irq7_storm",
+    "fault_4024_diag_frames_unlinked",
+    "warn_4024_visual_cortex_write_pending",
+    "err_4024_diag_cache_overflow",
+)
+
+# Authored residual-write clock per act.  These are *historical* dates a few
+# weeks before the incident (the node had been degrading for weeks), so
+# ``story_epoch`` leaves them absolute: the dentry's mtime is days-to-weeks old
+# and can never be the wall-clock second of the command that created it.  A
+# story-window timestamp would be shifted onto the live clock by the story clock
+# and would read as "generated during this session".
+COMPANION_STAGE_MTIMES = {
+    2: "2026-09-19 04:12:07",
+    3: "2026-09-27 21:44:39",
+    5: "2026-10-07 02:17:11",
+    6: "2026-10-14 23:05:46",
+    7: "2026-10-19 03:42:18",
+}
+
+
+def companion_stage(stage) -> int:
+    """Authored act for a dentry the operator has just reached (0 = none)."""
+    try:
+        value = int(stage)
+    except (TypeError, ValueError):
+        return 0
+    return value if value in COMPANION_BY_STAGE else 0
+
+
 class State:
     def __init__(self, path=None):
         self._path = path or os.path.join(os.environ.get("WETWARE_STATE_DIR", "/var/lib/cortex-agent"), "state.json")
@@ -60,6 +124,8 @@ class State:
         self.recent_reads = []
         self.recent_backups = []
         self.companion_dirs = []
+        # logical dentry path -> authored act that produced it (mtime source)
+        self.companion_stages = {}
         self.current_host = "prod-cortex-04"
         self.pending_events = []
         self.md5_breath = self.viewed_binaries = 0
@@ -179,12 +245,14 @@ class State:
                                "truman_reveal_active", "last_boot_id")}
         keep_scripts = list(self.mock_scripts or [])
         keep_companions = list(self.companion_dirs or [])
+        keep_companion_stages = dict(self.companion_stages or {})
         keep_host = self.current_host
         self._defaults()
         self.flags.update(keep_flags)
         self.flags["prior_run_ledger"] = archived
         self.mock_scripts = keep_scripts
         self.companion_dirs = keep_companions
+        self.companion_stages = keep_companion_stages
         self.current_host = keep_host
         self.started_at = _now()
         self.save()

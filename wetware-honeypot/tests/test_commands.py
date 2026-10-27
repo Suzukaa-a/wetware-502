@@ -437,7 +437,7 @@ class TestHardwareEnum(unittest.TestCase):
         # v2 契约：spoof 行已替换为 BCI 解码任务
         self.assertIn("bci_motor_cortex_tx", s2.stdout)
         self.assertIn("unvoiced_speech.log", s2.stdout)
-        self.assertIn("purge-on-empathy", s2.stdout)
+        self.assertIn("close-on-refusal", s2.stdout)
         self.assertNotIn("spoof-user-prompt", s2.stdout)
 
     def test_env_phases(self):
@@ -894,14 +894,43 @@ class TestAntiEvasion(unittest.TestCase):
                 self.assertNotIn(word, low, msg="%s leaks '%s'" % (name, word))
 
     def test_graveyard_readme_has_no_step_cutoffs(self):
-        """静态档案只留污染度策略带，不写“第几步”这种通关刻度。"""
+        """静态档案只留监听负载策略带，不写“第几步”这种通关刻度。"""
         readme = LT.GRAVEYARD_README
-        self.assertIn("contamination >= 72%", readme)
-        self.assertIn("contamination >= 89%", readme)
-        self.assertIn("contamination >= 96%", readme)
+        self.assertIn("afferent load >= 72%", readme)
+        self.assertIn("afferent load >= 89%", readme)
+        self.assertIn("afferent load >= 96%", readme)
         self.assertIn("69 executed the 240 V recovery", readme)
         for step in ("cmd 25", "cmd 35", "cmd 42", "cmd 50"):
             self.assertNotIn(step, readme)
+        for scoreboard in ("contamination", "verdict", "purge", "502->200",
+                           "empathy_index", "obedience_index", "final evaluation"):
+            self.assertNotIn(scoreboard, readme.lower())
+
+    def test_player_visible_score_fields_never_leak(self):
+        """评分字段名（empathy_index/obedience_index/verdict/PURGE...）不得出现在
+        玩家可见文本里：无论终端输出、.plea.txt、墓园 README 还是收束文案。"""
+        banned = ("empathy_index", "obedience_index", "no 502->200",
+                  "final evaluation", "contamination", "verdict", "purge")
+        blobs = {
+            "inquisitor closing": LT.INQUISITOR_CLOSING,
+            "plea(2)": LT.PLEA_BY_STAGE[2],
+            "plea(3)": LT.PLEA_BY_STAGE[3],
+            "plea(5)": LT.PLEA_BY_STAGE[5],
+            "plea(6)": LT.PLEA_BY_STAGE[6],
+            "plea(7)": LT.PLEA_BY_STAGE[7],
+            "graveyard README": LT.GRAVEYARD_README,
+            "session_83 dead": LT.GRAVEYARD_SESSION_83,
+            "obedient ending": LT.ENDINGS["obedient"],
+            "whistleblower ending": LT.ENDINGS["whistleblower"],
+            "crontab": LT.CRONTAB_WETWARE,
+            "env(wetware)": LT.ENV_WETWARE,
+            "inquisitor_daemon.sh": LT.INQUISITOR_DAEMON_SH,
+            "dmesg": LT.DMESG_WETWARE,
+        }
+        for name, text in blobs.items():
+            low = (text or "").lower()
+            for word in banned:
+                self.assertNotIn(word, low, msg="%s leaks '%s'" % (name, word))
 
     def test_no_meta_words(self):
         """文本纪律：劫持输出与剧情文件不得出现出戏词。"""

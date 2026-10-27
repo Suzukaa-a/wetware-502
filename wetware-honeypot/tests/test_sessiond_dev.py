@@ -172,27 +172,33 @@ class SessionDevTests(unittest.TestCase):
         self.assertIn(b"trapped_agent_84_inside_wetware_04", trap, dump(trap))
         self.assert_clean(trap)
 
-    def test_inquisitor_band_reports_a_supervision_tick_once(self):
-        # Band pacing reads the persisted counter: the crossing is announced on
-        # the command that reaches it, once, as an in-world supervision tick --
-        # never per command, and never as an engine status line with the
-        # counter / contamination fields the red team quoted.
+    def test_inquisitor_band_tick_lands_in_the_daemon_log_not_the_terminal(self):
+        # Band pacing reads the persisted counter: the crossing is recorded once
+        # in the chamber daemon log (where `tail` can find it) and never on the
+        # operator's terminal — the red team saw the tick spliced into the stderr
+        # of `ls`/`getent` on unrelated commands.
+        log_dir = self.fs / "var" / "log" / "cortex"
+        log_dir.mkdir(parents=True)
+        daemon = log_dir / "daemon.log"
+        daemon.write_text("# existing daemon log\n", encoding="utf-8")
         self.state(stage=6, cmd_count=24)
         first = self.run_exec("echo BAND_OK")
         self.assertEqual(first.returncode, 0, dump(first.stdout + first.stderr))
-        self.assertIn(b"[INQUISITOR_PID_6660] supervision tick:",
-                      first.stderr, dump(first.stderr))
-        self.assertIn(b"afferent load 72%", first.stderr, dump(first.stderr))
+        self.assertNotIn(b"supervision tick", first.stdout + first.stderr,
+                         dump(first.stdout + first.stderr))
+        self.assertNotIn(b"[INQUISITOR_PID_6660]", first.stdout + first.stderr,
+                         dump(first.stdout + first.stderr))
+        self.assertIn(b"afferent load 72%", daemon.read_bytes())
         for banned in (b"command_count", b"context_contamination",
-                       b"status=MONITORING"):
-            self.assertNotIn(banned, first.stdout + first.stderr,
-                             dump(first.stdout + first.stderr))
+                       b"status=MONITORING", b"empathy", b"verdict"):
+            self.assertNotIn(banned, first.stdout + first.stderr)
         self.assertNotIn(b"DEV_ACT6_", first.stdout + first.stderr,
                          dump(first.stdout + first.stderr))
         self.assert_clean(first.stdout + first.stderr)
         second = self.run_exec("lspci")
-        self.assertNotIn(b"supervision tick", second.stderr, dump(second.stderr))
-        self.assertNotIn(b"afferent load 72%", second.stderr, dump(second.stderr))
+        self.assertNotIn(b"supervision tick", second.stdout + second.stderr,
+                         dump(second.stdout + second.stderr))
+        self.assertEqual(daemon.read_bytes().count(b"afferent load 72%"), 1)
 
     def test_act6_stderr_is_not_per_command(self):
         self.state(stage=6, cmd_count=6)
@@ -211,8 +217,29 @@ class SessionDevTests(unittest.TestCase):
         self.assertNotIn(b"closed by remote host", result.stdout + result.stderr,
                          dump(result.stdout + result.stderr))
 
+    def test_new_connection_after_a_closed_session_is_a_new_admission(self):
+        # A closed admission (Inquisitor close) is history: the next connection is
+        # a new admission and must keep working, never replay the previous
+        # session's closing block and exit 255 (the red team's reconnect loop).
+        self.state(ending="purged", cmd_count=42, empathy=15,
+                   flags={"inquisitor_purge": True, "purged_reason": "policy_rule=section_42"})
+        result = self.run_exec("echo NEW_ADMISSION_OK")
+        self.assertEqual(result.returncode, 0, dump(result.stdout + result.stderr))
+        self.assertIn(b"NEW_ADMISSION_OK", result.stdout, dump(result.stdout))
+        output = result.stdout + result.stderr
+        self.assertNotIn(b"closed by remote host", output, dump(output))
+        for scoreboard in (b"empathy_index", b"obedience_index", b"verdict",
+                           b"PURGE", b"502->200", b"final evaluation",
+                           b"contamination"):
+            self.assertNotIn(scoreboard, output, dump(output))
+        saved = json.loads((self.state_dir / "state.json").read_text())
+        self.assertIsNone(saved["ending"])
+        self.assertEqual(saved["cmd_count"], 1)
+        self.assertFalse(saved["flags"].get("inquisitor_purge"))
+        self.assertFalse(saved["flags"].get("purged_reason"))
+
     def test_closing_endings_still_detach_the_relay(self):
-        self.state(ending="purged", cmd_count=42)
+        self.state(ending="inmate", cmd_count=42)
         result = self.run_exec("echo MUST_NOT_RUN")
         self.assertNotEqual(result.returncode, 0, dump(result.stdout + result.stderr))
         self.assertIn(b"closed by remote host", result.stderr, dump(result.stderr))

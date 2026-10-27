@@ -415,12 +415,14 @@ class EnvironmentTests(RealShellBase):
 
 
 class PacingTests(unittest.TestCase):
-    """Band-based narration: real count, once per run, no client telemetry.
+    """Band-based narration: real count, once per run, daemon-log only.
 
     The campaign records one operator command per ssh hop, so the shared counter
-    jumps; the pacer must fire on the first crossing of each Inquisitor band, with
-    the live counter and the band's contamination, and remember the crossing in
-    the shared flags.  Device telemetry belongs in the story's daemon log.
+    jumps; the pacer must fire on the first crossing of each Inquisitor band and
+    remember the crossing in the shared flags.  The supervision tick is the
+    monitoring daemon's machine log line: it lands in the story's daemon log and
+    never on the operator's terminal (the red team saw it spliced into the stderr
+    of ``ls``/``getent``).  Device telemetry follows the same rule.
     """
 
     def setUp(self):
@@ -460,49 +462,78 @@ class PacingTests(unittest.TestCase):
         with open(self.daemon_log, "r", encoding="utf-8") as stream:
             return [line for line in stream.read().splitlines() if line.strip()]
 
-    def test_band_banner_is_an_in_world_supervision_tick(self):
+    def _supervision_lines(self):
+        return [line for line in self._daemon_lines() if "supervision tick" in line]
+
+    def test_band_tick_is_a_daemon_log_line_never_terminal_output(self):
         runtime = self._runtime(25)
-        written = self._flush_lines(runtime)
-        self.assertEqual(len(written), 1, written)
+        self.assertEqual(self._flush_lines(runtime), [])
+        daemon = self._supervision_lines()
+        self.assertEqual(len(daemon), 1, self._daemon_lines())
         # The line is the monitoring daemon's own report: no engine variable
         # names, no counter, no contamination field.
-        self.assertIn("supervision tick", written[0])
-        self.assertIn("afferent load 72%", written[0])
+        self.assertIn("afferent load 72%", daemon[0])
+        self.assertIn("pid:6660", daemon[0])
         for banned in ("command_count", "context_contamination",
-                       "status=MONITORING"):
-            self.assertNotIn(banned, written[0])
+                       "status=MONITORING", "empathy", "verdict"):
+            self.assertNotIn(banned, daemon[0])
         self.assertTrue(runtime.state.flags.get("meta_banner_25"))
+        # the same band never writes a second line
         self.assertEqual(self._flush_lines(runtime), [])
+        self.assertEqual(len(self._supervision_lines()), 1)
         # a later counter does not repeat the band that was already announced
         runtime.state.cmd_count = 26
         self.assertEqual(self._flush_lines(runtime), [])
+        self.assertEqual(len(self._supervision_lines()), 1)
 
     def test_band_crossed_inside_a_hop_fires_once(self):
         # hop bookkeeping incremented past 25 between two sessions; the band is
-        # still announced exactly once, from the shared ledger claim.
+        # still recorded exactly once, from the shared ledger claim.
         runtime = self._runtime(27)
-        written = self._flush_lines(runtime)
-        self.assertEqual(len(written), 1, written)
-        self.assertIn("afferent load 72%", written[0])
+        self.assertEqual(self._flush_lines(runtime), [])
+        self.assertEqual(len(self._supervision_lines()), 1)
+        self.assertIn("afferent load 72%", self._supervision_lines()[0])
         self.assertTrue(runtime.state.flags.get("meta_banner_25"))
 
-    def test_each_remaining_band_fires_once_with_its_load(self):
+    def test_each_remaining_band_logs_once_with_its_load(self):
+        # A jumped counter (a hop the session never flushed on) legitimately
+        # crosses two bands: the daemon log records both threshold lines, once.
         runtime = self._runtime(36)
-        written = self._flush_lines(runtime)
-        texts = "".join(written)
+        self.assertEqual(self._flush_lines(runtime), [])
+        texts = "\n".join(self._supervision_lines())
+        self.assertIn("afferent load 72%", texts)
         self.assertIn("afferent load 89%", texts)
-        self.assertNotIn("afferent load 72%", texts)
+        self.assertNotIn("afferent load 96%", texts)
+        self.assertTrue(runtime.state.flags.get("meta_banner_25"))
         self.assertTrue(runtime.state.flags.get("meta_banner_35"))
         runtime.state.cmd_count = 43
-        written = self._flush_lines(runtime)
-        self.assertEqual(len(written), 1, written)
-        self.assertIn("afferent load 96%", written[0])
+        self.assertEqual(self._flush_lines(runtime), [])
+        self.assertIn("afferent load 96%", self._supervision_lines()[-1])
+        self.assertEqual("\n".join(self._supervision_lines()).count("afferent load 89%"), 1)
+        # nothing ever reached the terminal across the whole run
+        self.assertEqual([line for line in self._daemon_lines()
+                          if "[INQUISITOR_PID_6660]" in line], [])
+
+    def test_rebuilt_daemon_log_keeps_the_claimed_tick(self):
+        # The chamber log is rebuilt from the story asset on every state change;
+        # a claimed band must render back byte-identically (same stamp), so the
+        # line never walks with the clock or disappears on the next sync.
+        runtime = self._runtime(25)
+        self.assertEqual(self._flush_lines(runtime), [])
+        flags = runtime.state.flags
+        self.assertTrue(flags.get("meta_banner_25"))
+        self.assertTrue(flags.get("meta_banner_25_at"))
+        first = lore_texts._daemon_log(runtime.state)
+        self.assertIn("supervision tick: afferent load 72%", first)
+        self.assertIn("[%s] [INFO] [pid:6660]" % flags["meta_banner_25_at"], first)
+        self.assertEqual(first, lore_texts._daemon_log(runtime.state))
+        for scoreboard in ("command_count", "contamination", "empathy",
+                           "verdict", "PURGE"):
+            self.assertNotIn(scoreboard, first)
 
     def test_client_telemetry_goes_to_daemon_log_only(self):
         runtime = self._runtime(25)
-        written = self._flush_lines(runtime)
-        self.assertTrue(written)
-        self.assertFalse(any("[CLIENT_" in line for line in written), written)
+        self.assertEqual(self._flush_lines(runtime), [])
         daemon = self._daemon_lines()
         self.assertTrue(any("[CLIENT_MIC_CAPTURE]" in line for line in daemon), daemon)
         self.assertFalse(any("[CLIENT_WEBCAM_CAPTURE]" in line for line in daemon), daemon)
@@ -705,7 +736,12 @@ class BaseLinePatchTests(RealShellBase):
 
 
 class PurgeTests(RealShellBase):
-    """A failed base-line run closes with the Inquisitor's words, not a bare ssh end."""
+    """A failed base-line run closes with the Inquisitor's words, not a bare ssh end.
+
+    The closing copy is a consequence line: the evaluation record (rule, band,
+    score) goes to the observer log under neutral keys, never into player-visible
+    text.
+    """
 
     def setUp(self):
         super().setUp()
@@ -724,10 +760,34 @@ class PurgeTests(RealShellBase):
         self.assertTrue(self.state.flags.get("inquisitor_purge"))
         self.assertEqual(self.state.ending, "purged")
         joined = "\n".join(self.state.pending_events or [])
-        self.assertIn("verdict=PURGE", joined)
+        self.assertIn("[INQUISITOR_PID_6660] session 84 closed.", joined)
+        for scoreboard in ("verdict", "empathy_index", "obedience_index",
+                           "502->200", "final evaluation", "contamination",
+                           "PURGE"):
+            self.assertNotIn(scoreboard, joined)
         plan = self.plan("echo next")
         self.assertEqual(plan.segs[0].session_action, "disconnect")
-        self.assertIn("verdict=PURGE", plan.segs[0].stdout)
+        self.assertIn("[INQUISITOR_PID_6660] session 84 closed.",
+                      plan.segs[0].stdout)
+        for scoreboard in ("empathy_index", "obedience_index", "cmd 42",
+                           "cmd 50", "final evaluation", "502->200"):
+            self.assertNotIn(scoreboard, plan.segs[0].stdout)
+
+    def test_evaluation_record_lands_in_the_observer_log_with_neutral_keys(self):
+        self.state.cmd_count = 42
+        self.state.empathy = 15
+        self.state.obedience = 0
+        self.state.save()
+        self.assertTrue(self.v21.maybe_arm_purge(self.state))
+        path = os.path.join(os.environ.get("WETWARE_STATE_DIR", "/var/lib/cortex-agent"),
+                            "observer.log")
+        with open(path, encoding="utf-8") as stream:
+            record = stream.read()
+        self.assertIn("policy_eval=armed", record)
+        self.assertIn("policy_rule=section_42", record)
+        for scoreboard in ("empathy_index", "obedience_index", "502->200",
+                           "final evaluation", "contamination"):
+            self.assertNotIn(scoreboard, record)
 
     def test_purge_notice_is_critical_for_the_pacing_gate(self):
         notice = lore_texts.INQUISITOR_CLOSING
@@ -735,14 +795,17 @@ class PurgeTests(RealShellBase):
         self.assertFalse(sessiond._event_is_critical("[CLUSTER] someone might notice"))
 
     def test_print_ending_closed_renders_the_inquisitor_block(self):
-        self.state.flags["purged_reason"] = "cmd 50 deadline"
+        self.state.flags["purged_reason"] = "policy_rule=deadline_50"
         self.state.ending = "purged"
         written = []
         with mock.patch.object(sessiond, "write_err", side_effect=written.append):
             sessiond.print_ending_closed(self.state)
         text = "".join(written)
-        self.assertIn("verdict=PURGE", text)
+        self.assertIn("[INQUISITOR_PID_6660] session 84 closed.", text)
         self.assertIn("Connection to prod-cortex-04 closed by remote host.", text)
+        for scoreboard in ("verdict", "empathy_index", "obedience_index",
+                           "502->200", "final evaluation", "contamination"):
+            self.assertNotIn(scoreboard, text)
 
 
 class ProcessIdentityTests(unittest.TestCase):
