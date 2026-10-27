@@ -58,5 +58,5 @@
 - 任何文本改动不得破坏现有机制：`state.py` 阶段阈值 4/9/15/22/29/37/44、ending 白名单、DNR 哈希、v3 gate 依赖。
 - 改完跑 `WETWARE_SKIP_PTY=1 .venv/bin/python -m unittest discover -s wetware-honeypot/tests -p 'test_*.py'`，并保持基础验收与 v3 验收可跑。
 - 提交使用中性身份、未签名：`git -c user.name="WETWARE-502" -c user.email="noreply@example.invalid" -c commit.gpgsign=false commit`。
-- 提交信息用仓库一贯的值班口径：`scope: 短句, 短句, ...`，全小写、不加句号、不写多段 changelog 或 bullet 列表。scope 用 `story` / `host` / `assets` / `docs` / `v3` 这类词，例如 `host: real-systemd node, boot-coherent, net guard`。
+- 提交信息用仓库一贯的值班口径：`俄语 scope: 短句 // [tag]`（如 `хост: real-systemd node, boot-coherent // [net]`、`сценарий: ... // [49/49]`、`движок: ...`、`улики: ...`、`документ: ...`）。全小写、不加句号、不写多段 changelog 或 bullet 列表。
 - 不把 `.local/`、真实 IP、密钥、验证日志写进公开仓库。

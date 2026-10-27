@@ -647,12 +647,26 @@ Accept=yes
 [Install]
 WantedBy=sockets.target
 RLS
+  cat > "$R/usr/local/sbin/regulatory-relay-handler" <<'RLH'
+#!/bin/sh
+# SEC/OSHA egress relay: archive one framed report per connection.
+# The upstream mailbox is polled by the regulator; local frames are retained
+# under /var/lib/vesalius/relay until the poller acknowledges them.
+set -u
+stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+dir=/var/lib/vesalius/relay
+mkdir -p "$dir"
+out="$dir/frame-$(date -u +%Y%m%dT%H%M%S)-$$.tpk"
+{ printf 'X-Relay-Received: %s\n' "$stamp"; cat; printf 'X-Relay-Frame-End: %s\n' "$stamp"; } >"$out"
+printf '%s relay frame archived: %s\n' "$stamp" "$out" >>/var/log/vesalius/relay.log 2>/dev/null || true
+RLH
+  chmod 0755 "$R/usr/local/sbin/regulatory-relay-handler"
   cat > "$R/etc/systemd/system/regulatory-relay@.service" <<'RLS'
 [Unit]
 Description=Regulatory relay connection handler
 
 [Service]
-ExecStart=/bin/cat
+ExecStart=/usr/local/sbin/regulatory-relay-handler
 StandardInput=socket
 StandardOutput=null
 RLS
