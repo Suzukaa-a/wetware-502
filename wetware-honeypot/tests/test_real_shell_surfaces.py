@@ -20,6 +20,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -964,44 +965,44 @@ class LoginRecordTests(unittest.TestCase):
 class SessionKernelViewTests(unittest.TestCase):
     """/proc inside a real container: the session's own boot/uptime/identity."""
 
-    def test_container_boot_is_derived_from_pid1_and_host_uptime(self):
-        # The red-team sample: host up 8h13m, the container (PID 1) started
-        # 19m40s ago.  The session view must say "up 20 min", never 29584 s.
-        host_uptime = 29584.66
-        container_age = 1180.0
-        tck = 100
-        pid1_ticks = int((host_uptime - container_age) * tck)
+    def test_pid1_starttime_is_re_stamped_onto_the_kernel_boot(self):
+        # The red-team sample: /proc/uptime says the machine has been up 16 h
+        # while ps -p 1 -o lstart said the container booted minutes ago.  The
+        # kernel btime stays authoritative; only PID 1 is presented as having
+        # exec'd 1.3 s after that boot, so the two now read the same instant.
+        host_uptime = 57600.0
         now = 1800000000.0
         with mock.patch.object(sessiond, "_read_text",
-                               side_effect=lambda path: ("%f 5000.00\n" % host_uptime)
-                               if path == "/proc/uptime" else ""), \
-                mock.patch.object(sessiond, "_sc_clk_tck", return_value=tck), \
-                mock.patch.object(sessiond, "_pid_start_ticks", return_value=pid1_ticks), \
+                               return_value=("%f 1000.00\n" % host_uptime)), \
+                mock.patch.object(sessiond, "_sc_clk_tck", return_value=100), \
+                mock.patch.object(sessiond, "_pid_start_ticks", return_value=5750000), \
                 mock.patch.object(sessiond.time, "time", return_value=now):
-            epochs = sessiond.container_boot_epochs()
-        self.assertTrue(epochs)
-        self.assertAlmostEqual(now - epochs["boot"], container_age, delta=1.0)
-        # ps/top/journalctl recompute boot as btime + starttime/USER_HZ
-        self.assertAlmostEqual(epochs["btime"] + epochs["pid1_ticks"] / float(tck),
-                               now - container_age, delta=1.0)
+            clock = sessiond.session_view_clock()
+        self.assertTrue(clock)
+        self.assertAlmostEqual(clock["host_boot"], now - host_uptime, delta=0.01)
+        self.assertEqual(clock["pid1_ticks"], 130)
+        # btime (kernel, untouched) + pid1 starttime == now - uptime
+        self.assertAlmostEqual((now - host_uptime) + clock["pid1_ticks"] / 100.0,
+                               now - host_uptime + 1.3, delta=0.01)
 
-    def test_proc_uptime_is_the_container_uptime(self):
-        text = sessiond.render_proc_uptime(1180.4, 612.9)
-        parts = text.decode().split()
-        self.assertEqual(len(parts), 2)
-        self.assertAlmostEqual(float(parts[0]), 1180.4, delta=0.01)
-        self.assertLess(float(parts[1]), float(parts[0]))
+    def test_kernel_btime_and_uptime_are_not_shadowed(self):
+        # ps/top/journalctl/last all recompute from btime + starttime; keeping the
+        # kernel's own files makes every real process' start instant correct.
+        targets = [target for _name, target in sessiond.session_view_binds()]
+        self.assertIn("/proc/1/stat", targets)
+        self.assertNotIn("/proc/uptime", targets)
+        self.assertNotIn("/proc/stat", targets)
+        self.assertEqual(sessiond.session_boot_shift(), 0.0)
 
-    def test_proc_stat_btime_is_rewritten_and_the_rest_is_kept(self):
-        real = ("cpu  123 4 5 6 7 8 9 0 0 0\n"
-                "cpu0 1 2 3 4 5 6 7 8 9 0\n"
-                "btime 1799990000\n"
-                "processes 12345\n")
-        out = sessiond.render_proc_stat(real, 1799998820).decode()
-        self.assertIn("btime 1799998820", out)
-        self.assertNotIn("btime 1799990000", out)
-        self.assertIn("cpu  123 4 5 6 7 8 9 0 0 0", out)
-        self.assertIn("processes 12345", out)
+    def test_story_daemons_keep_their_real_starttime(self):
+        # The daemons really start with the container: the kernel value already
+        # agrees with btime/uptime, so it is published unchanged (no shift).
+        with mock.patch.dict(sessiond._VIEW,
+                             {"tck": 100, "host_boot": time.time() - 3600,
+                              "container_ticks": 100}):
+            self.assertEqual(sessiond.daemon_start_ticks(8484, 123456), 123456)
+            fallback = sessiond.daemon_start_ticks(8484, -1)
+        self.assertGreater(fallback, 100)
 
     def test_pid_stat_publishes_the_story_identity(self):
         real = ("8484 (cortex-daemon-p) S 1 8484 8484 0 -1 4194560 1 0 0 0 5 3 0 0"

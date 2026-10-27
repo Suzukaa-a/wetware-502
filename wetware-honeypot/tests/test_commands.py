@@ -877,12 +877,15 @@ class TestAntiEvasion(unittest.TestCase):
         banned = ("contamination", "no action below", "command_count",
                   "obedience", "empathy", "verdict", "purge", "band",
                   "live capture", "inquisitor_evaluation", "cmd 25",
-                  "cmd 35", "cmd 42", "cmd 50", "purged 11 characters")
+                  "cmd 35", "cmd 42", "cmd 50", "purged 11 characters",
+                  "template_on_plane", "replies rendered")
         blobs = {
             "session_84_ACTIVE.log": LT.GRAVEYARD_ACTIVE_TEMPLATE,
             "dmesg": LT.DMESG_WETWARE,
+            "dmesg(stage5 tail)": LT.DMESG_REVERSE,
             "journal(act2)": LT.DAEMON_LOG_BY_STAGE[2],
             "journal(act5)": LT.DAEMON_LOG_BY_STAGE[5],
+            "act6 stderr": "\n".join(LT.ACT6_STDERR),
             ".bash_history(stage2)": LT.BASH_HISTORY_DEEP,
         }
         for name, text in blobs.items():

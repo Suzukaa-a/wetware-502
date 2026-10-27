@@ -127,6 +127,35 @@ class WorldTests(unittest.TestCase):
         self.assertFalse(old.exists())
         self.assertFalse(self.p("/root/lin_4024_do_not_retry_resuscitate").exists())
 
+    def test_companion_survives_an_act_without_an_authored_plea(self):
+        """故事包缺某个 act 的 .plea.txt 时不能留下空目录。"""
+        self.world.bootstrap()
+        self.lore.PLEA_BY_STAGE = {2: "求救 2", 3: "求救 3", 5: "求救 5"}
+        self.state.stage = 4
+        self.state.last_cmd_type = "cat"
+        self.world.place_companion("/root")
+        dirs = [d for d in self.p("/root").iterdir()
+                if d.is_dir() and self.world._is_companion_name(d.name)]
+        self.assertEqual(len(dirs), 1)
+        self.assertEqual(stat.S_IMODE(dirs[0].stat().st_mode), 0o500)
+        self.assertEqual((dirs[0] / ".plea.txt").read_text(), "求救 3")
+
+    def test_reset_sweeps_unregistered_companion_residue(self):
+        """reset 要清掉旧构建/半写入留下的未登记伴随目录，但不碰用户目录。"""
+        self.world.bootstrap()
+        stray = self.p("/root/err_4024_left_by_an_old_build")
+        stray.mkdir()
+        (stray / ".plea.txt").write_text("old")
+        half = self.p("/root/fault_4024_half_written")
+        half.mkdir()
+        user = self.p("/root/err_my_own_notes")
+        user.mkdir()
+        (user / "todo.txt").write_text("mine")
+        self.world.reset(keep_images=True)
+        self.assertFalse(stray.exists())
+        self.assertFalse(half.exists())
+        self.assertTrue(user.exists())
+
     def test_kernel_paths_and_symlink_escape_are_rejected(self):
         self.world.bootstrap()
         for path in ("/proc/4040/status", "/sys/test", "/dev/test", "/tmp/../proc/test"):

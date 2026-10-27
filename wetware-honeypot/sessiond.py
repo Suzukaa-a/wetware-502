@@ -784,19 +784,28 @@ def confine_argv(argv):
 # ---------------------------------------------------------------------------
 #
 # The campaign nodes are real systemd-nspawn containers on a shared host
-# kernel.  Every /proc entry is therefore the *host's* answer: /proc/uptime
-# counts from the host boot (hours before this container existed),
-# /proc/1/stat carries a host-relative starttime, /proc/1/environ publishes
-# container=systemd-nspawn / container_uuid / NOTIFY_SOCKET=/run/host/notify,
-# and a pinned story daemon resolves its exe to the pin launcher instead of the
-# vendor binary the fiction names it by.
+# kernel.  Most of /proc is therefore the *host's* answer - and that is fine:
+# the machine's uptime, btime and every process' starttime are one consistent
+# clock, which is exactly what ``ps``, ``top``, ``journalctl --list-boots`` and
+# ``last reboot`` read.  What must change is only what a container gives away:
+#
+#   * /proc/1/stat: its starttime is the container's own boot, ~hours after the
+#     host's; re-stamped to an init-like 1.3 s so ``ps -p 1 -o lstart`` equals
+#     ``now - /proc/uptime`` (the reported "PID1 lstart vs uptime" mismatch);
+#   * /proc/1/environ: container=systemd-nspawn / container_uuid /
+#     NOTIFY_SOCKET=/run/host/notify;
+#   * /run/host: nspawn's bind of the host root, which must not exist at all;
+#   * the pinned story daemons: /proc/<pid>/exe points at the pin launcher
+#     instead of the vendor binary the fiction names them by.
 #
 # All of it is fixed in the *session's own mount namespace*: the shadow files
 # below are bind-mounted over the exact /proc entries before the operator shell
-# is forked, and each story daemon's /proc/<pid> directory is rebuilt the same
-# way.  Nothing is written to the kernel's real data - systemd, journald and
-# every privileged tool keep reading the truth, only the session (and the
-# planner process that computes the journal/uptime stamps) sees the view.
+# is forked, and the story daemons' /proc/<pid> directories are rebuilt the
+# same way.  Nothing is written to the kernel's real data - systemd, journald
+# and every privileged tool keep reading the truth, only the session sees the
+# view.  /proc/uptime and /proc/stat are deliberately *not* shadowed: the
+# kernel's btime stays authoritative, so a real process' starttime and ps'
+# lstart/START stay correct by construction.
 SESSION_VIEW_ENV = "WETWARE_REAL_CONTAINER"
 SESSION_VIEW_DIRNAME = ".session-view"
 # A normal init execs a hair after boot; presenting PID 1 that way keeps
@@ -808,11 +817,9 @@ _VIEW = {
     "installed": False,     # the binds exist in this process' mount namespace
     "dir": "",              # shadow directory (inside the masked state dir)
     "tck": 100,             # USER_HZ
-    "btime": 0,             # /proc/stat btime of the session view
-    "boot": 0.0,            # the instant the session view calls "container boot"
-    "pid1_ticks": 130,      # starttime the session view gives PID 1
-    "host_uptime0": 0.0,    # real host clock at install time
-    "host_idle0": 0.0,
+    "host_boot": 0.0,       # now - /proc/uptime: the kernel's own boot instant
+    "pid1_ticks": 130,      # starttime the view gives PID 1 (1.3 s after boot)
+    "container_ticks": 0,   # real PID 1 starttime (when the container booted)
     "readers": {},          # real proc files kept open past the masking
     "writers": {},          # shadow files rewritten on every refresh
     "kernel_log": "",
@@ -888,60 +895,35 @@ def _pid_start_ticks(pid: int) -> int:
         return -1
 
 
-def container_boot_epochs() -> dict:
-    """Host clock, container boot instant and the values the view publishes.
+def session_view_clock() -> dict:
+    """Clocks the session view works from.
 
-    ``container boot`` is the instant this container's PID 1 started:
-    ``now - host_uptime + pid1_starttime``.  ``btime`` and PID 1's presented
-    starttime are chosen so a tool that recomputes boot as ``btime +
-    starttime/USER_HZ`` (ps, top, journalctl) lands on exactly that instant.
+    The kernel's /proc/uptime and /proc/stat btime stay authoritative: every
+    real process' starttime is measured from that same host boot, so ps
+    lstart/START, top, journalctl --list-boots and last reboot agree with each
+    other and with ``uptime`` without the engine touching them.
+
+    Only PID 1 is re-stamped.  In a container its starttime is the container's
+    own boot (hours after the host's), which made ``ps -p 1 -o lstart``
+    contradict /proc/uptime.  Presenting init as having exec'd 1.3 s after the
+    kernel boot puts it exactly where ``now - uptime`` says the machine booted.
     """
     parts = _read_text("/proc/uptime").split()
     if len(parts) < 2:
         return {}
     try:
-        host_uptime, host_idle = float(parts[0]), float(parts[1])
+        host_uptime = float(parts[0])
     except ValueError:
         return {}
-    ticks1 = _pid_start_ticks(1)
-    if ticks1 < 0:
-        return {}
     tck = _sc_clk_tck()
-    container_boot = time.time() - host_uptime + ticks1 / float(tck)
-    pid1_ticks = int(round(_PID1_EXEC_DELAY * tck))
-    btime = int(round(container_boot - pid1_ticks / float(tck)))
     return {
         "tck": tck,
-        "btime": btime,
-        "boot": btime + pid1_ticks / float(tck),
-        "pid1_ticks": pid1_ticks,
-        "host_uptime0": host_uptime,
-        "host_idle0": host_idle,
-        # How far the container's boot sits after the host's: every kernel
-        # starttime in the pid namespace is measured from the host boot, so a
-        # text surface that recomputes a start instant (ps START/lstart) shifts
-        # it back by this many seconds.
-        "shift": ticks1 / float(tck),
+        "host_boot": time.time() - host_uptime,
+        "pid1_ticks": int(round(_PID1_EXEC_DELAY * tck)),
+        # Real PID 1 starttime: when this container actually booted.  Only used
+        # as the fallback start of a story daemon that predates the view.
+        "container_ticks": max(_pid_start_ticks(1), 0),
     }
-
-
-def render_proc_uptime(uptime: float, idle: float) -> bytes:
-    return ("%.2f %.2f\n" % (max(float(uptime), 0.0), max(float(idle), 0.0))).encode("ascii")
-
-
-def render_proc_stat(real_stat: str, btime: int) -> bytes:
-    """The kernel's /proc/stat with only ``btime`` moved to the container boot."""
-    rows = []
-    replaced = False
-    for row in (real_stat or "").splitlines():
-        if row.startswith("btime "):
-            rows.append("btime %d" % int(btime))
-            replaced = True
-        else:
-            rows.append(row)
-    if not replaced:
-        rows.append("btime %d" % int(btime))
-    return ("\n".join(rows) + "\n").encode("utf-8", "replace")
 
 
 def render_pid_stat(real_stat: str, comm: str = "", starttime=None) -> bytes:
@@ -1020,37 +1002,33 @@ def story_daemon_specs() -> list:
 
 
 def session_boot_shift() -> float:
-    """Seconds between the host boot and this container's boot (0.0 = no view).
+    """Seconds a text surface must shift a start instant (always 0.0 now).
 
-    Kernel process starttimes are still measured from the host boot while the
-    session view publishes btime = container boot, so a *text* surface that
-    recomputes a start instant (``ps`` START / ``lstart``) subtracts this.  The
-    ps scrub in commands.py can call this instead of deriving it.
+    Kept as the interface the ps scrub in commands.py calls: the session view
+    publishes the kernel's own btime, so a real process' starttime needs no
+    correction and the scrub has nothing to do.
     """
-    if not _VIEW.get("enabled"):
-        return 0.0
-    try:
-        return max(float(_VIEW.get("shift") or 0.0), 0.0)
-    except (TypeError, ValueError):
-        return 0.0
+    return 0.0
 
 
 def daemon_start_ticks(pid: int, real_ticks: int = -1) -> int:
-    """starttime the view gives a story daemon, in USER_HZ since container boot.
+    """starttime the view gives a story daemon, in USER_HZ since host boot.
 
-    The real value (host-relative) is shifted back by the container's boot
-    offset so ``ps lstart`` agrees with ``systemctl status`` of the unit, and
-    clamped so it always lies inside the view's uptime.
+    The daemons really do start when the container starts, so the kernel value
+    already agrees with btime/uptime (and with ``systemctl status`` of the unit);
+    it is published as is, only clamped inside the kernel's own uptime.
     """
     tck = float(_VIEW.get("tck") or 100)
-    uptime_ticks = max((time.time() - float(_VIEW.get("boot") or time.time())) * tck, 0.0)
-    shift_ticks = max(float(_VIEW.get("shift") or 0.0), 0.0) * tck
+    host_boot = _VIEW.get("host_boot")
+    host_boot = time.time() if host_boot is None else float(host_boot)
+    uptime_ticks = max((time.time() - host_boot) * tck, 0.0)
     if real_ticks is not None and int(real_ticks) >= 0:
-        value = int(real_ticks) - int(shift_ticks)
-        if value > 0:
-            return int(min(value, max(uptime_ticks * 0.95, 1.0)))
+        return int(min(int(real_ticks), max(uptime_ticks, 1.0)))
+    # No live process to read: put the daemon a couple of minutes after the
+    # container's own boot, which is when the units really start on this node.
+    base = max(int(_VIEW.get("container_ticks") or 0), 1)
     delay = 168.0 if int(pid) == 6660 else 246.0
-    return int(min(delay * tck, max(uptime_ticks * 0.6, 1.0)))
+    return int(min(base + delay * tck, max(uptime_ticks * 0.9, 1.0)))
 
 
 def _vendor_binary_note(path: str, comm: str) -> bytes:
@@ -1354,6 +1332,20 @@ def _hide_view_entry(libc, path: str) -> bool:
     return False
 
 
+def session_view_binds() -> tuple:
+    """(shadow file name, target path) pairs the view binds.
+
+    /proc/uptime and /proc/stat are deliberately absent: the kernel's btime is
+    authoritative (see session_view_clock), so every real process' starttime,
+    ps lstart/START, journalctl --list-boots and last reboot agree by
+    construction.  Only the container-shaped entries are replaced.
+    """
+    return (("pid1_stat", "/proc/1/stat"),
+            ("pid1_cgroup", "/proc/1/cgroup"),
+            ("pid1_environ", "/proc/1/environ"),
+            ("container", "/run/systemd/container"))
+
+
 def _apply_view_binds(libc, command: str = "") -> None:
     directory = _VIEW["dir"]
 
@@ -1367,12 +1359,7 @@ def _apply_view_binds(libc, command: str = "") -> None:
             _hide_view_entry(libc, hidden)
         except Exception as exc:
             hidden_log("session view hide %s failed: %r" % (hidden, exc))
-    for name, target in (("uptime", "/proc/uptime"),
-                         ("stat", "/proc/stat"),
-                         ("pid1_stat", "/proc/1/stat"),
-                         ("pid1_cgroup", "/proc/1/cgroup"),
-                         ("pid1_environ", "/proc/1/environ"),
-                         ("container", "/run/systemd/container")):
+    for name, target in session_view_binds():
         _bind_file(libc, source(name), target)
     # /var/log/dmesg + /var/log/kern.log used to be bound to /dev/null (a
     # character device where a boot log belongs - its own tell).  The story's
@@ -1407,7 +1394,7 @@ def _initial_view_files(state=None, commands_mod=None) -> None:
             kernel_text = ""
     _VIEW["kernel_log"] = kernel_text
     host = local_node_host()
-    boot = float(_VIEW.get("boot") or time.time())
+    boot = float(_VIEW.get("host_boot") or time.time())
     _write_shadow("pid1_environ", render_pid1_environ())
     # A bare-metal host has no container handshake file at all.
     _write_shadow("container", b"")
@@ -1465,13 +1452,13 @@ def install_session_view(state=None, commands_mod=None, command=None) -> bool:
             return False
     except OSError:
         return False
-    epochs = container_boot_epochs()
-    if not epochs:
+    clock = session_view_clock()
+    if not clock:
         hidden_log("session view: kernel clock unavailable")
         return False
     # The utmp file must exist on the real /run before the view rebuilds it.
     ensure_utmp_file()
-    _VIEW.update(epochs)
+    _VIEW.update(clock)
     _VIEW["enabled"] = True
     _VIEW["dir"] = _view_dir()
     try:
@@ -1479,13 +1466,12 @@ def install_session_view(state=None, commands_mod=None, command=None) -> bool:
     except OSError as exc:
         hidden_log("session view dir failed: %r" % (exc,))
         return False
-    for name, path in (("uptime", "/proc/uptime"), ("stat", "/proc/stat"),
-                       ("pid1_stat", "/proc/1/stat")):
-        try:
-            _VIEW["readers"][name] = os.open(path, os.O_RDONLY)
-        except OSError as exc:
-            hidden_log("session view open %s failed: %r" % (path, exc))
-    if "uptime" not in _VIEW["readers"] or "stat" not in _VIEW["readers"]:
+    # Only PID 1's stat is re-stamped: /proc/uptime and /proc/stat keep the
+    # kernel's own answers, so no reader fd is needed for them either.
+    try:
+        _VIEW["readers"]["pid1_stat"] = os.open("/proc/1/stat", os.O_RDONLY)
+    except OSError as exc:
+        hidden_log("session view open /proc/1/stat failed: %r" % (exc,))
         return False
     _initial_view_files(state, commands_mod)
     refresh_session_view(force=True)
@@ -1514,20 +1500,9 @@ def refresh_session_view(force: bool = False) -> None:
         return
     _VIEW["last_refresh"] = now
     try:
-        tck = float(_VIEW["tck"] or 100)
-        uptime = max(now - float(_VIEW["boot"]), 0.0)
-        parts = _pread_text(_VIEW["readers"].get("uptime")).split()
-        idle = 0.0
-        if len(parts) >= 2:
-            try:
-                idle = max(float(parts[1]) - float(_VIEW["host_idle0"]), 0.0)
-            except ValueError:
-                idle = 0.0
-        idle = min(idle, uptime * 0.98)
-        _write_shadow("uptime", render_proc_uptime(uptime, idle))
-        stat_text = _pread_text(_VIEW["readers"].get("stat"))
-        if stat_text:
-            _write_shadow("stat", render_proc_stat(stat_text, int(_VIEW["btime"])))
+        # PID 1 keeps the kernel's own comm/state and the re-stamped starttime;
+        # everything else in the view is static.  A refresh keeps that one copy
+        # current without ever touching /proc/uptime or /proc/stat.
         pid1_text = _pread_text(_VIEW["readers"].get("pid1_stat"))
         if pid1_text:
             _write_shadow("pid1_stat",

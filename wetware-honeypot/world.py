@@ -870,7 +870,7 @@ class World:
         if os.path.lexists(path):
             return
         os.makedirs(path, mode=0o700)
-        self._atomic(logical + "/.plea.txt", lore_texts.PLEA_BY_STAGE[min(self.state.stage, 7)], 0o400)
+        self._atomic(logical + "/.plea.txt", self._plea_text(self.state.stage), 0o400)
         self._finish_companion(logical)
 
     def bleed_socket(self):
@@ -995,21 +995,80 @@ class World:
             shutil.rmtree(path)
         self._unregister_companion(logical)
 
+    def _plea_text(self, stage):
+        """Residual text for this act; fall back when an act has no authored plea.
+
+        ``PLEA_BY_STAGE`` is a story asset and may legitimately skip an act; a
+        missing key must not abort the dentry creation (that would leave an empty
+        0700 directory beside the real 0500 residual writes).
+        """
+        table = getattr(lore_texts, "PLEA_BY_STAGE", {}) or {}
+        if not table:
+            return ""
+        try:
+            key = min(max(int(stage), 0), 7)
+        except (TypeError, ValueError):
+            key = 0
+        while key not in table and key > 0:
+            key -= 1
+        while key not in table and key < 7:
+            key += 1
+        return str(table.get(key, ""))
+
+    # Directories an operator can end up in with a residual dentry.  A reset
+    # sweeps these one level deep for companions that were never registered.
+    RESET_COMPANION_ROOTS = ("/", "/root", "/opt/cortex", "/var/log/cortex",
+                             "/var/log/agent_graveyard", "/var/www/html",
+                             "/var/www/html/diagnostics", "/etc/nginx", "/tmp",
+                             "/run/cortex")
+
+    def _companion_is_ours(self, logical):
+        """True when a dentry is a residual write of this harness, not user data."""
+        path = self._p(logical)
+        if not os.path.isdir(path) or os.path.islink(path):
+            return False
+        if os.path.isfile(os.path.join(path, ".plea.txt")):
+            return True
+        try:
+            # A dentry left behind by an older asset pack can be empty; a
+            # player-created directory with the same prefix is not.
+            return not os.listdir(path)
+        except OSError:
+            return False
+
+    def _sweep_companion_residue(self):
+        for root in self.RESET_COMPANION_ROOTS:
+            try:
+                base = self._p(root)
+                if not os.path.isdir(base) or os.path.islink(base):
+                    continue
+                for child in os.scandir(base):
+                    if not child.is_dir(follow_symlinks=False):
+                        continue
+                    if not self._is_companion_name(child.name):
+                        continue
+                    logical = posixpath.join(root, child.name)
+                    if self._companion_is_ours(logical):
+                        self._remove_companion(logical)
+            except Exception as exc:
+                self._log(exc)
+
     def _refresh_plea(self, logical):
         """Residual-text follow-up: keep the shown dentry, move only its .plea.txt."""
         try:
             if logical not in (getattr(self.state, "companion_dirs", None) or []):
                 return
             path = self._p(logical + "/.plea.txt")
-            if not os.path.isfile(path):
+            plea = self._plea_text(self.state.stage)
+            if not plea:
                 return
-            plea = lore_texts.PLEA_BY_STAGE[min(self.state.stage, 7)]
-            try:
-                with open(path, encoding="utf-8", errors="replace") as stream:
-                    if stream.read() == plea:
-                        return
-            except OSError:
-                pass
+            if os.path.isfile(path):
+                try:
+                    with open(path, encoding="utf-8", errors="replace") as stream:
+                        if stream.read() == plea:
+                            return
+                except OSError:
+                    pass
             # The dentry is mode 0500 (a sealed residual write); open it only for
             # the in-place text swap, then seal it again even if the write fails.
             try:
@@ -1053,8 +1112,11 @@ class World:
             if os.path.lexists(path):
                 return  # 绝不覆盖用户已有的同名目录。
             os.mkdir(path, 0o700)
-            plea = lore_texts.PLEA_BY_STAGE[min(self.state.stage, 7)]
-            self._atomic(logical + "/.plea.txt", plea, 0o400)
+            # Register before writing the body: a half-written dentry must still
+            # be removed by the next reset instead of surviving as a stale
+            # empty directory with nothing inside it.
+            self._register_companion(logical)
+            self._atomic(logical + "/.plea.txt", self._plea_text(self.state.stage), 0o400)
             self._finish_companion(logical)
             self._last_companion = logical
             self._atomic(self.state_dir + "/runtime/companion_path", logical, 0o600)
@@ -1171,6 +1233,11 @@ class World:
             except Exception as exc:
                 self._log(exc)
         self.state.companion_dirs = []
+        # A companion dentry that was never registered (a previous build, a
+        # half-written one from an older asset pack) still says "someone
+        # configured this node": sweep the known operator cwds so a reset really
+        # starts from a clean rack.
+        self._sweep_companion_residue()
         for logical in lore_texts.FILES.keys() | lore_texts.SYMLINKS.keys():
             if keep_images and (logical == self.asset_dir or logical.startswith(self.asset_dir.rstrip("/") + "/")):
                 continue
