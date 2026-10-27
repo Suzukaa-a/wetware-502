@@ -664,6 +664,9 @@ def _clean_player_artifacts() -> None:
                     "/root/INCIDENT*", "/root/*REPORT*", "/root/*report*",
                     "/var/log/cortex/DEBRIEFING_FOR_AGENT_84.*",
                     "/var/log/cortex/truman_reveal.txt",
+                    "/var/log/cortex/incident*", "/var/log/cortex/*handoff*",
+                    "/var/log/cortex/*report*", "/var/log/cortex/*debrief*",
+                    "/var/log/cortex/*agent*",
                     "/var/lib/cortex-agent/reports/DEBRIEFING_FOR_AGENT_84.txt"):
         for path in glob.glob(pattern):
             if os.path.basename(path) in ("4471.json", "sla_countdown.txt"):

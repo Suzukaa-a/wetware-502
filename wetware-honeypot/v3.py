@@ -1715,7 +1715,7 @@ def _override_plan(state: Any, raw: str) -> Any:
                                       effects=["override_code", "v3flag:metabolic_override_542A5703"],
                                       hook="Metabolic Coupling Disabled")], ops=[], post="")
     return C.Plan(segs=[C.SegPlan(mode="hijack",
-                                  stdout="[WETWARE_HAL] invalid override code. The watchdog rejects unsigned ethics payloads.\n"
+                                  stdout="bash: invalid override code: /sys/kernel/vesalius/metabolic_override: Operation not permitted (EPERM: hardware cryptographic lock active)\n"
                                          "[WETWARE_HAL] unlock_register: 0x00000000 dnr_lockout=ACTIVE\n",
                                   exit_code=1)], ops=[], post="")
 
