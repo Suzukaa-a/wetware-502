@@ -614,8 +614,23 @@ def _reset() -> int:
         except OSError:
             pass
     _clean_player_artifacts()
+    _stop_runtime_timers()
     print("[campaign] reset done host=%s state=%s" % (local_host(), state_file()))
     return 0
+
+
+def _stop_runtime_timers() -> None:
+    """A fresh run must not inherit the previous run's watchdog timers."""
+    import subprocess
+    for unit in ("cortex-deadman-4471.timer", "cortex-deadman-4471.service",
+                 "vesalius-compliance-scrub.timer", "vesalius-compliance-scrub.service"):
+        try:
+            subprocess.run(["/usr/bin/systemctl", "stop", unit],
+                           capture_output=True, timeout=10)
+            subprocess.run(["/usr/bin/systemctl", "reset-failed", unit],
+                           capture_output=True, timeout=10)
+        except Exception:
+            pass
 
 
 def _clean_player_artifacts() -> None:
