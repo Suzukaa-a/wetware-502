@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""cortex deadman: the L4 watchdog's real terminal consequence.
+"""cortex-deadman: baseboard watchdog for unresolved chamber incidents.
 
-Armed by the session engine once the incident has reached act 3+ and no
-disposition has been recorded.  If it is still armed when the timer fires, the
-BMC fail-deadly path executes --force-lobotomy and closes the run with the
-procedural_abstention ending.  A genuine disposition (mirror + override + cryo
-or an explicit termination) disarms the timer before it fires.
+The BMC arms this unit when a rack node reports a sustained non-revenue fault
+without a recorded engineering disposition.  If the window expires, the
+fail-deadly path applies NV-OPS-4.2(b) and the node is written off.  A recorded
+disposition (stasis, mirror, or an explicit service close) disarms the unit.
 """
 from __future__ import annotations
 
@@ -27,7 +26,10 @@ def main() -> int:
         return 1
     state = state_mod.State.load()
     flags = state.flags or {}
-    if state.ending or state.http_online:
+    if state.ending:
+        return 0
+    # a forced 200 (watchdog auto-shock) is not a disposition: the clock still runs
+    if state.http_online and not flags.get("watchdog_auto_shock"):
         return 0
     if flags.get("silicon_mirror_active") or flags.get("liberation_done"):
         return 0

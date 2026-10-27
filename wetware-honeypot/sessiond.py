@@ -4687,7 +4687,7 @@ class PlanExecutor:
                 runtime._arm_scrub()
             # Stopping the watchdog is not a disposition: the automaton re-asserts.
             try:
-                _low = (line or "").lower()
+                _low = (getattr(parsed, "raw", "") or "").lower()
                 if ("systemctl" in _low and "stop" in _low
                         and ("cortex-deadman" in _low or "deadman.py" in _low)):
                     _flags = state.flags or {}
@@ -5597,6 +5597,8 @@ def _materialize_host_lore() -> None:
         return
     if host == "edge-gw-01":
         # the gateway must carry the same disposition form and spool as the node
+        import calendar as _cal, time as _time
+        stamp = _cal.timegm(_time.strptime("2026-10-26 03:12:00", "%Y-%m-%d %H:%M:%S"))
         try:
             import lore_texts as _lt
             ticket = getattr(_lt, "TICKET_4471_DISPOSITION", "")

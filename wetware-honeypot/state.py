@@ -184,6 +184,19 @@ class State:
                         self.ending = "procedural_abstention"
                 except Exception:
                     pass
+                # The first ending is the verdict: a later session carrying a
+                # stale "no ending" copy must not reopen or replace the run.
+                try:
+                    if (os.path.exists(self._path)
+                            and not getattr(self, "_reset_in_progress", False)):
+                        with open(self._path, "r", encoding="utf-8") as _prior:
+                            _seen = json.load(_prior).get("ending")
+                        # a stale session may not *replace* a verdict; a cleared
+                        # session state (None) may start a new admission.
+                        if _seen and self.ending and self.ending != _seen:
+                            self.ending = _seen
+                except Exception:
+                    pass
                 self.recent_reads = self.recent_reads[-32:]
                 self.recent_backups = self.recent_backups[-32:]
                 data = {k: v for k, v in self.__dict__.items() if not k.startswith("_") and k != "asset_dir"}
@@ -205,7 +218,11 @@ class State:
 
     def reset(self):
         self._defaults()
-        self.save()
+        self._reset_in_progress = True
+        try:
+            self.save()
+        finally:
+            self._reset_in_progress = False
 
     def classify(self, argv):
         from shell_parser import basename
