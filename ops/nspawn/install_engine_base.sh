@@ -1581,7 +1581,23 @@ def nginx_logs(edge, now):
     rng = Rng(0x9E4)
     access, errors = [], []
     if not edge:
-        return "", ""
+        # the chamber node's own front end: the unix-socket upstream has been
+        # refused since the 2026-10-25 lock; this is the log the ticket cites.
+        for _off in (23, 41, 58, 66, 81, 95):
+            errors.append(
+                "%s [error] 4040#4040: *%d connect() to "
+                "unix:/run/cortex/synapse.sock failed (111: Connection refused) "
+                "while connecting to upstream, client: 127.0.0.1, server: "
+                "api.internal.vesalius.io, request: \"GET /v1/inference HTTP/1.1\""
+                % (stamp(OOM + 60 * _off, "%Y/%m/%d %H:%M:%S"), rng.rand(100, 9000)))
+        for epoch in BOOTS:
+            pid = rng.rand(780, 860)
+            errors.append("%s [notice] %d#%d: using the \"epoll\" event method"
+                          % (stamp(epoch + 4, "%Y/%m/%d %H:%M:%S"), pid, pid))
+            errors.append("%s [notice] %d#%d: nginx/1.18.0 (Ubuntu)"
+                          % (stamp(epoch + 4, "%Y/%m/%d %H:%M:%S"), pid, pid))
+        errors.sort(key=lambda row: row[:19])
+        return "", "\n".join(errors) + "\n"
     day = ts(2025, 8, 28, 0, 2, 11)
     while day < OOM - 3600:
         if rng.rand(0, 5) == 0:
