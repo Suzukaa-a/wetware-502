@@ -574,6 +574,9 @@ done
 # built from the staged source) stops that.
 say "restoring the vendor toolkit in /opt/cortex/bin"
 mkdir -p "$ROOTFS/opt/cortex/bin"
+# the runtime pins its vendor daemons with the immutable bit; clear it before
+# the image refresh, otherwise install(1) cannot replace the binaries
+find "$ROOTFS/opt/cortex/bin" -maxdepth 1 -type f -exec chattr -i {} + 2>/dev/null || true
 for _pair in "cortex-daemon-pin:cortex_daemon.c" \
              "assimilate_llm_weights:node_daemon.c"; do
   _name="${_pair%%:*}"
