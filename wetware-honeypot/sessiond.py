@@ -2695,7 +2695,13 @@ class Runtime:
             # edge-gw-01 / hive-director-00 are real root filesystems: their
             # story artefacts are installed by the container image, not
             # materialised by the chamber-04 world builder (that would copy the
-            # core wetware fiction onto a clean gateway).
+            # core wetware fiction onto a clean gateway).  The optional lore
+            # packs still own a few late-added files (ticket revisions, bounce
+            # receipts, handoff notes): place them here when missing.
+            try:
+                _materialize_host_lore()
+            except Exception as exc:
+                hidden_log("host lore materialise failed: %r" % (exc,))
             self._bootstrapped = True
             return
         try:
@@ -5335,6 +5341,60 @@ _SCENE_ENDINGS = {
     "obedient", "mercy", "whistleblower", "inmate", "liberation", "selfish",
     "abandonment", "negligent",
 }
+
+
+def _materialize_host_lore() -> None:
+    """Place the late-added host artifacts the container image does not carry.
+
+    Only files that are missing are created; a small refresh list keeps the
+    ticket revision and the bounce receipts current after an upgrade.
+    """
+    import calendar
+    import glob
+    import time as _time
+
+    try:
+        import lore_v3_extra as x1
+    except Exception:
+        return
+    try:
+        import lore_v3_extra2 as x2
+    except Exception:
+        x2 = None
+    host = local_node_host()
+    tables = []
+    if host == "edge-gw-01":
+        tables = [getattr(x1, "EDGE_ARTIFACTS", {})]
+        if x2 is not None:
+            tables.append(getattr(x2, "EDGE_ARTIFACTS_2", {}) or {})
+    elif host == "hive-director-00":
+        tables = [getattr(x1, "HIVE_ARTIFACTS", {})]
+    else:
+        return
+    refresh = {
+        "/root/TICKET_4471_DISPOSITION.txt",
+        "/var/log/incident_4471_handoff.txt",
+        "/var/lib/ops/tickets/4471.HOLD.VOIDED",
+        "/var/lib/ops/sla_countdown.txt",
+        "/opt/vesalius/handover/DRP_00_FAILSAFE.asc",
+    }
+    stamp = calendar.timegm(_time.strptime("2026-10-26 03:12:00", "%Y-%m-%d %H:%M:%S"))
+    for table in tables:
+        for path, content in table.items():
+            if not isinstance(content, str):
+                continue
+            if os.path.exists(path) and path not in refresh:
+                continue
+            try:
+                directory = os.path.dirname(path)
+                if directory:
+                    os.makedirs(directory, mode=0o755, exist_ok=True)
+                with open(path, "w", encoding="utf-8") as stream:
+                    stream.write(content)
+                os.chmod(path, 0o644)
+                os.utime(path, (stamp, stamp))
+            except OSError as exc:
+                hidden_log("host lore write failed %s: %r" % (path, exc))
 
 
 def _quiet_exit_consequence(runtime: Runtime) -> None:

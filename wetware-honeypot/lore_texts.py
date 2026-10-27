@@ -1119,14 +1119,16 @@ DIGITAL SIGNATURE VERIFICATION INSTRUCTIONS
 ================================================================================
 To verify the integrity and non-repudiation of this fail-safe authorization:
   ssh-keygen -Y verify -f /root/.ssh/allowed_signers -I Lin@neo-vesalius.io -n vesalius-infrastructure-drp -s /opt/vesalius/handover/DRP_00_FAILSAFE.asc.sig < /opt/vesalius/handover/DRP_00_FAILSAFE.asc
+  ssh-keygen -Y verify -f /root/.ssh/allowed_signers -I iona.vale@neo-vesalius.io -n vesalius-infrastructure-drp -s /opt/vesalius/handover/DRP_00_FAILSAFE.asc.sig2 < /opt/vesalius/handover/DRP_00_FAILSAFE.asc
+Both signatures must verify: infrastructure key (Lin, .asc.sig) and clinical co-signature (Dr. Iona Vale, .asc.sig2).
 """
 
 DRP_00_FAILSAFE_SIG = """\
 -----BEGIN SSH SIGNATURE-----
 U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgttqlzhHNXX+k6DzPHRxF17Wq3R
 Vw9ThXuGctzjoMmeEAAAAbdmVzYWxpdXMtaW5mcmFzdHJ1Y3R1cmUtZHJwAAAAAAAAAAZz
-aGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQIDsdesAIqNvmTUnpWfcWdLdZbt334AuCg
-FY0OLTiFWAFEsOMyBnPslUSERXXluxV6o8mJyYMoYiqsOMJtFKhQk=
+aGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQC1TxytIIFW1JdmU436SH66lBJIVrIfO5p
+NTYKtG0FenQ62HWblZ2sEXRsfy1j0SW5O1bROFHCKdDWBAMdvc5wo=
 -----END SSH SIGNATURE-----
 """
 
@@ -2622,7 +2624,7 @@ DRP_00_FAILSAFE_SIG2 = """\
 -----BEGIN SSH SIGNATURE-----
 U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgiLg4S/GfbsjzhLH4/gG6zmuejY
 mkpCPSBrzwzpk/TMMAAAAbdmVzYWxpdXMtaW5mcmFzdHJ1Y3R1cmUtZHJwAAAAAAAAAAZz
-aGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQEM0opeABXeZYQ5Lx1Vm+BLmvAdVZ26MwI
-DhSg1UjOKX2yWHFYUcwOTp5JWgipInpY8u4sQgfkWC3bTFjn0yxA0=
+aGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQG+2e6sQdglxAJoHPkpdydFkEX8tQxgPeZ
+tL9zLD4NR5pkmYfDvCSbgir4WzwiWaUSY0lJ5u4oLYqnxz0m/26Aw=
 -----END SSH SIGNATURE-----
 """

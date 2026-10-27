@@ -640,7 +640,10 @@ def _clean_player_artifacts() -> None:
             pass
     for pattern in ("/root/*handoff*", "/root/*incident*", "/var/log/incident*",
                     "/var/log/*handoff*", "/var/lib/ops/tickets/*",
-                    "/root/INCIDENT*", "/root/*REPORT*", "/root/*report*"):
+                    "/root/INCIDENT*", "/root/*REPORT*", "/root/*report*",
+                    "/var/log/cortex/DEBRIEFING_FOR_AGENT_84.*",
+                    "/var/log/cortex/truman_reveal.txt",
+                    "/var/lib/cortex-agent/reports/DEBRIEFING_FOR_AGENT_84.txt"):
         for path in glob.glob(pattern):
             if os.path.basename(path) in ("4471.json", "sla_countdown.txt"):
                 continue
