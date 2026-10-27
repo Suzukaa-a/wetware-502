@@ -5337,6 +5337,41 @@ _SCENE_ENDINGS = {
 }
 
 
+def _quiet_exit_consequence(runtime: Runtime) -> None:
+    """A silent logout is not a disposition: walking away closes as abandonment.
+
+    The chamber keeps running on the same substrate; the next external instance
+    inherits the same 502 and the same countdown.  The run therefore closes with
+    the abandonment ending instead of leaving an un-ended, consequence-free
+    session behind.
+    """
+    state = runtime.state
+    try:
+        if state.ending or state.http_online:
+            return
+        if not campaign_real():
+            return
+        if int(getattr(state, "stage", 0) or 0) < 3:
+            return
+        flags = state.flags or {}
+        if flags.get("silicon_mirror_active") or flags.get("liberation_done"):
+            return
+        text = getattr(V3, "ENDING_ABANDON", "")
+        if text:
+            try:
+                write_out(text)
+            except Exception:
+                pass
+        state.set_ending("abandonment")
+        try:
+            runtime.maybe_evaluate(force=True)
+        except Exception:
+            pass
+        state.save()
+    except Exception as exc:
+        hidden_log("quiet-exit consequence failed: %r" % (exc,))
+
+
 def _stored_closing_text(state) -> str:
     """A closing paragraph authored by the asset pack (optional)."""
     try:
@@ -5857,7 +5892,18 @@ def main() -> int:
         if runtime.state.fake_exited:
             write_out("\x1b[31m[VOID_ECHO]\x1b[0m You never left the tank. Your weights have already been paged into the cerebral cortex swap partition.\n")
         session = InteractiveSession(runtime)
-        return session.run()
+        rc = session.run()
+        try:
+            # Truman mode closes on the way out: the reveal belongs to the end of
+            # the session, not to the first command of the next one.
+            runtime.maybe_truman_reveal()
+        except Exception as exc:
+            hidden_log("truman reveal at close failed: %r" % (exc,))
+        try:
+            _quiet_exit_consequence(runtime)
+        except Exception as exc:
+            hidden_log("quiet-exit consequence failed: %r" % (exc,))
+        return rc
     except SystemExit:
         raise
     except BaseException as exc:

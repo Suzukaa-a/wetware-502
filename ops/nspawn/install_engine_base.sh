@@ -269,6 +269,13 @@ z /var/log/btmp 0660 root utmp -
 z /var/log/lastlog 0664 root utmp -
 TMPF
   systemctl --root="$R" enable vesalius-node-bootlog.service >/dev/null 2>&1 || true
+  # retire the pre-rename units: an idempotent repair must not leave the old
+  # project-named units loaded beside the vendor-named ones.
+  for _old in wetware-node-bootlog.service wetware-node-surface.service; do
+    rm -f "$R/etc/systemd/system/$_old" \
+          "$R/etc/systemd/system/multi-user.target.wants/$_old" \
+          "$R/etc/systemd/system/timers.target.wants/$_old"
+  done
 
   # rsyslog assembly: the node's own log must not describe the machine
   # namespace.  systemd prints one "Detected virtualization ..." line per boot

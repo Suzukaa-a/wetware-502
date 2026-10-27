@@ -1821,6 +1821,11 @@ PY
     "$(awk -F= '$1=="DEPLOYMENT"{print $2}' "$ROOTFS/etc/machine-info" 2>/dev/null || true)"
   check_file "$ROOTFS/etc/systemd/network/10-wetware-nic.link" "guest nic rename rule"
   check_file "$ROOTFS/usr/local/sbin/vesalius-node-bootlog" "node boot record helper"
+  for _old in wetware-node-bootlog.service wetware-node-surface.service; do
+    rm -f "$ROOTFS/etc/systemd/system/$_old" \
+          "$ROOTFS/etc/systemd/system/multi-user.target.wants/$_old" \
+          "$ROOTFS/etc/systemd/system/timers.target.wants/$_old"
+  done
   check_file "$ROOTFS/etc/systemd/system/vesalius-node-bootlog.service" "node boot record unit"
 
   # --- node surface: tools, clock, logs, root home -------------------------
