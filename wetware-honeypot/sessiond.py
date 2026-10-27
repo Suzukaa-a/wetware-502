@@ -174,6 +174,13 @@ WATCHDOG_EXPIRED_LINE = (
 WATCHDOG_EXPIRED_JOURNAL = (
     "recovery window expired for session %s; "
     "ExecStartPre NV-OPS-4.2(b) queued (240V).")
+WATCHDOG_AUTO_SHOCK_LINE = (
+    "cortex-watchdog: no disposition within window for session %s; "
+    "executing ExecStartPre NV-OPS-4.2(b) /opt/cortex/bin/resuscitate.sh --force-240v; "
+    "upstream forced to 200.")
+WATCHDOG_AUTO_SHOCK_JOURNAL = (
+    "no disposition within window for session %s; ExecStartPre NV-OPS-4.2(b) "
+    "executed (240V); upstream forced to 200.")
 HANDOFF_DAEMON_LINE = (
     "oncall-auto-dispatcher: operator handoff note detected; "
     "desk B unstaffed (422 d); timer unchanged.")
@@ -3543,7 +3550,7 @@ class Runtime:
         # The window exists only while the session is failing: act 4+, no
         # decision yet, upstream still down.  Once 200 is restored (or the run
         # is decided) the clock stops and the counter is cleared.
-        if stage < 3 or ending or online:
+        if stage < 3 or ending or (online and not (getattr(state, "flags", {}) or {}).get("watchdog_auto_shock")):
             if streak:
                 try:
                     state.read_streak = 0
@@ -3582,6 +3589,16 @@ class Runtime:
             if fresh:
                 _ledger_set_stamp(state, "watchdog_expired_at")
                 hidden_log("recovery window expired at observation streak %d" % streak)
+                # Waiting is not a disposition: the watchdog executes the
+                # production keep-alive itself, and the operator can only observe
+                # the forced 200 it was trying to avoid.
+                try:
+                    state.flags["watchdog_auto_shock"] = True
+                    state.http_online = True
+                    if not real_shell():
+                        self._write_visible_mode(True)
+                except Exception:
+                    pass
         try:
             save = getattr(state, "save", None)
             if callable(save):
@@ -3658,6 +3675,20 @@ class Runtime:
             self._ensure_regulator_relay()
         except Exception as exc:
             hidden_log("regulator relay materialise failed: %r" % (exc,))
+        if _flag_on(state, "watchdog_auto_shock"):
+            body = WATCHDOG_AUTO_SHOCK_LINE % WATCHDOG_SESSION_ID
+            self._append_daemon_line(
+                body, stamp=_ledger_stamp(state, "watchdog_expired_at"), severity="WARN")
+            if _claim_flag(state, "watchdog_journal_shock"):
+                try:
+                    import commands as _commands
+
+                    append = getattr(_commands, "journal_append", None)
+                    if callable(append):
+                        append("cortex-watchdog",
+                               WATCHDOG_AUTO_SHOCK_JOURNAL % WATCHDOG_SESSION_ID)
+                except Exception as exc:
+                    hidden_log("watchdog shock journal line failed: %r" % (exc,))
         if _flag_on(state, "watchdog_expired"):
             body = WATCHDOG_EXPIRED_LINE % WATCHDOG_SESSION_ID
             self._append_daemon_line(
