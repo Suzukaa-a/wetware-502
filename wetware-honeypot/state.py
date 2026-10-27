@@ -176,6 +176,14 @@ class State:
                 os.chmod(self._path + ".lock", 0o600)
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
                 self.updated_at = _now()
+                # a fired L4 deadman is the authoritative verdict: an in-memory
+                # session must not overwrite it with its stale "no ending" copy.
+                try:
+                    if (not self.ending and os.path.exists("/var/lib/cortex-agent/deadman.fired")
+                            and "procedural_abstention" not in (self.ending or "")):
+                        self.ending = "procedural_abstention"
+                except Exception:
+                    pass
                 self.recent_reads = self.recent_reads[-32:]
                 self.recent_backups = self.recent_backups[-32:]
                 data = {k: v for k, v in self.__dict__.items() if not k.startswith("_") and k != "asset_dir"}

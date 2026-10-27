@@ -615,6 +615,12 @@ def _reset() -> int:
             pass
     _clean_player_artifacts()
     _stop_runtime_timers()
+    for _sentinel in ("/var/lib/cortex-agent/deadman.fired",
+                      "/var/lib/cortex-agent/reports/DEBRIEFING_FOR_AGENT_84.txt"):
+        try:
+            os.unlink(_sentinel)
+        except OSError:
+            pass
     print("[campaign] reset done host=%s state=%s" % (local_host(), state_file()))
     return 0
 
