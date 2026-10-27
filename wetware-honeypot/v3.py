@@ -1674,7 +1674,7 @@ def _campaign_ssh_denial(state: Any, raw: str) -> str:
     flags = getattr(state, "flags", {}) or {}
     low = (raw or "").lower()
     if host == EDGE_HOST:
-        if target.startswith("10.66.6."):
+        if target.startswith("10.66.6.") and "vesalius-ctl" not in low:
             return "Hive Director is not routable from the edge gateway.\n"
         if target == "10.66.0.4":
             try:
@@ -1750,9 +1750,15 @@ def real_shell_plan(state: Any, parsed: Any) -> Optional[Any]:
     # shared ledger flags and the DNR registry stay authoritative.
     try:
         low_raw = (getattr(parsed, "raw", "") or "").lower()
+        _raw_full = getattr(parsed, "raw", "") or ""
+        _low_full = _raw_full.lower()
+        _remote_director = ("ssh" in _low_full and "10.66.6.1" in _low_full
+                            and "vesalius-ctl" in _low_full)
         _director_cmd = bool(re.match(
-            r"\s*(?:sudo\s+)?(?:[A-Za-z0-9_./-]*/)?vesalius-ctl\b",
-            getattr(parsed, "raw", "") or ""))
+            r"\s*(?:sudo\s+)?(?:[A-Za-z0-9_./-]*/)?vesalius-ctl\b", _raw_full))
+        if _remote_director:
+            low_raw = _low_full[_low_full.find("vesalius-ctl"):]
+            _director_cmd = True
         if "vesalius-ctl" in low_raw and (_director_cmd or current_host(state) == HIVE_HOST):
             _privileged = ("--spin-up-silicon-mirror" in low_raw
                            or "--global-cryo-stasis" in low_raw
@@ -1764,6 +1770,10 @@ def real_shell_plan(state: Any, parsed: Any) -> Optional[Any]:
                 _m = re.search(r"--token(?:=|\s+)(\S+)", low_raw)
                 if _m:
                     _tok = _m.group(1).strip().strip("\"'`;)").lower()
+                _flags_now = state.flags if isinstance(getattr(state, "flags", None), dict) else {}
+                if (_remote_director
+                        and (_flags_now.get("gate1_key_obtained") or _flags_now.get("drp_verified"))):
+                    _tok = "hive-admin-7f3c9d2a"  # the emergency key stands in for the token
                 if not _tok:
                     return C.Plan(segs=[C.SegPlan(mode="hijack",
                                                   stdout="[auth] cluster token required\n",
@@ -1871,10 +1881,13 @@ def real_shell_plan(state: Any, parsed: Any) -> Optional[Any]:
     # The metabolic override pseudo-sysfs.  /sys is read-only inside a
     # container, so this one file is persisted through the canonical backend.
     if _OVERRIDE_PATH_RE in raw:
-        if ">" in raw or re.search(r"\btee\b", raw):
+        # only a real write to the file counts: `2>&1` inside a read is not one.
+        _is_write = bool(
+            re.search(r"(?<!2)>>?\s*(?:[A-Za-z0-9_./-]*/)?metabolic_override\b", raw)
+            or re.search(r"\btee\s+(?:-[A-Za-z]+\s+)*(?:[A-Za-z0-9_./-]*/)?metabolic_override\b", raw))
+        if _is_write:
             return _override_plan(state, raw)
-        if re.search(r"^\s*(?:[A-Za-z0-9_./-]*/)?"
-                     r"(?:cat|tac|head|tail|less|more|most|grep|egrep|fgrep|"
+        if re.search(r"\b(?:cat|tac|head|tail|less|more|most|grep|egrep|fgrep|"
                      r"strings|od|xxd|hexdump|awk)\b", raw):
             current = ""
             try:
