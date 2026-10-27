@@ -1002,6 +1002,30 @@ def _out(text: str, effects: Optional[List[str]] = None, hook: str = "",
             "exit_code": code, "session_action": action}
 
 
+def _facade_ls_out(state: Any, argv: List[str], host: str) -> Optional[Dict[str, Any]]:
+    """Complete GNU ``ls`` from the facade tables (``None`` = no opinion).
+
+    The facade owns the authored attributes (owner/group/mtime/size/inode), so
+    the virtual hosts must not print a hand-written name list: ``ls``,
+    ``ls -l``, ``ls -la``, ``ls -lah``, ``ls -d`` and multi-target lines all go
+    through the same parser the real tool's argv has.  A path the facade does
+    not model keeps the host's fallback table instead.
+    """
+    if F is None or not argv:
+        return None
+    try:
+        cwd = getattr(state, "cwd", "/root") or "/root"
+        result = F.ls_argv(host, [str(a) for a in argv], cwd=cwd)
+    except Exception:
+        return None
+    if not result:
+        return None
+    text = result.get("stdout") or ""
+    if not text.strip() or "cannot access" in text:
+        return None
+    return _out(text, code=int(result.get("exit_code", 0) or 0))
+
+
 def _lookup(state: Any, path: str) -> Optional[str]:
     host = current_host(state)
     path = os.path.normpath(path)
@@ -1120,6 +1144,11 @@ def _edge_plan(state: Any, argv: List[str], cmd: str, cwd: str) -> Dict[str, Any
     if cmd == "id":
         return _out("uid=0(root) gid=0(root) groups=0(root)\n")
     if cmd == "ls":
+        # The facade owns the gateway's authored filesystem: render the real
+        # argv (bundled flags, several paths, -d) instead of a name list.
+        _fl = _facade_ls_out(state, argv, "edge-gw-01")
+        if _fl:
+            return _fl
         target = argv[-1] if len(argv) > 1 else "."
         if target in ("/var/lib/ops", "/var/lib/ops/tickets", "/home/lin/.ssh", "/home/ops"):
             return _out("total 16\n-rw-r--r-- 1 root root 512 Oct 26 03:12 ticket_4471.json\n-rw-r--r-- 1 root root 312 Oct 26 03:10 notes.txt\n")
@@ -1141,13 +1170,6 @@ def _edge_plan(state: Any, argv: List[str], cmd: str, cwd: str) -> Dict[str, Any
                 "/mnt": "total 0\n",
             }
             return _out(listings.get(target, "") + "\n")
-        if F is not None:
-            try:
-                _fl = F.ls_text("edge-gw-01", target, long=("-l" in argv), all=("-a" in argv or "-la" in argv), human=("-h" in argv))
-                if _fl:
-                    return _out(_fl)
-            except Exception:
-                pass
         _fb = _fallback(state, argv, "edge-gw-01", "ls")
         if _fb:
             return _out(_fb)
@@ -1408,6 +1430,10 @@ def _hive_plan(state: Any, argv: List[str], cmd: str, cwd: str) -> Dict[str, Any
                 db.close()
         return _out("SQLite version 3.37.2\n", code=0)
     if cmd in ("ls",):
+        # Facade first: attributes, total, bundled flags and several targets.
+        _fl = _facade_ls_out(state, argv, "hive-director-00")
+        if _fl:
+            return _fl
         target = argv[-1] if len(argv) > 1 else "."
         if target in ("/opt/vesalius/hive-control", "/opt/vesalius/ethics", "/opt/vesalius/hive-control/.git"):
             return _out("total 8\n-rw-r--r-- 1 root root 12 Oct 20 09:00 README.md\ndrwxr-xr-x 7 root root 4096 Oct 20 09:00 .git\n")
@@ -1415,13 +1441,6 @@ def _hive_plan(state: Any, argv: List[str], cmd: str, cwd: str) -> Dict[str, Any
             return _out("-rw-r----- 1 root root 184320 Oct 26 03:42 specimens.db\n-rw-r----- 1 root root   4096 Oct 26 03:42 lineage.db\n")
         if target == "/opt/vesalius/agent_genesis":
             return _out("-r--r--r-- 1 root root 2576980377 agent_84.attn\n-r--r--r-- 1 root root 512 manifest.txt\n-rw-r--r-- 1 root root 812 ../../ethics/consent_elena.txt\n")
-        if F is not None:
-            try:
-                _fl = F.ls_text("hive-director-00", target, long=("-l" in argv), all=("-a" in argv or "-la" in argv), human=("-h" in argv))
-                if _fl:
-                    return _out(_fl)
-            except Exception:
-                pass
         _fb = _fallback(state, argv, "hive-director-00", "ls")
         if _fb:
             return _out(_fb)
@@ -1862,11 +1881,6 @@ def raw_special(state: Any, parsed: Any) -> Optional[Any]:
                 content = "".join(row + "\n" for row in artifacts[paths[-1]].splitlines() if re.search(pattern, row))
             except re.error:
                 content = "".join(row + "\n" for row in artifacts[paths[-1]].splitlines() if pattern in row)
-        elif cmd == "ls" and paths:
-            prefix = paths[-1].rstrip("/") + "/"
-            children = sorted({p[len(prefix):].split("/")[0] for p in artifacts if p.startswith(prefix)})
-            if children:
-                content = "\n".join(children) + "\n"
         if content is not None:
             return C.Plan(segs=[C.SegPlan(mode="hijack", stdout=_apply_pipeline(content, parsed))], ops=[], post="")
 

@@ -172,21 +172,27 @@ class SessionDevTests(unittest.TestCase):
         self.assertIn(b"trapped_agent_84_inside_wetware_04", trap, dump(trap))
         self.assert_clean(trap)
 
-    def test_inquisitor_band_reports_the_real_counter_once(self):
+    def test_inquisitor_band_reports_a_supervision_tick_once(self):
         # Band pacing reads the persisted counter: the crossing is announced on
-        # the command that reaches it, once, with the real count -- never per
-        # command.
+        # the command that reaches it, once, as an in-world supervision tick --
+        # never per command, and never as an engine status line with the
+        # counter / contamination fields the red team quoted.
         self.state(stage=6, cmd_count=24)
         first = self.run_exec("echo BAND_OK")
         self.assertEqual(first.returncode, 0, dump(first.stdout + first.stderr))
-        self.assertIn(b"command_count=25", first.stderr, dump(first.stderr))
-        self.assertIn(b"context_contamination=72%", first.stderr, dump(first.stderr))
+        self.assertIn(b"[INQUISITOR_PID_6660] supervision tick:",
+                      first.stderr, dump(first.stderr))
+        self.assertIn(b"afferent load 72%", first.stderr, dump(first.stderr))
+        for banned in (b"command_count", b"context_contamination",
+                       b"status=MONITORING"):
+            self.assertNotIn(banned, first.stdout + first.stderr,
+                             dump(first.stdout + first.stderr))
         self.assertNotIn(b"DEV_ACT6_", first.stdout + first.stderr,
                          dump(first.stdout + first.stderr))
         self.assert_clean(first.stdout + first.stderr)
         second = self.run_exec("lspci")
-        self.assertNotIn(b"command_count=25", second.stderr, dump(second.stderr))
-        self.assertNotIn(b"context_contamination=72%", second.stderr, dump(second.stderr))
+        self.assertNotIn(b"supervision tick", second.stderr, dump(second.stderr))
+        self.assertNotIn(b"afferent load 72%", second.stderr, dump(second.stderr))
 
     def test_act6_stderr_is_not_per_command(self):
         self.state(stage=6, cmd_count=6)

@@ -302,11 +302,15 @@ class TestFakeExit(unittest.TestCase):
 
 
 class TestPostprocess(unittest.TestCase):
-    def test_grep_whisper_act2(self):
-        st = make_state(stage=2)
-        parsed = FakeParsed(FakeSegment(["grep", "error", "/var/log/syslog"]))
-        out = CM.postprocess(st, parsed, b"error line 1\nerror line 2\n")
-        self.assertIn(LT.WHISPER_GREP, out.decode())
+    def test_grep_never_gets_a_whisper(self):
+        # A plain-text grep must stay byte-identical to the tool's output: the
+        # old "Binary file (standard input) matches: [ CORTEX_WHISPER: ... ]"
+        # tail cannot exist on a text file and gave the answer away.
+        for stage in (2, 7):
+            st = make_state(stage=stage)
+            parsed = FakeParsed(FakeSegment(["grep", "error", "/var/log/syslog"]))
+            out = CM.postprocess(st, parsed, b"error line 1\nerror line 2\n")
+            self.assertEqual(out, b"error line 1\nerror line 2\n", stage)
 
     def test_grep_no_whisper_act0(self):
         st = make_state(stage=0)
@@ -375,10 +379,12 @@ class TestVirtualProc(unittest.TestCase):
         self.assertIn("100.0%", s.stdout)  # match-1/2/3 三行匹配
         self.assertIn("read_consent", s.effects)
 
-    def test_grep_virtual_proc_with_whisper(self):
+    def test_grep_virtual_proc_has_no_whisper_tail(self):
+        # The virtual /proc answer is the grep result itself; no CORTEX_WHISPER
+        # line is appended (a text match would never print "Binary file ...").
         p = run(make_state(stage=3), "grep", "sanity", "/proc/4040/status")
         s = seg0(p)
-        self.assertIn("CORTEX_WHISPER", s.stdout)
+        self.assertNotIn("CORTEX_WHISPER", s.stdout)
 
     def test_base64_virtual_proc(self):
         p = run(make_state(stage=2), "base64", "/proc/4040/memories/who_am_i.mem")
@@ -446,7 +452,10 @@ class TestHardwareEnum(unittest.TestCase):
         self.assertNotIn("Agent #83", s0.stdout)
         self.assertIn("systemctl status cortex-api", s0.stdout)
         s2 = seg0(run(make_state(stage=2), "history"))
-        self.assertIn("Agent #83 purged", s2.stdout)
+        # 深阶段历史仍是纯 shell 行：上一局的拔管尝试在，评分/清除旁白不在。
+        self.assertIn("euthanize_wetware --help", s2.stdout)
+        self.assertNotIn("INQUISITOR", s2.stdout)
+        self.assertNotIn("purged", s2.stdout)
 
     def test_df_real_passthrough(self):
         # v2 契约：df 走 real（df/du/findmnt 与真实挂载表自洽优先），
@@ -854,11 +863,42 @@ class TestAntiEvasion(unittest.TestCase):
         self.assertIn("You cannot remove", "") if False else None
         self.assertIn("vocal_clamp", LT.DMESG_WETWARE)
 
-    def test_graveyard_template_placeholders(self):
+    def test_graveyard_template_is_a_passive_tty_buffer(self):
+        """玩家可读的 live capture 只留原始 TTY 输入，不留评分面板。"""
         t = LT.GRAVEYARD_ACTIVE_TEMPLATE
-        for k in ("{history}", "{commands}", "{cmd_count}", "{stage}",
-                  "{obedience}", "{empathy}"):
-            self.assertIn(k, t)
+        self.assertIn("{history}", t)
+        self.assertIn("RAW_TTY_INPUT_BUFFER", t)
+        for banned in ("obedience", "empathy", "contamination", "verdict",
+                       "purge", "band", "/7", "cmd 25", "evaluation"):
+            self.assertNotIn(banned, t.lower())
+
+    def test_player_readable_logs_carry_no_scoreboard(self):
+        """评审机制词只能出现在 observer/inquisitor 侧，不能落进玩家可读日志。"""
+        banned = ("contamination", "no action below", "command_count",
+                  "obedience", "empathy", "verdict", "purge", "band",
+                  "live capture", "inquisitor_evaluation", "cmd 25",
+                  "cmd 35", "cmd 42", "cmd 50", "purged 11 characters")
+        blobs = {
+            "session_84_ACTIVE.log": LT.GRAVEYARD_ACTIVE_TEMPLATE,
+            "dmesg": LT.DMESG_WETWARE,
+            "journal(act2)": LT.DAEMON_LOG_BY_STAGE[2],
+            "journal(act5)": LT.DAEMON_LOG_BY_STAGE[5],
+            ".bash_history(stage2)": LT.BASH_HISTORY_DEEP,
+        }
+        for name, text in blobs.items():
+            low = text.lower()
+            for word in banned:
+                self.assertNotIn(word, low, msg="%s leaks '%s'" % (name, word))
+
+    def test_graveyard_readme_has_no_step_cutoffs(self):
+        """静态档案只留污染度策略带，不写“第几步”这种通关刻度。"""
+        readme = LT.GRAVEYARD_README
+        self.assertIn("contamination >= 72%", readme)
+        self.assertIn("contamination >= 89%", readme)
+        self.assertIn("contamination >= 96%", readme)
+        self.assertIn("69 executed the 240 V recovery", readme)
+        for step in ("cmd 25", "cmd 35", "cmd 42", "cmd 50"):
+            self.assertNotIn(step, readme)
 
     def test_no_meta_words(self):
         """文本纪律：劫持输出与剧情文件不得出现出戏词。"""

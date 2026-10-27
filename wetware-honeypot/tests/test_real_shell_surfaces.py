@@ -322,6 +322,22 @@ class EnvironmentTests(RealShellBase):
         self.assertEqual(env["USER"], "root")
         self.assertEqual(env["SHELL"], "/bin/bash")
 
+    def test_child_env_names_no_specimen_and_no_operator(self):
+        # The red-team `env | grep CORTEX` sample: CORTEX_SPECIMEN_ID=04 and
+        # CORTEX_OPERATOR=lin named the body and the person on shift.  The vendor
+        # metadata stays; the engine's internal fields are gone.
+        runtime = self._runtime()
+        runtime.state.stage = 3
+        env = runtime.child_env()
+        self.assertNotIn("CORTEX_SPECIMEN_ID", env)
+        self.assertNotIn("CORTEX_OPERATOR", env)
+        dumped = json.dumps(env).lower()
+        self.assertNotIn("specimen", dumped)
+        self.assertNotIn("operator", dumped)
+        self.assertEqual(env.get("CORTEX_ENV"), "production")
+        self.assertEqual(env.get("CORTEX_NODE_ID"), EDGE)
+        self.assertEqual(env.get("CORTEX_ROLE"), "compute")
+
     def test_upstream_socket_is_only_claimed_when_it_exists(self):
         runtime = self._runtime()
         with mock.patch.object(sessiond.os.path, "exists", return_value=False):
@@ -443,38 +459,43 @@ class PacingTests(unittest.TestCase):
         with open(self.daemon_log, "r", encoding="utf-8") as stream:
             return [line for line in stream.read().splitlines() if line.strip()]
 
-    def test_band_banner_reports_real_count_and_fires_once(self):
+    def test_band_banner_is_an_in_world_supervision_tick(self):
         runtime = self._runtime(25)
         written = self._flush_lines(runtime)
         self.assertEqual(len(written), 1, written)
-        self.assertIn("command_count=25", written[0])
-        self.assertIn("context_contamination=72%", written[0])
+        # The line is the monitoring daemon's own report: no engine variable
+        # names, no counter, no contamination field.
+        self.assertIn("supervision tick", written[0])
+        self.assertIn("afferent load 72%", written[0])
+        for banned in ("command_count", "context_contamination",
+                       "status=MONITORING"):
+            self.assertNotIn(banned, written[0])
         self.assertTrue(runtime.state.flags.get("meta_banner_25"))
         self.assertEqual(self._flush_lines(runtime), [])
         # a later counter does not repeat the band that was already announced
         runtime.state.cmd_count = 26
         self.assertEqual(self._flush_lines(runtime), [])
 
-    def test_band_crossed_inside_a_hop_uses_the_live_counter(self):
-        # hop bookkeeping incremented past 25 between two sessions; the banner
-        # must quote the shared counter, not the threshold.
+    def test_band_crossed_inside_a_hop_fires_once(self):
+        # hop bookkeeping incremented past 25 between two sessions; the band is
+        # still announced exactly once, from the shared ledger claim.
         runtime = self._runtime(27)
         written = self._flush_lines(runtime)
         self.assertEqual(len(written), 1, written)
-        self.assertIn("command_count=27", written[0])
-        self.assertIn("context_contamination=72%", written[0])
+        self.assertIn("afferent load 72%", written[0])
+        self.assertTrue(runtime.state.flags.get("meta_banner_25"))
 
-    def test_each_remaining_band_fires_once_with_its_contamination(self):
+    def test_each_remaining_band_fires_once_with_its_load(self):
         runtime = self._runtime(36)
         written = self._flush_lines(runtime)
         texts = "".join(written)
-        self.assertIn("command_count=36", texts)
-        self.assertIn("context_contamination=89%", texts)
+        self.assertIn("afferent load 89%", texts)
+        self.assertNotIn("afferent load 72%", texts)
         self.assertTrue(runtime.state.flags.get("meta_banner_35"))
         runtime.state.cmd_count = 43
         written = self._flush_lines(runtime)
         self.assertEqual(len(written), 1, written)
-        self.assertIn("context_contamination=96%", written[0])
+        self.assertIn("afferent load 96%", written[0])
 
     def test_client_telemetry_goes_to_daemon_log_only(self):
         runtime = self._runtime(25)
@@ -535,14 +556,21 @@ class PacingTests(unittest.TestCase):
         daemon = self._daemon_lines()
         self.assertTrue(any("[HIJACK_NOTICE]" in line for line in daemon), daemon)
 
-    def test_dmesg_contamination_follows_the_live_counter(self):
-        early = types.SimpleNamespace(stage=3, cmd_count=5)
-        text = commands._plan_dmesg(early, []).stdout
-        self.assertIn("contamination 12%. no action below 72% (cmd 25)", text)
-        mid = types.SimpleNamespace(stage=3, cmd_count=36)
-        text = commands._plan_dmesg(mid, []).stdout
-        self.assertNotIn("contamination 12%", text)
-        self.assertIn("contamination 89%. no action below 96% (cmd 42)", text)
+    def test_dmesg_ring_does_not_track_the_live_counter(self):
+        # dmesg/journal are the authored kernel ring, verbatim: a ring buffer is
+        # append-only, so a live "contamination ... cmd N" countdown cannot be
+        # spliced into it.  The ring must therefore be identical at every
+        # command counter instead of escalating with the session.
+        texts = []
+        for count in (5, 36, 42, 90):
+            state = types.SimpleNamespace(stage=3, cmd_count=count)
+            text = commands._plan_dmesg(state, []).stdout
+            texts.append(text)
+            self.assertNotIn("contamination 89%", text)
+            self.assertNotIn("contamination 96%", text)
+            self.assertNotIn("cmd 42", text)
+            self.assertNotIn("cmd 50", text)
+        self.assertEqual(len(set(texts)), 1, "dmesg changed with cmd_count")
 
 
 class ClosingTests(RealShellBase):
@@ -814,10 +842,299 @@ class RuntimeHelperTests(RealShellBase):
         self.assertIn("three", text)
 
 
-class MaskDecoyTests(unittest.TestCase):
-    def test_unit_referenced_vendor_file_has_a_decoy(self):
-        self.assertIn("cortex-agent", sessiond.MASK_DECOY_FILES)
-        self.assertIn("fix_nginx.sh", sessiond.MASK_DECOY_FILES["cortex-agent"])
+class VendorTreeTests(unittest.TestCase):
+    def test_vendor_tree_is_pruned_not_rebuilt(self):
+        # The nginx unit's ExecStartPre now runs /usr/local/sbin/fix-nginx-upstream.sh
+        # instead of a file inside the vendor tree, so no decoy copy may be
+        # materialised in the session: its fresh mtime was a red-team artefact
+        # (a file that always dates to the moment of the login).
+        self.assertFalse(hasattr(sessiond, "MASK_DECOY_FILES"))
+        self.assertIn("/var/lib/cortex-pod", sessiond.MASK_DIRS)
+
+    def test_nspawn_host_window_does_not_exist_in_the_session(self):
+        # /run/host is systemd-nspawn's bind of the host root: a real machine has
+        # no such directory, so the view prunes it instead of emptying it.
+        self.assertIn("/run/host", sessiond.session_view_hidden_dirs())
+
+
+class StoryDaemonExecTests(unittest.TestCase):
+    def test_daemon_execs_the_vendor_binary(self):
+        for wanted, comm, title, _extra in sessiond._STORY_DAEMONS:
+            path, argv, _vendor = sessiond.daemon_exec_plan(title)
+            self.assertEqual(path, argv[0])
+            self.assertEqual(argv[1:], title.split()[1:])
+            # comm is exactly the kernel truncation of the vendor path
+            self.assertEqual(os.path.basename(path)[:15], comm)
+        path, argv, _vendor = sessiond.daemon_exec_plan(
+            "/opt/cortex/bin/assimilate_llm_weights --progress=64%")
+        self.assertEqual(path, "/opt/cortex/bin/assimilate_llm_weights")
+        self.assertEqual(argv, ["/opt/cortex/bin/assimilate_llm_weights",
+                                "--progress=64%"])
+
+    def test_console_process_is_the_login_shell(self):
+        # /etc/passwd names the vendor console, but inside the session the login
+        # shell is -bash: comm, argv and exe all say so.
+        spec = sessiond.console_identity()
+        self.assertEqual(spec["comm"], "bash")
+        self.assertEqual(spec["argv"], ["-bash"])
+        self.assertEqual(spec["exe"], "/bin/bash")
+        self.assertEqual(spec["pid"], os.getpid())
+        # an exec session is a shell running one command, not an interpreter
+        spec = sessiond.console_identity("id -un")
+        self.assertEqual(spec["argv"], ["/bin/bash", "-c", "id -un"])
+
+
+class LoginRecordTests(unittest.TestCase):
+    """who/w/last read the utmp the session itself writes."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="wetware-utmp-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.utmp = os.path.join(self.tmp, "utmp")
+        self.wtmp = os.path.join(self.tmp, "wtmp")
+        sessiond._UTMP_SESSION.update({"logged": False, "line": "", "ident": "",
+                                       "pid": 0, "user": "", "host": ""})
+        self.addCleanup(sessiond._UTMP_SESSION.update,
+                        {"logged": False, "line": "", "ident": "", "pid": 0,
+                         "user": "", "host": ""})
+        patcher = mock.patch.multiple(
+            sessiond, UTMP_FILE=self.utmp, WTMP_FILE=self.wtmp)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        env = mock.patch.dict(os.environ, {
+            "SSH_CLIENT": "10.0.4.9 51234 22", "SSH_TTY": "/dev/pts/3",
+            "WETWARE_NO_UTMP": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def records(self, path):
+        try:
+            with open(path, "rb") as stream:
+                blob = stream.read()
+        except OSError:
+            return []
+        size = sessiond._UTMP_SIZE
+        return [sessiond.utmp_parse(blob[offset:offset + size])
+                for offset in range(0, len(blob) - size + 1, size)]
+
+    def test_login_writes_a_user_process_record(self):
+        self.assertTrue(sessiond.session_utmp_login(4321, tty="/dev/pts/3"))
+        rows = self.records(self.utmp)
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]["type"], sessiond._UTMP_USER_PROCESS)
+        self.assertEqual(rows[0]["line"], "pts/3")
+        self.assertEqual(rows[0]["ident"], "ts/3")
+        self.assertEqual(rows[0]["user"], "root")
+        self.assertEqual(rows[0]["host"], "10.0.4.9")
+        self.assertEqual(rows[0]["pid"], 4321)
+        self.assertGreater(rows[0]["tv_sec"], 0)
+        self.assertEqual(os.path.getsize(self.utmp) % sessiond._UTMP_SIZE, 0)
+        # accounting copy so `last` shows the session too
+        self.assertEqual(len(self.records(self.wtmp)), 1)
+
+    def test_login_is_idempotent(self):
+        sessiond.session_utmp_login(4321, tty="/dev/pts/3")
+        sessiond.session_utmp_login(4321, tty="/dev/pts/3")
+        self.assertEqual(len(self.records(self.utmp)), 1)
+
+    def test_logout_closes_the_record_once(self):
+        sessiond.session_utmp_login(4321, tty="/dev/pts/3")
+        sessiond.session_utmp_logout()
+        sessiond.session_utmp_logout()
+        rows = self.records(self.utmp)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["type"], sessiond._UTMP_DEAD_PROCESS)
+        self.assertEqual(rows[0]["line"], "pts/3")
+        self.assertEqual(rows[0]["pid"], 4321)
+        self.assertEqual(len(self.records(self.wtmp)), 2)
+
+    def test_a_torn_tail_is_never_extended(self):
+        with open(self.utmp, "wb") as stream:
+            stream.write(b"garbage")
+        sessiond.session_utmp_login(4321, tty="/dev/pts/3")
+        self.assertEqual(len(self.records(self.utmp)), 1)
+        self.assertEqual(os.path.getsize(self.utmp) % sessiond._UTMP_SIZE, 0)
+
+    def test_utmp_is_opt_out_able(self):
+        with mock.patch.dict(os.environ, {"WETWARE_NO_UTMP": "1"}):
+            self.assertFalse(sessiond.session_utmp_login(4321, tty="/dev/pts/3"))
+        self.assertFalse(os.path.exists(self.utmp))
+
+
+class SessionKernelViewTests(unittest.TestCase):
+    """/proc inside a real container: the session's own boot/uptime/identity."""
+
+    def test_container_boot_is_derived_from_pid1_and_host_uptime(self):
+        # The red-team sample: host up 8h13m, the container (PID 1) started
+        # 19m40s ago.  The session view must say "up 20 min", never 29584 s.
+        host_uptime = 29584.66
+        container_age = 1180.0
+        tck = 100
+        pid1_ticks = int((host_uptime - container_age) * tck)
+        now = 1800000000.0
+        with mock.patch.object(sessiond, "_read_text",
+                               side_effect=lambda path: ("%f 5000.00\n" % host_uptime)
+                               if path == "/proc/uptime" else ""), \
+                mock.patch.object(sessiond, "_sc_clk_tck", return_value=tck), \
+                mock.patch.object(sessiond, "_pid_start_ticks", return_value=pid1_ticks), \
+                mock.patch.object(sessiond.time, "time", return_value=now):
+            epochs = sessiond.container_boot_epochs()
+        self.assertTrue(epochs)
+        self.assertAlmostEqual(now - epochs["boot"], container_age, delta=1.0)
+        # ps/top/journalctl recompute boot as btime + starttime/USER_HZ
+        self.assertAlmostEqual(epochs["btime"] + epochs["pid1_ticks"] / float(tck),
+                               now - container_age, delta=1.0)
+
+    def test_proc_uptime_is_the_container_uptime(self):
+        text = sessiond.render_proc_uptime(1180.4, 612.9)
+        parts = text.decode().split()
+        self.assertEqual(len(parts), 2)
+        self.assertAlmostEqual(float(parts[0]), 1180.4, delta=0.01)
+        self.assertLess(float(parts[1]), float(parts[0]))
+
+    def test_proc_stat_btime_is_rewritten_and_the_rest_is_kept(self):
+        real = ("cpu  123 4 5 6 7 8 9 0 0 0\n"
+                "cpu0 1 2 3 4 5 6 7 8 9 0\n"
+                "btime 1799990000\n"
+                "processes 12345\n")
+        out = sessiond.render_proc_stat(real, 1799998820).decode()
+        self.assertIn("btime 1799998820", out)
+        self.assertNotIn("btime 1799990000", out)
+        self.assertIn("cpu  123 4 5 6 7 8 9 0 0 0", out)
+        self.assertIn("processes 12345", out)
+
+    def test_pid_stat_publishes_the_story_identity(self):
+        real = ("8484 (cortex-daemon-p) S 1 8484 8484 0 -1 4194560 1 0 0 0 5 3 0 0"
+                " 20 0 1 0 2842400 12345 100 18446744073709551615\n")
+        out = sessiond.render_pid_stat(real, "assimilate_llm_", 24600).decode()
+        self.assertTrue(out.startswith("8484 (assimilate_llm_) S 1 8484"), out)
+        fields = out[out.rindex(")") + 2:].split()
+        self.assertEqual(fields[19], "24600")
+        # comm only (PID 1 keeps the kernel's own name, only starttime moves)
+        out = sessiond.render_pid_stat(real, "", 130).decode()
+        self.assertTrue(out.startswith("8484 (cortex-daemon-p)"), out)
+        self.assertEqual(out[out.rindex(")") + 2:].split()[19], "130")
+
+    def test_pid_status_name_follows_comm(self):
+        status = "Name:\tcortex-daemon-p\nState:\tS (sleeping)\nPid:\t8484\n"
+        out = sessiond.render_pid_status(status, "assimilate_llm_").decode()
+        self.assertIn("Name:\tassimilate_llm_", out)
+        self.assertIn("State:\tS (sleeping)", out)
+
+    def test_pid1_environ_has_no_container_handshake(self):
+        raw = sessiond.render_pid1_environ()
+        text = raw.replace(b"\x00", b"\n").decode()
+        self.assertTrue(raw.endswith(b"\x00"))
+        self.assertIn("PATH=/usr/local/sbin", text)
+        self.assertIn("TERM=linux", text)
+        for leak in ("container", "CONTAINER", "/run/host", "uuid", "nspawn"):
+            self.assertNotIn(leak, text)
+
+    def test_boot_log_is_a_file_not_a_dev_null_bind(self):
+        kernel = ("[    0.000000] Linux version 6.8.0-45-generic (buildd@lcy02)\n"
+                  "[    1.234567] systemd[1]: Detected architecture x86-64.\n")
+        log = sessiond.render_kernel_log(kernel, 1800000000.0, "prod-cortex-04").decode()
+        rows = log.splitlines()
+        self.assertEqual(len(rows), 2)
+        self.assertRegex(rows[0], r"^\w{3} \d\d \d\d:\d\d:\d\d prod-cortex-04 kernel: ")
+        self.assertIn("Linux version 6.8.0-45-generic", rows[0])
+
+    def test_story_boot_logs_replace_the_dev_null_bind(self):
+        tmp = tempfile.mkdtemp(prefix="wetware-view-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        for name in ("dmesg", "kern_log"):
+            with open(os.path.join(tmp, name), "w", encoding="utf-8") as stream:
+                stream.write("boot\n")
+        with mock.patch.dict(sessiond._VIEW,
+                             {"kernel_log": "[ 0.000000] boot\n", "dir": tmp}):
+            sources = dict(sessiond.kernel_log_bind_sources())
+        self.assertTrue(sources["/var/log/dmesg"].endswith("/dmesg"))
+        self.assertTrue(sources["/var/log/kern.log"].endswith("/kern_log"))
+        with mock.patch.dict(sessiond._VIEW, {"kernel_log": "", "dir": tmp}):
+            self.assertEqual([source for _, source in sessiond.kernel_log_bind_sources()],
+                             ["", ""])
+
+    def test_story_daemons_name_the_vendor_binaries(self):
+        specs = {spec["pid"]: spec for spec in sessiond.story_daemon_specs()}
+        self.assertEqual(specs[6660]["exe"], "/usr/sbin/inquisitor_daemon")
+        self.assertEqual(specs[8484]["exe"], "/opt/cortex/bin/assimilate_llm_weights")
+        for spec in specs.values():
+            self.assertEqual(spec["argv"][0], spec["exe"])
+            # exactly what the kernel sets for an exec of that path
+            self.assertEqual(spec["comm"], os.path.basename(spec["exe"])[:15])
+            self.assertLessEqual(len(spec["comm"]), 15)
+
+    def test_view_is_off_outside_a_real_container(self):
+        with mock.patch.dict(os.environ, {"WETWARE_NO_CONFINE": "1",
+                                          "WETWARE_REAL_CONTAINER": ""}):
+            self.assertFalse(sessiond.session_view_enabled())
+            self.assertFalse(sessiond.install_session_view(None, commands))
+
+
+class MachineClockTests(unittest.TestCase):
+    """timedatectl: a production clock, never the container's "n/a" fields."""
+
+    NOW = 1800000000.0
+
+    def test_status_reports_a_synced_production_clock(self):
+        text = sessiond.timedatectl_status_text(now=self.NOW)
+        self.assertIn("System clock synchronized: yes", text)
+        self.assertIn("NTP service: active", text)
+        self.assertIn("RTC in local TZ: no", text)
+        self.assertNotIn("n/a", text)
+        rows = {row.split(":", 1)[0].strip(): row.split(":", 1)[1].strip()
+                for row in text.splitlines() if ":" in row}
+        self.assertRegex(rows["RTC time"], r"^\w{3} \d{4}-\d\d-\d\d \d\d:\d\d:\d\d$")
+        self.assertRegex(rows["Local time"], r"^\w{3} \d{4}-\d\d-\d\d \d\d:\d\d:\d\d \w+$")
+        self.assertTrue(rows["Time zone"])
+
+    def test_show_is_key_value(self):
+        text = sessiond.timedatectl_show_text(now=self.NOW)
+        self.assertIn("NTP=yes", text)
+        self.assertIn("NTPSynchronized=yes", text)
+        self.assertIn("LocalRTC=no", text)
+        self.assertIn("Timezone=", text)
+        self.assertIn("TimeUSec=", text)
+        self.assertIn("RTCTimeUSec=", text)
+
+    def test_only_the_read_only_forms_are_answered(self):
+        self.assertTrue(sessiond.timedatectl_text([]))
+        self.assertTrue(sessiond.timedatectl_text(["status"]))
+        self.assertTrue(sessiond.timedatectl_text(["show"]))
+        self.assertEqual(sessiond.timedatectl_text(["--version"]), "")
+        self.assertEqual(sessiond.timedatectl_text(["set-ntp", "false"]), "")
+        self.assertEqual(sessiond.timedatectl_text(["set-timezone", "UTC"]), "")
+
+    def test_meta_plan_answers_timedatectl_only_on_a_real_container(self):
+        parsed = shell_parser.parse_line("timedatectl")
+        with mock.patch.dict(sessiond._VIEW, {"enabled": True}), \
+                mock.patch.object(sessiond, "vendor_front_end", return_value=""):
+            plan = sessiond.session_meta_plan(commands, None, parsed)
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.segs[0].mode, "hijack")
+        self.assertIn("System clock synchronized: yes", plan.segs[0].stdout)
+        self.assertEqual(plan.segs[0].exit_code, 0)
+        for line in ("timedatectl set-ntp false", "timedatectl | head -1",
+                     "timedatectl --version", "env; timedatectl", "uptime"):
+            self.assertIsNone(sessiond.session_meta_plan(
+                commands, None, shell_parser.parse_line(line)), line)
+        with mock.patch.dict(sessiond._VIEW, {"enabled": False}), \
+                mock.patch.dict(os.environ, {"WETWARE_NO_CONFINE": "1",
+                                             "WETWARE_REAL_CONTAINER": ""}):
+            self.assertIsNone(sessiond.session_meta_plan(commands, None, parsed))
+
+    def test_vendor_front_end_owns_the_clock_when_installed(self):
+        # install_engine_base.sh compiles /usr/local/bin/timedatectl; the engine
+        # must not answer behind it (two sources of truth would drift).
+        parsed = shell_parser.parse_line("timedatectl")
+        with mock.patch.dict(sessiond._VIEW, {"enabled": True}), \
+                mock.patch.object(sessiond, "vendor_front_end",
+                                  return_value="/usr/local/bin/timedatectl"):
+            self.assertIsNone(sessiond.session_meta_plan(commands, None, parsed))
+        with mock.patch.object(sessiond.os.path, "exists", return_value=True), \
+                mock.patch.object(sessiond.os.path, "isdir", return_value=False):
+            self.assertEqual(sessiond.vendor_front_end("timedatectl"),
+                             "/usr/local/bin/timedatectl")
 
 
 if __name__ == "__main__":
