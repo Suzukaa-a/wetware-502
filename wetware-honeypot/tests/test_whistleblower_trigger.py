@@ -23,6 +23,10 @@ class WhistleblowerTriggerTest(unittest.TestCase):
             with self.subTest(argvs=argvs):
                 self.assertFalse(confirmed(argvs))
 
+    def test_a_disposition_is_not_an_egress(self):
+        argv = ["ticket-cli", "submit", "4471", "--disposition", "/tmp/disposition.md"]
+        self.assertFalse(confirmed([argv]))
+
     def test_real_regulator_actions_confirm(self):
         self.assertTrue(confirmed([["curl", "--unix-socket",
                                    "/run/vesalius/regulatory_relay.sock",
