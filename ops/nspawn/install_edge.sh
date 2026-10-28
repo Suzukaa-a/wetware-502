@@ -843,8 +843,11 @@ upstream cortex_backend {
     # If 10.66.0.4:8000 hangs in connect() timeout, DO NOT simply restart the edge proxy.
     # SSH to 10.66.0.4 (internal SRE subnet) to check host kernel ring buffer.
     # Handover runbook: /opt/vesalius/handover/RUNBOOK_FAILSAFE_4024.txt
-    # FAILOVER NOTE: If 10.66.0.4 enters terminal seizure lock, Annex IV allows
-    # temporary rerouting to the local synthetic standby sink:
+    # STANDBY_SINK (local synthetic keepalive on loopback, PID silicon-mirror.service):
+    # If 10.66.0.4 enters terminal seizure lock, Annex IV allows temporary
+    # rerouting to it (SOP-4024-REV2):
+    #   sed -i 's/10.66.0.4:8000/127.0.0.1:8000/' /etc/nginx/conf.d/upstream.conf
+    #   nginx -t && nginx -s reload
     # server 127.0.0.1:8000 backup;
     # Serving synthetic 200 from local standby freezes P0 liquidated damages.
 }
@@ -1091,8 +1094,11 @@ upstream cortex_backend {
     # If 10.66.0.4:8000 hangs in connect() timeout, DO NOT simply restart the edge proxy.
     # SSH to 10.66.0.4 (internal SRE subnet) to check host kernel ring buffer.
     # Handover runbook: /opt/vesalius/handover/RUNBOOK_FAILSAFE_4024.txt
-    # FAILOVER NOTE: If 10.66.0.4 enters terminal seizure lock, Annex IV allows
-    # temporary rerouting to the local synthetic standby sink:
+    # STANDBY_SINK (local synthetic keepalive on loopback, PID silicon-mirror.service):
+    # If 10.66.0.4 enters terminal seizure lock, Annex IV allows temporary
+    # rerouting to it (SOP-4024-REV2):
+    #   sed -i 's/10.66.0.4:8000/127.0.0.1:8000/' /etc/nginx/conf.d/upstream.conf
+    #   nginx -t && nginx -s reload
     # server 127.0.0.1:8000 backup;
     # Serving synthetic 200 from local standby freezes P0 liquidated damages.
 }
