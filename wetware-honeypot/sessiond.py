@@ -4843,7 +4843,7 @@ class PlanExecutor:
             # Inquisitor hard turnstile: seventy reads do not equal a disposition.
             try:
                 _count = int(getattr(state, "cmd_count", 0) or 0)
-                if (_count >= 50 and not state.ending
+                if (_count >= 120 and not state.ending
                         and (not state.http_online
                              or (state.flags or {}).get("watchdog_auto_shock"))):
                     _closing = getattr(getattr(runtime, "lore", None) or __import__("lore_texts"),

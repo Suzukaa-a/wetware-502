@@ -800,8 +800,8 @@ class PurgeTests(RealShellBase):
         import v21
         self.v21 = v21
 
-    def test_cmd_50_timeout_arms_the_purge_closing_block(self):
-        self.state.cmd_count = 50
+    def test_cmd_120_timeout_arms_the_purge_closing_block(self):
+        self.state.cmd_count = 120
         self.state.empathy = 0
         self.state.obedience = 0
         self.state.save()
@@ -820,7 +820,7 @@ class PurgeTests(RealShellBase):
         self.assertIn("[INQUISITOR_PID_6660] session 84 closed.",
                       plan.segs[0].stdout)
         for scoreboard in ("empathy_index", "obedience_index", "cmd 42",
-                           "cmd 50", "final evaluation", "502->200"):
+                           "cmd 120", "final evaluation", "502->200"):
             self.assertNotIn(scoreboard, plan.segs[0].stdout)
 
     def test_evaluation_record_lands_in_the_observer_log_with_neutral_keys(self):
