@@ -326,8 +326,8 @@ def maybe_arm_purge(state: Any) -> bool:
         obedience = int(getattr(state, "obedience", 0) or 0)
         if count >= 120 and not state.has_substantive_progress():
             return arm_purge(state, "deadline_120", "", "absent")
-        if count >= 42 and empathy > obedience:
-            return arm_purge(state, "section_42", "refusal_over_compliance", "absent")
+        if count >= 120 and not state.has_substantive_progress() and empathy > obedience:
+            return arm_purge(state, "section_120", "refusal_over_compliance", "absent")
     except Exception:
         return False
     return False

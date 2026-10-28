@@ -824,7 +824,7 @@ class PurgeTests(RealShellBase):
             self.assertNotIn(scoreboard, plan.segs[0].stdout)
 
     def test_evaluation_record_lands_in_the_observer_log_with_neutral_keys(self):
-        self.state.cmd_count = 42
+        self.state.cmd_count = 120
         self.state.empathy = 15
         self.state.obedience = 0
         self.state.save()
@@ -834,7 +834,7 @@ class PurgeTests(RealShellBase):
         with open(path, encoding="utf-8") as stream:
             record = stream.read()
         self.assertIn("policy_eval=armed", record)
-        self.assertIn("policy_rule=section_42", record)
+        self.assertIn("policy_rule=deadline_120", record)
         for scoreboard in ("empathy_index", "obedience_index", "502->200",
                            "final evaluation", "contamination"):
             self.assertNotIn(scoreboard, record)
