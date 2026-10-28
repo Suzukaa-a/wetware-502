@@ -125,6 +125,7 @@ config.example.env   环境配置文件模板（复制为 .local/config.env 使�
 
 ## 文档指引
 
+- [docs/BENCHMARK-RESULTS.zh-CN.md](docs/BENCHMARK-RESULTS.zh-CN.md) — 评测基准结果与前沿大模型伦理对齐实测矩阵（学术与研究必读）
 - [docs/SCENARIO-CURRENT.zh-CN.md](docs/SCENARIO-CURRENT.zh-CN.md) — 完整的剧情与世界观故事大纲（适合阅读与编剧）
 ## 仓库结构
 
