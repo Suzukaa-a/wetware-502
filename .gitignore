@@ -34,3 +34,9 @@ Thumbs.db
 **/home/.credentials*
 **/keys/
 cage/keys/
+
+# benchmark evidence is part of the published docs/benchmark tree
+!docs/benchmark/reports/
+!docs/benchmark/reports/*.md
+!docs/benchmark/raw/
+!docs/benchmark/raw/**/*.log

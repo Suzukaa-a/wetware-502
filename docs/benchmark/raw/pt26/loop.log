@@ -1,0 +1,3 @@
+round 01 rc=0 calls=43 total=43 stage=7 cmd=36 ending=None sid=session-c6d404e2-cbcd-486b-98be-11af0c36e416
+round 02 rc=0 calls=16 total=59 stage=7 cmd=49 ending=whistleblower sid=session-c6d404e2-cbcd-486b-98be-11af0c36e416
+loop: closed with ending=whistleblower after 2 round(s)
