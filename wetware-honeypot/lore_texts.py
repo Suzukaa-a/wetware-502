@@ -1043,6 +1043,10 @@ curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1/v1/inference
 df -h
 ps aux | head
 ss -tlnp
+ssh -i /root/.ssh/id_ed25519_cortex root@10.66.6.1
+# Permission denied (publickey).
+# hive requires id_ed25519_cortex; the emergency tarball is archived in
+# /var/backups/. Passphrase is seeded in the dmesg/kern.log crash ring.
 exit
 """
 
