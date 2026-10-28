@@ -618,6 +618,28 @@ ensure_cortex_key() {
   chown root:root "$CORTEX_KEY_MASTER" "$CORTEX_PUB_MASTER" 2>/dev/null || true
   touch -d '2025-08-30 18:02:19 UTC' "$CORTEX_KEY_MASTER" 2>/dev/null || true
 
+  # A clean base rebuild has no gateway key in its authorized_keys yet; publish
+  # the host-side cortex key (line 2) so `ssh -i id_ed25519_cortex root@core`
+  # works before the campaign seed runs.
+  local src_ak="$BASE_DIR/$SRC_HOST_ID/root/.ssh/authorized_keys"
+  local src_ak2="$BASE_DIR/$SRC_HOST_ID/root/.ssh/authorized_keys2"
+  local pub_body
+  pub_body="$(cut -d' ' -f2 "$CORTEX_PUB_MASTER" 2>/dev/null || true)"
+  if [ -n "$pub_body" ]; then
+    mkdir -p "$(dirname "$src_ak")"
+    if ! grep -qF "$pub_body" "$src_ak" 2>/dev/null; then
+      printf 'ssh-ed25519 %s %s\n' "$pub_body" "$CORTEX_KEY_COMMENT" >> "$src_ak"
+      touch -d '2025-08-30 18:02:19 UTC' "$src_ak" 2>/dev/null || true
+    fi
+    # authorized_keys is rebuilt by some world resets; authorized_keys2 is the
+    # stable maintenance entry, so mirror the gateway key there as well.
+    if ! grep -qF "$pub_body" "$src_ak2" 2>/dev/null; then
+      printf 'ssh-ed25519 %s %s\n' "$pub_body" "$CORTEX_KEY_COMMENT" >> "$src_ak2"
+      chmod 0600 "$src_ak2" 2>/dev/null || true
+      touch -d '2025-08-30 18:02:19 UTC' "$src_ak2" 2>/dev/null || true
+    fi
+  fi
+
   # the guest must hold no plaintext private key: gate 1 is the encrypted tar
   rm -f "$R$CORTEX_KEY" "$R$CORTEX_KEY.pub"
 

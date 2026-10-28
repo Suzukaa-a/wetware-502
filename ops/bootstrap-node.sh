@@ -379,6 +379,11 @@ table inet filter {
         # NEW traffic. Keep the replies alive before the LAN drop below.
         tcp sport 22 accept
         tcp sport 2222 accept
+        # Resolver traffic: covers /etc/resolv.conf entries (including a LAN
+        # gateway) and systemd-resolved's upstream, so name resolution survives
+        # the RFC1918 drop below.
+        ip protocol udp udp dport 53 accept
+        ip protocol tcp tcp dport 53 accept
 ${DNS_RULES}
         # Block active connections to RFC1918 + link-local; return traffic to
         # us is handled by the established rule above.

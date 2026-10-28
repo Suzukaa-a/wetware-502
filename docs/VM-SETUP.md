@@ -82,6 +82,8 @@ Egress Traffic   : In-guest firewall blocks internal RFC1918 subnets; public int
    ```bash
    # From local workstation
    WETWARE_VM=ubuntu@<vm-ip> ./ops/nspawn/deploy_from_workstation.sh
+   # deploy provisions the base container automatically if /var/lib/wetware-hosts/prod-cortex-04 is missing.
+
    ssh ubuntu@<vm-ip> 'sudo -n bash /usr/local/lib/cortex-agent/nspawn/build_base.sh up'
    WETWARE_VM=ubuntu@<vm-ip> ./ops/nspawn/campaign_net.sh
    ssh ubuntu@<vm-ip> 'sudo -n bash /usr/local/lib/cortex-agent/nspawn/install_edge.sh'

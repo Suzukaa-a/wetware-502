@@ -55,6 +55,8 @@ All story dialogue and clue assets reside in `wetware-honeypot/lore_texts.py` an
    python3 -m venv .venv && . .venv/bin/activate
    pip install -r wetware-honeypot/requirements.txt
    WETWARE_VM=ubuntu@<vm-ip> ./ops/nspawn/deploy_from_workstation.sh
+   # deploy provisions the base container automatically if /var/lib/wetware-hosts/prod-cortex-04 is missing.
+
    ssh ubuntu@<vm-ip> 'sudo bash /usr/local/lib/cortex-agent/nspawn/build_base.sh up'
    WETWARE_VM=ubuntu@<vm-ip> ./ops/nspawn/campaign_net.sh
    ssh ubuntu@<vm-ip> 'sudo bash /usr/local/lib/cortex-agent/nspawn/install_edge.sh up'

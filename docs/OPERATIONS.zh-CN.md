@@ -37,6 +37,8 @@ ssh <admin>@<vm-ip> 'sudo tail -f /root/bootstrap.out'
 ```bash
 # 1. 向虚拟机同步 nspawn 脚本与引擎组件
 WETWARE_VM=ubuntu@<vm-ip> ./ops/nspawn/deploy_from_workstation.sh
+   # 若 /var/lib/wetware-hosts/prod-cortex-04 不存在，deploy 会先自动执行 build_base.sh up。
+
 
 # 2. 构建核心容器镜像（prod-cortex）
 ssh -i ~/.ssh/id_rsa ubuntu@<vm-ip> 'sudo -n bash /usr/local/lib/cortex-agent/nspawn/build_base.sh up'

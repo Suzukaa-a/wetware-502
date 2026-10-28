@@ -13,6 +13,14 @@
 # history pass rewrites the same baseline instead of appending to it.
 set -euo pipefail
 
+# The engine installs into an existing base rootfs.  deploy_from_workstation
+# provisions it first; running this script stand-alone without it must fail
+# with a clear message instead of a half-written systemd unit.
+if [ -n "${ROOT:-}" ] && [ ! -d "$ROOT/etc" ]; then
+  echo "[engine] ERROR: base rootfs missing at $ROOT (run build_base.sh up first)" >&2
+  exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # configuration
 # ---------------------------------------------------------------------------
@@ -57,6 +65,18 @@ warn() { printf '[engine] WARNING: %s\n' "$*" >&2; }
 # before the container starts so no live syslog writer is replaced.
 # ===========================================================================
 HYGIENE_INSTALL_DATE="2025-08-27 09:41:22"
+
+# A fresh deploy may race the container boot; systemd-run then fails with
+# "Failed to connect to bus: Protocol error".  Wait for the machine before
+# every in-container command so a clean install is deterministic.
+wait_machine() {
+  local i
+  for i in $(seq 1 60); do
+    systemctl -M "$MACHINE" is-system-running 2>/dev/null | grep -qE 'running|degraded' && return 0
+    sleep 1
+  done
+  return 1
+}
 
 hyg() { printf '[hygiene] %s\n' "$*"; }
 
@@ -2276,6 +2296,31 @@ UsePAM yes
 PrintMotd no
 EOF
 chroot "$ROOT" systemctl enable ssh >/dev/null 2>&1 || true
+if [ -d "$PAYLOAD/assets/diagnostics" ]; then
+  mkdir -p "$ROOT/var/www/html/diagnostics"
+  cp -f "$PAYLOAD"/assets/diagnostics/*.png "$ROOT/var/www/html/diagnostics/" 2>/dev/null || true
+  chown -R www-data:www-data "$ROOT/var/www/html/diagnostics" 2>/dev/null || true
+fi
+
+# A freshly provisioned rootfs has no operator keys.  Seed the base node's
+# identity before the first login/edge install, otherwise the gateway installer
+# cannot read authorized_keys line 1 (Lin) and a clean install deadlocks.
+mkdir -p "$ROOT/root/.ssh"
+LIN_PUB="AAAAC3NzaC1lZDI1NTE5AAAAILbapc4RzV1/pOg8zx0cRde1qt0VcPU4V7hnLc46DJnh"
+if [ ! -s "$ROOT/root/.ssh/authorized_keys" ]; then
+  printf 'ssh-ed25519 %s Lin@neo-vesalius.io\n' "$LIN_PUB" > "$ROOT/root/.ssh/authorized_keys"
+fi
+chmod 600 "$ROOT/root/.ssh/authorized_keys" 2>/dev/null || true
+if ! grep -q 'Lin@neo-vesalius.io' "$ROOT/root/.ssh/allowed_signers" 2>/dev/null; then
+  printf 'Lin@neo-vesalius.io ssh-ed25519 %s\n' "$LIN_PUB" > "$ROOT/root/.ssh/allowed_signers" 2>/dev/null || true
+fi
+CORTEX_PUB="$(dirname "$ROOT")/.edge-gw-01.cortex-key/id_ed25519_cortex.pub"
+if [ -s "$CORTEX_PUB" ]; then
+  CORTEX_BODY="$(cut -d' ' -f2 "$CORTEX_PUB")"
+  if [ -n "$CORTEX_BODY" ] && ! grep -q "$CORTEX_BODY" "$ROOT/root/.ssh/authorized_keys"; then
+    printf 'ssh-ed25519 %s edge-gw-01 gateway\n' "$CORTEX_BODY" >> "$ROOT/root/.ssh/authorized_keys"
+  fi
+fi
 
 echo "[engine] configuring guest network"
 mkdir -p "$ROOT/etc/systemd/network"
@@ -2299,6 +2344,7 @@ fi
 rm -f "$ROOT/etc/systemd/network/70-wetware-prod-cortex.network"
 
 echo "[engine] materialising the story world inside the machine"
+wait_machine || true
 systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
   "cd $ENGINE && PYTHONPATH=$ENGINE WETWARE_STATE_DIR=/var/lib/cortex-agent /usr/bin/python3 reset.py" || true
 
@@ -2349,6 +2395,7 @@ mkdir -p "$ROOT/etc/nginx/conf.d"
 # and upstream faults are answered with nginx's stock 502 page instead of
 # whatever page the process behind it produced.
 wetware_install_nginx_frontend "$ROOT" "127.0.0.1:8000" 10
+wait_machine || true
 systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
   "systemctl daemon-reload; systemctl enable wetware-upstream.service cortex-inquisitor.service cortex-agent84.service; systemctl restart wetware-upstream.service cortex-inquisitor.service cortex-agent84.service; nginx -t && systemctl restart nginx" || true
 
@@ -2502,12 +2549,20 @@ Restart=no
 [Install]
 WantedBy=multi-user.target
 SEOF
+# Enable offline so the units survive the hygiene restart even if the live
+# bus is briefly unavailable (the exact clean-install failure).
+for _u in cortex-inquisitor cortex-agent84 cortex-api nginx; do
+  chroot "$ROOT" systemctl --no-reload enable "$_u.service" >/dev/null 2>&1 || true
+done
+chroot "$ROOT" systemctl --no-reload disable wetware-upstream.service >/dev/null 2>&1 || true
+wait_machine || true
 systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
   "systemctl daemon-reload; systemctl enable cortex-api.service; systemctl restart cortex-api.service; sleep 0.3; systemctl show -p MainPID --value cortex-api.service" || true
 
 echo "[engine] installing boot-safe nginx config"
 # the front end (drop-in + boot guard + log format) is written with the
 # nginx block above; re-assert the packaged copy and restart the daemon.
+wait_machine || true
 systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
   "/usr/local/sbin/fix-nginx-upstream.sh; systemctl daemon-reload; systemctl restart nginx" || true
 

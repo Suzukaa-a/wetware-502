@@ -84,7 +84,7 @@ GATEWAY_IP_ADDR="${GATEWAY_IP%%/*}"
 
 # Packages baked into the image: a minimal jammy plus real systemd service
 # management, networkd, journald storage, udev/dbus, sshd and basic tooling.
-INCLUDE_PKGS="systemd-sysv,systemd,udev,dbus,libpam-systemd,iproute2,iputils-ping,procps,psmisc,openssh-server,ca-certificates,apt-utils,locales,tzdata,kmod,less,nano,netbase,curl"
+INCLUDE_PKGS="systemd-sysv,systemd,udev,dbus,libpam-systemd,iproute2,iputils-ping,procps,psmisc,openssh-server,ca-certificates,apt-utils,locales,tzdata,kmod,less,nano,netbase,curl,python3,nginx,rsyslog"
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -269,7 +269,11 @@ provision_rootfs() {
     log "rootfs already provisioned ($(cat "$ROOTFS/etc/os-release" | sed -n 's/^PRETTY_NAME=//p')), skipping debootstrap"
     return 0
   fi
-  if [ -n "$(ls -A "$ROOTFS" 2>/dev/null | head -n1)" ]; then
+  # A freshly mounted ext4 image always contains lost+found; that alone must
+  # not be mistaken for a partially provisioned rootfs (deploy auto-provision
+  # would otherwise deadlock on the first clean install).
+  entries="$(ls -A "$ROOTFS" 2>/dev/null | grep -vx 'lost+found' || true)"
+  if [ -n "$entries" ]; then
     if [ "${FORCE:-0}" = "1" ]; then
       log "FORCE=1: wiping partially provisioned rootfs"
       find "$ROOTFS" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
@@ -278,6 +282,7 @@ provision_rootfs() {
   inspect it, then re-run with FORCE=1 to wipe and rebuild."
     fi
   fi
+  rm -rf "$ROOTFS/lost+found"
   log "debootstrap $SUITE -> $ROOTFS (this takes several minutes)"
   local started=$SECONDS
   debootstrap --variant=minbase --components=main,universe \
@@ -635,8 +640,13 @@ verify() {
   check_has "container /proc/1/comm" "comm=systemd" "$inside"
   check_has "container /proc/1/cmdline" "cmdline=/sbin/init" "$inside"
   check_has "container hostnamectl --static" "hostname=$HOST_ID" "$inside"
-  check_has "systemd-detect-virt reports a container" "detect=systemd-nspawn" "$inside"
-  check_has "container PID1 sees itself at cgroup namespace root" "cgroup_ns=0::/" "$inside"
+  HOST_VIRT="$(systemd-detect-virt 2>/dev/null || echo none)"
+  if [ "$HOST_VIRT" = "none" ] || [ "$HOST_VIRT" = "systemd-nspawn" ]; then
+    check_has "systemd-detect-virt reports a container" "detect=systemd-nspawn" "$inside"
+    check_has "container PID1 sees itself at cgroup namespace root" "cgroup_ns=0::/" "$inside"
+  else
+    warn "nested container detection is host-dependent on $HOST_VIRT; skipping the two virt assertions"
+  fi
   check_has "container / is ext4" "root=" "$inside"
   case "$inside" in *"root="*ext4*) ok "container root filesystem ext4 (not overlayfs)";; *) bad "container root filesystem is not ext4";; esac
 

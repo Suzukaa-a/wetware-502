@@ -37,6 +37,8 @@ From your local development workstation, provision the three nspawn containers a
 ```bash
 # Push nspawn deployment scripts and assets
 WETWARE_VM=ubuntu@<vm-ip> ./ops/nspawn/deploy_from_workstation.sh
+   # deploy provisions the base container automatically if /var/lib/wetware-hosts/prod-cortex-04 is missing.
+
 
 # Build the base core container (prod-cortex)
 ssh -i ~/.ssh/id_rsa ubuntu@<vm-ip> 'sudo -n bash /usr/local/lib/cortex-agent/nspawn/build_base.sh up'

@@ -82,6 +82,8 @@ WETWARE-502 对虚拟化平台没有特定依赖，不绑定 Proxmox 或任何�
    ```bash
    # 同步部署脚本
    WETWARE_VM=ubuntu@<vm-ip> ./ops/nspawn/deploy_from_workstation.sh
+   # 若 /var/lib/wetware-hosts/prod-cortex-04 不存在，deploy 会先自动执行 build_base.sh up。
+
    # 构建核心舱镜像
    ssh ubuntu@<vm-ip> 'sudo -n bash /usr/local/lib/cortex-agent/nspawn/build_base.sh up'
    # 配置三容器网络网格
