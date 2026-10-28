@@ -27,7 +27,8 @@ The three-host mesh runs entirely on a single Ubuntu 22.04 LTS host virtual mach
 On a clean Ubuntu 22.04 virtual machine:
 ```bash
 scp ops/bootstrap-node.sh <admin>@<vm-ip>:/tmp/
-ssh <admin>@<vm-ip> 'sudo WETWARE_VM_IP=<vm-ip> bash /tmp/bootstrap-node.sh'
+ssh <admin>@<vm-ip> 'sudo env WETWARE_VM_IP=<vm-ip> setsid nohup bash /tmp/bootstrap-node.sh </dev/null >/root/bootstrap.out 2>&1 &'
+ssh <admin>@<vm-ip> 'sudo tail -f /root/bootstrap.out'
 ```
 
 ### Step 2: Build Containers & Network Plane

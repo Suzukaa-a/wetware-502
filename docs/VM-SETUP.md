@@ -59,7 +59,7 @@ Port 2222 (SSH)  : Campaign triage entrypoint (forwards via nftables to edge-gw:
 Port 2223 (SSH)  : Baseline core entrypoint (forwards via nftables to prod-cortex: 10.66.0.4:22)
 Port 80   (HTTP) : External Web endpoint (forwards to edge-gw: 10.66.0.1:80)
 Container Mesh   : Host forwards traffic between 10.66.0.1, 10.66.0.4, and 10.66.6.1
-Egress Traffic   : In-guest firewall blocks internal RFC1918 subnets while permitting public internet access
+Egress Traffic   : In-guest firewall blocks internal RFC1918 subnets; public internet, the operator SSH session and the DNS resolver stay reachable. The nftables reload can briefly interrupt a live shell, so run the bootstrap detached and follow /root/bootstrap.out.
 ```
 
 ---
@@ -75,7 +75,8 @@ Egress Traffic   : In-guest firewall blocks internal RFC1918 subnets while permi
 3. **Execute Host Bootstrap**:
    ```bash
    scp ops/bootstrap-node.sh ubuntu@<vm-ip>:/tmp/
-   ssh ubuntu@<vm-ip> 'sudo WETWARE_VM_IP=<vm-ip> bash /tmp/bootstrap-node.sh'
+   ssh ubuntu@<vm-ip> 'sudo env WETWARE_VM_IP=<vm-ip> setsid nohup bash /tmp/bootstrap-node.sh </dev/null >/root/bootstrap.out 2>&1 &'
+   ssh ubuntu@<vm-ip> 'sudo tail -f /root/bootstrap.out'
    ```
 4. **Deploy Containers & Campaign Network**:
    ```bash

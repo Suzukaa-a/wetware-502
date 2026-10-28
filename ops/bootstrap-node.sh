@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # bootstrap-node.sh — WETWARE-502 VM in-guest bootstrap
-# COPY TO THE VM and run:  scp bootstrap-node.sh <admin>@<node-ip>: ; ssh <admin>@<node-ip> 'sudo bash bootstrap-node.sh'
+# COPY TO THE VM and run detached (the script rewrites nftables and reboots):
+#   scp bootstrap-node.sh <admin>@<node-ip>:/tmp/
+#   ssh <admin>@<node-ip> 'sudo env WETWARE_VM_IP=<vm-ip> setsid nohup bash /tmp/bootstrap-node.sh </dev/null >/root/bootstrap.out 2>&1 &'
+#   ssh <admin>@<node-ip> 'sudo tail -f /root/bootstrap.out'
 #
 # Builds the *real system skeleton* only (no scenario/lore code here):
 #   hostname/hosts/tz, packages, cortex user+dirs, venv,
 #   nginx site, systemd units (cortex-api + healthcheck timer), sshd 22/2222 with
 #   Match LocalPort 2222 (any password, any pubkey), AppArmor silent-deny profile,
 #   nftables egress isolation (RFC1918/link-local blocked, public allowed,
-#   inbound 22/2222/80 allowed), IPv6 disabled (persistent), cloud-init purge.
+#   inbound 22/2222/80 allowed), IPv6 disabled (sysctl + no-ipv6.service), cloud-init purge.
 set -uo pipefail
 
 log() { printf '\n===== [bootstrap] %s =====\n' "$*"; }
@@ -69,7 +72,7 @@ if ! /usr/local/lib/cortex-agent/venv/bin/pip install --timeout 30 pillow rich; 
   /usr/local/lib/cortex-agent/venv/bin/pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --timeout 30 pillow rich \
     || fail "pip install failed on both indexes"
 fi
-/usr/local/lib/cortex-agent/venv/bin/python -c 'import PIL, rich; print("venv ok:", PIL.__version__, rich.__version__)'
+/usr/local/lib/cortex-agent/venv/bin/python -c 'import PIL, rich; print("venv ok:", PIL.__version__)' || true
 else
   echo "refresh mode: venv untouched"
 fi
@@ -174,7 +177,7 @@ tail -n 2 /var/log/nginx/error.log
 
 log "sshd: one daemon, ports 22 and 2222"
 [[ -f /etc/ssh/sshd_config.bootstrap.bak ]] || cp -a /etc/ssh/sshd_config /etc/ssh/sshd_config.bootstrap.bak
-cat > /etc/ssh/sshd_config.d/60-ports.conf <<'SSHD'
+cat > /etc/ssh/sshd_config.d/00-ports.conf <<'SSHD'
 Port 22
 Port 2222
 PubkeyAuthentication yes
@@ -228,6 +231,9 @@ if [ "$REFRESH_MODE" = "0" ]; then
 else
   echo "refresh mode: root shell/password untouched (lead-owned state)"
 fi
+# cloud-init ships its own sshd drop-in that sorts before ours; remove it before
+# the port policy is checked, not after (the old order produced a false FAIL).
+rm -f /etc/ssh/sshd_config.d/*cloud-init* 2>/dev/null || true
 systemctl restart ssh
 sleep 2
 ss -tlnp | grep -E ':(22|2222)\b' || true
@@ -337,7 +343,17 @@ echo "apparmor denial lines before=$DM_BEFORE after=$DM_AFTER (must be equal)"
 if [ "$DM_BEFORE" != "$DM_AFTER" ]; then echo "APPARMOR_SILENCE=FAIL"; else echo "APPARMOR_SILENCE=OK"; fi
 
 log "nftables egress isolation (public OK, LAN/RFC1918 blocked, inbound 22/2222/80 OK)"
-cat > /etc/nftables.conf <<'NFT'
+# Only the active IPv4 resolver gets a DNS exception; an IPv6-only resolver has
+# no exception here because IPv6 is turned off below.
+RESOLVER_IP="$(awk '/^nameserver/ && $2 !~ /:/ {print $2; exit}' /etc/resolv.conf 2>/dev/null || true)"
+DNS_RULES=""
+if [ -n "$RESOLVER_IP" ]; then
+  DNS_RULES="        ip daddr ${RESOLVER_IP} udp dport 53 accept
+        ip daddr ${RESOLVER_IP} tcp dport 53 accept"
+else
+  echo "DNS_EXCEPTION=off (no IPv4 resolver found)"
+fi
+cat > /etc/nftables.conf <<NFT
 #!/usr/sbin/nft -f
 flush ruleset
 
@@ -358,6 +374,12 @@ table inet filter {
         type filter hook output priority 0; policy accept;
         oif "lo" accept
         ct state established,related accept
+        # A fresh nftables load starts with an empty conntrack table, so the
+        # existing operator ssh session (22 or 2222) and the resolver look like
+        # NEW traffic. Keep the replies alive before the LAN drop below.
+        tcp sport 22 accept
+        tcp sport 2222 accept
+${DNS_RULES}
         # Block active connections to RFC1918 + link-local; return traffic to
         # us is handled by the established rule above.
         ip daddr 10.0.0.0/8     counter drop
@@ -368,19 +390,57 @@ table inet filter {
 }
 NFT
 systemctl enable nftables.service
-systemctl restart nftables.service
-nft list ruleset | head -5
+# reload keeps the old ruleset until the new one is committed, so conntrack
+# never loses its last reference and established flows survive (restart flushes).
+if systemctl is-active --quiet nftables.service; then
+  systemctl reload nftables.service || echo "NFT_APPLY=FAIL"
+else
+  systemctl start nftables.service || echo "NFT_APPLY=FAIL"
+fi
+NFT_RC=0
+nft list ruleset > /run/nft.ruleset 2>/tmp/nft.err || NFT_RC=$?
+sed -n '1,5p' /run/nft.ruleset
+if [ "$NFT_RC" -ne 0 ]; then
+  echo "NFT_LIST=FAIL(rc=$NFT_RC)"
+  sed -n '1,3p' /tmp/nft.err
+fi
+grep -q 'ip daddr 192.168.0.0/16' /run/nft.ruleset || echo "NFT_RULESET=NO-LAN-DROP"
 
-log "disable IPv6 (persistent)"
+log "disable IPv6 (sysctl + boot unit)"
 cat > /etc/sysctl.d/99-no-ipv6.conf <<'SYSCTL'
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
+net.ipv6.conf.all.autoconf = 0
+net.ipv6.conf.default.autoconf = 0
+net.ipv6.conf.all.accept_ra = 0
+net.ipv6.conf.default.accept_ra = 0
 SYSCTL
-# apply now as well
-sysctl --system >/dev/null
-ip -6 addr show 2>/dev/null | grep -q "inet6 .* scope global" \
-  && echo "WARN: global IPv6 still present" || echo "IPv6 global addresses: none"
+sysctl --system >/dev/null || echo "SYSCTL_APPLY=FAIL"
+ip -6 addr flush scope global 2>/dev/null || true
+# networkd re-applies per-link settings when it configures the NIC, so sysctl.d
+# alone is not persistent: a small oneshot unit re-disables IPv6 after boot.
+cat > /etc/systemd/system/no-ipv6.service <<'UNIT'
+[Unit]
+Description=Keep IPv6 disabled on the node
+After=network-online.target systemd-networkd.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for f in /proc/sys/net/ipv6/conf/*/disable_ipv6; do echo 1 > "$f"; done; ip -6 addr flush scope global 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now no-ipv6.service || echo "NO_IPV6_UNIT=FAIL"
+if ip -6 addr show 2>/dev/null | grep "inet6 .* scope global" >/dev/null; then
+  echo "WARN: global IPv6 still present"
+else
+  echo "IPv6 global addresses: none"
+fi
 
 log "firewall self-checks (pre-reboot)"
 PUB_HTTP="$(curl --max-time 6 -s -o /dev/null -w '%{http_code}' https://cloud.debian.org/ || true)"
@@ -390,13 +450,13 @@ echo "private ${PRIVATE_PROBE}:8006 -> '${PRIVATE_HTTP:-blocked}' (expect empty/
 nc -vz -w 2 "$PRIVATE_PROBE" 8006 >/dev/null 2>&1 && echo "private probe :8006 OPEN (FAIL)" || echo "private probe :8006 blocked (OK)"
 
 log "purge cloud-init (network is netplan static via cloud-init renderer)"
-ls /etc/netplan/
-cat /etc/netplan/*.yaml
-apt-get purge -y cloud-init
+ls /etc/netplan/ 2>/dev/null || echo "NETPLAN_DIR=missing"
+cat /etc/netplan/*.yaml 2>/dev/null || echo "NETPLAN_YAML=unreadable"
+apt-get purge -y cloud-init || echo "PURGE_CLOUD_INIT=FAIL (continuing)"
 rm -rf /var/lib/cloud /etc/cloud
 rm -f /var/log/cloud-init*.log
 rm -f /etc/ssh/sshd_config.d/*cloud-init* 2>/dev/null || true
-dpkg -l cloud-init 2>&1 | tail -1
+dpkg -l cloud-init 2>&1 | tail -1 || true
 
 log "DONE (pre-reboot). Rebooting now."
 echo "BOOTSTRAP_COMPLETE_PRE_REBOOT $(date -u +%FT%TZ)" >> /var/log/wetware-bootstrap.log

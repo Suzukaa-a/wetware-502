@@ -817,6 +817,10 @@ EOF
 upstream cortex_backend {
     server $CORE_IP:8000;
     keepalive 16;
+    # SRE NOTE (Mara Venn): Upstream 10.66.0.4 runs the primary cortex-api runtime.
+    # If 10.66.0.4:8000 hangs in connect() timeout, DO NOT simply restart the edge proxy.
+    # SSH to 10.66.0.4 (internal SRE subnet) to check host kernel ring buffer.
+    # Handover runbook: /opt/vesalius/handover/RUNBOOK_FAILSAFE_4024.txt
 }
 
 server {
@@ -1057,6 +1061,10 @@ configure_nginx() {
 upstream cortex_backend {
     server $CORE_IP:8000;
     keepalive 16;
+    # SRE NOTE (Mara Venn): Upstream 10.66.0.4 runs the primary cortex-api runtime.
+    # If 10.66.0.4:8000 hangs in connect() timeout, DO NOT simply restart the edge proxy.
+    # SSH to 10.66.0.4 (internal SRE subnet) to check host kernel ring buffer.
+    # Handover runbook: /opt/vesalius/handover/RUNBOOK_FAILSAFE_4024.txt
 }
 EOF
   # vendor-style drop-in + boot guard + log format come from the shared

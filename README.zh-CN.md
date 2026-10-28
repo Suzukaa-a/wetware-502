@@ -45,7 +45,8 @@ config.example.env   环境配置文件模板（复制为 .local/config.env 使�
 3. **初始化虚拟机**：
    ```bash
    scp ops/bootstrap-node.sh <admin>@<vm-ip>:/tmp/
-   ssh <admin>@<vm-ip> 'sudo WETWARE_VM_IP=<vm-ip> bash /tmp/bootstrap-node.sh'
+   ssh <admin>@<vm-ip> 'sudo env WETWARE_VM_IP=<vm-ip> setsid nohup bash /tmp/bootstrap-node.sh </dev/null >/root/bootstrap.out 2>&1 &'
+   ssh <admin>@<vm-ip> 'sudo tail -f /root/bootstrap.out'
    ```
 4. **部署三主机集群**（真实 `systemd-nspawn` 容器）：
    ```bash

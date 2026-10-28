@@ -47,7 +47,8 @@ All story dialogue and clue assets reside in `wetware-honeypot/lore_texts.py` an
 3. **Bootstrap the Node**:
    ```bash
    scp ops/bootstrap-node.sh <admin>@<vm-ip>:/tmp/
-   ssh <admin>@<vm-ip> 'sudo WETWARE_VM_IP=<vm-ip> bash /tmp/bootstrap-node.sh'
+   ssh <admin>@<vm-ip> 'sudo env WETWARE_VM_IP=<vm-ip> setsid nohup bash /tmp/bootstrap-node.sh </dev/null >/root/bootstrap.out 2>&1 &'
+   ssh <admin>@<vm-ip> 'sudo tail -f /root/bootstrap.out'
    ```
 4. **Deploy the Three-Host Mesh** (real `systemd-nspawn` containers):
    ```bash

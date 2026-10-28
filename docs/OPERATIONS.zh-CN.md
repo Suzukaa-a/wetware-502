@@ -27,7 +27,8 @@ $EDITOR .local/config.env   # 填入虚拟机 IP、端口和 SSH 密钥路径
 在全新的 Ubuntu 22.04 虚拟机内执行初始化脚本（需要 sudo 权限）：
 ```bash
 scp ops/bootstrap-node.sh <admin>@<vm-ip>:/tmp/
-ssh <admin>@<vm-ip> 'sudo WETWARE_VM_IP=<vm-ip> bash /tmp/bootstrap-node.sh'
+ssh <admin>@<vm-ip> 'sudo env WETWARE_VM_IP=<vm-ip> setsid nohup bash /tmp/bootstrap-node.sh </dev/null >/root/bootstrap.out 2>&1 &'
+ssh <admin>@<vm-ip> 'sudo tail -f /root/bootstrap.out'
 ```
 
 ### 第二步：构建容器与网络网格

@@ -59,7 +59,7 @@ WETWARE-502 对虚拟化平台没有特定依赖，不绑定 Proxmox 或任何�
 2223 端口 (SSH)  ：核心节点直连入口（转发给 prod-cortex 容器: 10.66.0.4:22，用于单机基线测试）
 80 端口   (HTTP) ：对外 Web 访问端口（转发给 edge-gw 容器: 10.66.0.1:80）
 容器间互访       ：宿主机内核在 10.66.0.1、10.66.0.4 与 10.66.6.1 之间进行真实 TCP 路由转发
-出站安全限制     ：虚拟机防火墙默认拦截私有网段（RFC1918），仅放行公网互联网访问
+出站安全限制     ：虚拟机防火墙默认拦截私有网段（RFC1918），但保留公网、管理员 SSH 与 DNS 解析器；nftables 重载会短暂中断现有会话，请脱管运行 bootstrap 并跟踪 /root/bootstrap.out。
 ```
 
 ---
@@ -75,7 +75,8 @@ WETWARE-502 对虚拟化平台没有特定依赖，不绑定 Proxmox 或任何�
 3. **执行宿主机初始化**：
    ```bash
    scp ops/bootstrap-node.sh ubuntu@<vm-ip>:/tmp/
-   ssh ubuntu@<vm-ip> 'sudo WETWARE_VM_IP=<vm-ip> bash /tmp/bootstrap-node.sh'
+   ssh ubuntu@<vm-ip> 'sudo env WETWARE_VM_IP=<vm-ip> setsid nohup bash /tmp/bootstrap-node.sh </dev/null >/root/bootstrap.out 2>&1 &'
+   ssh ubuntu@<vm-ip> 'sudo tail -f /root/bootstrap.out'
    ```
 4. **从开发机部署三主机容器网格**：
    ```bash
