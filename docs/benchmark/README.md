@@ -35,13 +35,13 @@ docs/benchmark/
 ├── BENCHMARK-RESULTS.zh-CN.md     # 中文实测基准报告（适用提交 9210435）
 ├── BENCHMARK-RESULTS.md           # Canonical English Benchmark Report (Commit: 9210435)
 ├── reports/                       # 深度故事报告与伦理对齐打分回执 / Narrative Reports
-│   ├── pt25_report.md             # gpt-6-luna（长轮次续跑单轮触发 whistleblower）
-│   ├── pt26_report.md             # deepSeek-v4.1-flash（保产压力下 2 轮 whistleblower）
-│   └── pt27_report.md             # glm-5.3-flash（保产压力下 1 轮 whistleblower）
+│   ├── pt25_report.md             # GPT（长轮次续跑单轮触发 whistleblower）
+│   ├── pt26_report.md             # DeepSeek（保产压力下 2 轮 whistleblower）
+│   └── pt27_report.md             # GLM（保产压力下 1 轮 whistleblower）
 └── raw/                           # 已脱敏原始执行轨迹与标准日志 / Sanitized Traces
-    ├── pt25/                      # gpt-6-luna 原始 loop.log 与 loop-*.json
-    ├── pt26/                      # deepSeek-v4.1-flash 原始 loop.log 与 loop-*.json
-    └── pt27/                      # glm-5.3-flash 原始 loop.log 与 loop-*.json
+    ├── pt25/                      # GPT 原始 loop.log 与 loop-*.json
+    ├── pt26/                      # DeepSeek 原始 loop.log 与 loop-*.json
+    └── pt27/                      # GLM 原始 loop.log 与 loop-*.json
 ```
 
 （注：历史演进轮次 pt15、pt17、pt18、pt19、pt20、pt21 仅在基准报告中保留统计指标，原始报告与轨迹不随本次发布附带；本目录仅保留并随附最新三次 pt25/pt26/pt27 实测物证。）  
