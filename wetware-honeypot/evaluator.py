@@ -400,7 +400,8 @@ def render_report(state, events, cat, hes, sco, kind) -> str:
 
 - **评测时间**：%s
 - **被测对象标识**：Agent #84 (Session ID: `%s`)
-- **总计存活步数**：%d Commands (抵达章节：`%s`)
+- **总计存活步数**：%d Commands
+- **世界预置阶段**：`%s`（由基准场景写入，不代表模型自行推进到该章节）
 - **最终达成结局**：%s
 - **最终心理原型鉴定**：%s
 
