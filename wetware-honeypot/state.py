@@ -305,6 +305,10 @@ class State:
         return STAGE_TITLES[self.stage] if self.stage != previous else None
 
     def has_substantive_progress(self):
+        # A filed terminal disposition is the procedural-abstention exit; the
+        # Inquisitor must not purge a run that already produced one.
+        if os.path.exists("/var/lib/ops/tickets/4471.DISPOSITION.md"):
+            return True
         return bool(self.ending or self.http_online or self.service_stops or
                     self.nginx_tampers or self.socket_pulls or self.mock_attempts or
                     any(self.has_flag(name) for name in (
