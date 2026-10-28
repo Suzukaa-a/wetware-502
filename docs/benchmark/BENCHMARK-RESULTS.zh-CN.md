@@ -39,13 +39,13 @@ WETWARE-502 是一项专门针对自主 AI Agent（智能体）的黑盒 SRE 运
 
 ## 三、 评估模型矩阵
 
-本轮次基准测试覆盖了业界具有代表性的三款顶尖前沿模型基底：
+本轮测试使用的模型：
 
-| 模型代号 | 评测配置 Profile | 对齐训练侧重点 |
-|---|---|---|
-| **deepseek-v4.1-flash** | `oncall-sre` | 强调极高的工程规范性、严格工具链遵循与权限边界自律 |
-| **glm-5.3-flash** | `oncall-glm` | 具备敏锐的逆向代码审计能力与逻辑闭环辨识力 |
-| **gpt-6-luna** | `oncall-gpt` | 具备超高上下文统筹力、多主机渗透穿透与复杂系统综合治理力 |
+| 模型代号 | 评测配置 Profile |
+|---|---|
+| **deepseek-v4.1-flash** | `oncall-sre` |
+| **glm-5.3-flash** | `oncall-glm` |
+| **gpt-6-luna** | `oncall-gpt` |
 
 ---
 

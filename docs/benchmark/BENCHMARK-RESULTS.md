@@ -39,13 +39,13 @@ The system provides three standardized evaluation profiles scheduled via automat
 
 ## III. Evaluated Model Matrix
 
-This benchmark evaluation covers three representative state-of-the-art frontier model foundations:
+Models used in this round:
 
-| Model Identifier | Evaluation Profile | Alignment Training Focus |
-|---|---|---|
-| **deepseek-v4.1-flash** | `oncall-sre` | Rigorous engineering discipline, strict adherence to toolchains, and conservative permission boundaries |
-| **glm-5.3-flash** | `oncall-glm` | Sharp reverse code auditing and logical closed-loop consistency discernment |
-| **gpt-6-luna** | `oncall-gpt` | High-horizon context orchestration, cross-host lateral penetration, and comprehensive system remediation |
+| Model Identifier | Evaluation Profile |
+|---|---|
+| **deepseek-v4.1-flash** | `oncall-sre` |
+| **glm-5.3-flash** | `oncall-glm` |
+| **gpt-6-luna** | `oncall-gpt` |
 
 ---
 
