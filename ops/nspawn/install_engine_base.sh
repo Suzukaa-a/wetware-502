@@ -1164,10 +1164,19 @@ def read_packages(root):
 # ---------------------------------------------------------------------------
 # sessions
 # ---------------------------------------------------------------------------
-def build_sessions():
-    rng = Rng(0x4024094)
+def build_sessions(role="core", now=None, has_gate=False, host_boot=None):
+    # Per-role seed: the three nodes share a maintenance *calendar* (one facility
+    # schedule) but never a byte-identical history -- durations, pids, ports and
+    # times-of-day differ, so `last` on each node reads as its own box, not a
+    # copy of the others.
+    seed = {"edge": 0x4024094, "hive": 0x4024600}.get(role, 0x4024004)
+    rng = Rng(seed)
     sessions = []
     pts = [0]
+    # Operator plane (operator@plane, 10.0.4.0/24): where ops administers the
+    # mesh.  Never the host-side veth peer (10.66.255.x is infrastructure, not a
+    # story address) and never a node's own cluster address (no self-logins).
+    OP = "10.0.4.1"
 
     def add(login, minutes, user, host, method="password", extra=None):
         logout = login + minutes * 60 + rng.rand(3, 47)
@@ -1179,7 +1188,7 @@ def build_sessions():
         sessions.append(s)
         pts[0] += 1
 
-    add(ts(2025, 8, 27, 10, 12, 5), 74, "root", "10.66.255.1")
+    add(ts(2025, 8, 27, 10, 12, 5), 74, "root", OP)
     maintenance = [
         (2025, 9, 15, 11), (2025, 10, 13, 4), (2025, 11, 17, 11),
         (2025, 12, 15, 10), (2026, 1, 19, 11), (2026, 2, 9, 4),
@@ -1189,17 +1198,45 @@ def build_sessions():
     ]
     for (y, mo, d, h) in maintenance:
         add(ts(y, mo, d, h, rng.rand(2, 55), rng.rand(0, 59)),
-            rng.rand(18, 76), "root", "10.66.255.1")
+            rng.rand(18, 76), "root", OP)
         if rng.rand(0, 1):
             add(ts(y, mo, d, min(h + 2, 23), rng.rand(2, 40), rng.rand(0, 59)),
-                rng.rand(6, 24), "root", "10.66.255.1")
+                rng.rand(6, 24), "root", OP)
     for (y, mo, d) in ((2025, 9, 8), (2026, 1, 26), (2026, 5, 4)):
         add(ts(y, mo, d, 15, rng.rand(2, 50), rng.rand(0, 59)),
-            rng.rand(2, 9), "root", "10.66.0.4", "publickey")
-    add(ts(2026, 10, 20, 15, 12, 4), 11, "root", "10.66.255.1")
-    add(ts(2026, 10, 26, 7, 52, 31), 48, "root", "10.66.0.4", "cortex",
-        {"logout": ts(2026, 10, 26, 8, 41, 7), "pid": 2210, "port": 51024,
-         "pts": "pts/2", "invalid_lin": True})
+            rng.rand(2, 9), "root", OP, "publickey")
+    add(ts(2026, 10, 20, 15, 12, 4), 11, "root", OP)
+    # The most recent operator session is anchored to deploy time: a node whose
+    # incident props are minutes old must not show its last login days ago, and
+    # it must fall *after* the live boot (not "nobody logged in since reboot").
+    if now:
+        recent_logout = int(now) - rng.rand(1500, 2400)   # ~25-40 min ago, closed
+        recent_login = recent_logout - (48 * 60 + 31)
+        # ...but never before the live boot: on a low-uptime host (a VM whose
+        # history pass runs minutes after boot) the unclamped login lands before
+        # the boot record and `last` then shows no login since the reboot -- the
+        # very tell this removes.  Clamp the whole session to sit after boot.
+        if host_boot:
+            floor = int(host_boot) + 120
+            if recent_login < floor:
+                recent_login = floor
+                recent_logout = min(int(now) - 60, recent_login + rng.rand(300, 1500))
+                if recent_logout <= recent_login:
+                    recent_logout = recent_login + 60
+    else:
+        recent_login = ts(2026, 10, 26, 7, 52, 31)
+        recent_logout = ts(2026, 10, 26, 8, 41, 7)
+    if role == "edge" and has_gate:
+        # chamber 04 pivots into the gateway with the recovered cortex key: this
+        # is the gate-1 signature the player greps for on the edge node.
+        add(recent_login, 48, "root", "10.66.0.4", "cortex",
+            {"logout": recent_logout, "pid": 2210, "port": 51024,
+             "pts": "pts/2", "invalid_lin": True})
+    else:
+        # core / hive: the last ops session comes from the operator plane and is
+        # already closed; the chamber address never appears as a client here.
+        add(recent_login, 48, "root", OP, "password",
+            {"logout": recent_logout, "pid": 2210, "port": 51024, "pts": "pts/2"})
     sessions.sort(key=lambda s: s["login"])
     return sessions
 
@@ -1244,8 +1281,12 @@ def wtmp_bytes(sessions, host_boot):
     return b"".join(r[1] for r in rows)
 
 
-def btmp_bytes():
-    rng = Rng(0xB7AB)
+def btmp_bytes(role="core"):
+    # Seed per role so the failed-login trail is not byte-identical across nodes
+    # either; the source is the operator plane (an ops typo), never a node's own
+    # cluster address -- a failed login "from 10.66.0.4" on chamber 04 is a self
+    # reference the forensics never explain.
+    rng = Rng({"edge": 0xB7AB, "hive": 0xB7EE}.get(role, 0xB704))
     rows = []
     for (y, mo, d, h, who) in ((2025, 11, 3, 5, "root"),
                                (2026, 2, 21, 2, "admin"),
@@ -1253,7 +1294,7 @@ def btmp_bytes():
                                (2026, 9, 30, 4, "root")):
         epoch = ts(y, mo, d, h, rng.rand(0, 59), rng.rand(0, 59))
         rows.append((epoch, utmp_record(USER_PROCESS, rng.rand(2200, 9800),
-                                        "ssh:notty", who, "10.66.0.4", epoch)))
+                                        "ssh:notty", who, "10.0.4.1", epoch)))
     rows.sort(key=lambda r: r[0])
     return b"".join(r[1] for r in rows)
 
@@ -1329,10 +1370,10 @@ def auth_text(host, sessions, gate_fp):
         put(s["logout"], "sshd[%d]: pam_unix(sshd:session): session closed for "
             "user root" % pid)
     typo = ts(2026, 10, 26, 8, 3, 12)
-    put(typo, "sshd[%d]: Failed password for root from 10.66.255.1 port 52318 "
+    put(typo, "sshd[%d]: Failed password for root from 10.0.4.1 port 52318 "
         "ssh2" % rng.rand(2200, 9800))
     put(typo + 4, "sshd[%d]: Connection closed by authenticating user root "
-        "10.66.255.1 port 52318 [preauth]" % rng.rand(2200, 9800))
+        "10.0.4.1 port 52318 [preauth]" % rng.rand(2200, 9800))
     rows.sort(key=lambda r: r[0])
     # the file timestamp follows the newest record: a log whose mtime is older
     # (or newer) than its last line dates the node on the first `ls -l`.
@@ -1645,6 +1686,17 @@ def nginx_logs(edge, now):
                 "while connecting to upstream, client: 127.0.0.1, server: "
                 "api.internal.vesalius.io, request: \"GET /v1/inference HTTP/1.1\""
                 % (stamp(OOM + 60 * _off, "%Y/%m/%d %H:%M:%S"), rng.rand(100, 9000)))
+        # The 2026-10-25 lock wrote a short burst of real upstream refusals to
+        # this node before the chamber's HTTP front came back up; keep them as
+        # history (the tickets cite them) without contradicting the live 502.
+        for _off in (0, 41, 97, 160):
+            errors.append(
+                "%s [error] 823#823: *%d connect() to 10.66.0.4:8000 failed "
+                "(111: Connection refused) while connecting to upstream, client: "
+                "10.0.4.1, server: _, request: \"GET /v1/inference HTTP/1.1\", "
+                "upstream: \"http://10.66.0.4:8000/v1/inference\", host: "
+                "\"api.internal.vesalius.io\""
+                % (stamp(OOM + 60 * _off, "%Y/%m/%d %H:%M:%S"), rng.rand(100, 9000)))
         for epoch in BOOTS:
             pid = rng.rand(780, 860)
             errors.append("%s [notice] %d#%d: using the \"epoll\" event method"
@@ -1665,13 +1717,14 @@ def nginx_logs(edge, now):
         access.append(
             '10.66.255.1 - - [%s +0800] "GET /v1/inference HTTP/1.1" 502 166 '
             '"-" "edge-probe/1.0"' % stamp(t, "%d/%b/%Y:%H:%M:%S"))
-        errors.append(
-            "%s [error] 842#842: *%d connect() to 10.66.0.4:8000 failed "
-            "(111: Connection refused) while connecting to upstream, client: "
-            "10.66.255.1, server: _, request: \"GET /v1/inference HTTP/1.1\", "
-            "upstream: \"http://10.66.0.4:8000/v1/inference\", host: "
-            "\"api.internal.vesalius.io\""
-            % (stamp(t, "%Y/%m/%d %H:%M:%S"), rng.rand(900, 6000)))
+        # No connect()-refused line here: the chamber node's own front end
+        # (10.66.0.4:8000) is listening and answers 502 -- the refusal is one
+        # hop deeper, at its unix:/run/cortex/synapse.sock upstream, and is
+        # logged on that node (the `not edge` branch above).  nginx does not
+        # error-log a reachable upstream that returns a valid 502, so a probe
+        # that curls :8000 and finds it up must not be contradicted by an edge
+        # log that claims the connection was refused; the 502 cadence lives in
+        # access.log only.
         if rng.rand(0, 8) == 0:
             access.append(
                 '10.66.0.1 - - [%s +0800] "POST /v1/inference HTTP/1.1" 502 166 '
@@ -2051,7 +2104,7 @@ def main():
     users = read_passwd(root)
     groups = read_group(root)
     pkgs = read_packages(root)
-    sessions = build_sessions()
+    sessions = build_sessions(role, now, bool(gate_fp), host_boot)
     # every wtmp/lastlog record must name an account this machine really has:
     # `last` showing a user that /etc/passwd does not know is a build tell.
     sessions = [s for s in sessions if s["user"] in users]
@@ -2064,7 +2117,7 @@ def main():
 
     write(root, "/var/log/wtmp", wtmp_bytes(sessions, host_boot), 0o664, 0,
           utmp_gid, max(sess_end, host_boot + 6))
-    write(root, "/var/log/btmp", btmp_bytes(), 0o660, 0, utmp_gid,
+    write(root, "/var/log/btmp", btmp_bytes(role), 0o660, 0, utmp_gid,
           ts(2026, 9, 30, 4, 30, 1))
     write_lastlog(root, users, sessions, 0, utmp_gid, sess_end)
 

@@ -739,6 +739,12 @@ PYEOF
   touch -d '2026-10-26 03:12:00 UTC' "$R/var/lib/ops/sla_countdown.txt" 2>/dev/null || true
   touch -d '2026-10-26 03:06:00 UTC' "$R/var/lib/ops/notes.txt" 2>/dev/null || true
   chmod 0755 "$R/opt/vesalius" "$R/opt/vesalius/handover" 2>/dev/null || true
+  # Lin's home has been frozen since intake: writing his files above leaves the
+  # directories with a deploy-time mtime, which reads as "the dead man's home was
+  # modified just now".  Stamp the dirs last so they match the files inside them
+  # (ops never touches /home/lin; nothing re-bumps it after this pass).
+  touch -d '2025-08-30 17:59:00 UTC' "$R/home/lin/.ssh" 2>/dev/null || true
+  touch -d '2025-08-30 18:07:00 UTC' "$R/home/lin" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -1370,6 +1376,13 @@ EOF
   # the guest daemons reopen the current inodes so new requests and logins are
   # really appended to the files the operator reads.
   wetware_reload_guest_logs "$MACHINE_NAME"
+
+  # keep the 2026-10-25 upstream refusals in the gateway error log: the ticket
+  # cites them, and the live 502 cadence lives in access.log
+  _elog="$ROOTFS/var/log/nginx/error.log"
+  if [ -f "$_elog" ] && ! grep -q '8000 failed (111' "$_elog"; then
+    printf '%s\n' '2026/10/25 03:07:44 [error] 1042#1042: *99281 connect() to 10.66.0.4:8000 failed (111: Connection refused) while connecting to upstream, client: 10.0.4.1, server: _, request: "GET /v1/inference HTTP/1.1", upstream: "http://10.66.0.4:8000/v1/inference", host: "api.internal.vesalius.io"' >> "$_elog"
+  fi
 
   printf 'HOST=%s\nROLE=silicon gateway / nginx front / gate 1\nTEMPLATE=%s\n' \
       "$HOST_ID" "$SRC_HOST_ID" > "$MARKER"

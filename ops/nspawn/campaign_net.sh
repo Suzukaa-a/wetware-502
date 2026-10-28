@@ -5,8 +5,13 @@
 # three point-to-point veth pairs to the edge / prod-cortex / hive containers,
 # the host forwarding, firewall, NAT and /32 routes they need, and the :2222
 # operator entry that points at the edge gateway.  Management ssh on :22 is not
-# touched by this script.  A second host-side frontend on :2223 goes straight
-# to the existing node for baseline acceptance runs (tests/accept_remote.py).
+# touched by this script (only the host sshd's bootstrap-era :2222 listener is
+# dropped so haproxy can bind it).  A second frontend on :2223 goes straight to
+# the existing node for baseline acceptance runs (tests/accept_remote.py); it
+# binds the loopback only, so it is never reachable from the LAN and a port scan
+# from the story world cannot walk past the edge gateway (reach it through an ssh
+# tunnel).  Public :80 is forwarded to the edge gateway's own nginx (the story's
+# only web surface); the host nginx that bootstrap installs is stopped.
 #
 # Container side is point-to-point as well: a container only ever owns its
 # story address (/32), the host side of its veth owns a 10.66.255.x/32 peer and
@@ -23,7 +28,8 @@
 #
 # Env overrides: WETWARE_VM, WETWARE_ROOTFS, WETWARE_CORE_MACHINE,
 # WETWARE_CORE_ROOT, WETWARE_EDGE_MACHINE, WETWARE_HIVE_MACHINE,
-# WETWARE_ENTRY_STRICT (auto|1|0), WETWARE_SSH_PASSWORD (optional login probe).
+# WETWARE_ENTRY_STRICT (auto|1|0), WETWARE_SSH_PASSWORD (optional login probe),
+# WETWARE_UPLINK (egress nic for container NAT; default: the default-route nic).
 set -euo pipefail
 umask 022
 
@@ -41,7 +47,7 @@ if [ "${WETWARE_REMOTE:-0}" != "1" ] && [ -n "${WETWARE_VM:-}" ]; then
   forwarded=""
   for var in WETWARE_ROOTFS WETWARE_CORE_MACHINE WETWARE_CORE_ROOT \
              WETWARE_EDGE_MACHINE WETWARE_HIVE_MACHINE \
-             WETWARE_ENTRY_STRICT WETWARE_SSH_PASSWORD; do
+             WETWARE_ENTRY_STRICT WETWARE_SSH_PASSWORD WETWARE_UPLINK; do
     value=${!var:-}
     [ -n "$value" ] || continue
     forwarded="$forwarded $var=$(printf '%q' "$value")"
@@ -69,7 +75,11 @@ CORE_ROOT=${WETWARE_CORE_ROOT:-$ROOTFS_DIR/prod-cortex-04}
 EDGE_MACHINE=${WETWARE_EDGE_MACHINE:-edge-gw}
 HIVE_MACHINE=${WETWARE_HIVE_MACHINE:-hive}
 SHARED_STATE=${WETWARE_SHARED_STATE:-/var/lib/wetware-campaign/state}
-UPLINK=${WETWARE_UPLINK:-eth0}
+# Egress NAT goes out of the interface that carries the default route (eth0 on
+# the first VM, enp6s18 & co. elsewhere); WETWARE_UPLINK pins it explicitly.
+UPLINK=${WETWARE_UPLINK:-$(ip -4 route show default 2>/dev/null |
+  awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')}
+UPLINK=${UPLINK:-eth0}
 
 # Host-side veth names, final values: ve-edge-gw / ve-prod-cortex / ve-hive
 # (machines edge-gw / prod-cortex / hive).  Linux caps interface names at 15
@@ -97,6 +107,12 @@ ENTRY_FALLBACK="$GUEST_CORE:22"
 # base line can be verified without landing on the edge gateway.
 ENTRY_BASE_PORT=2223
 ENTRY_BASE="$GUEST_CORE:22"
+# Public HTTP entry: forwarded to the edge gateway's nginx (10.66.0.1:80), the
+# story's only web surface.  The base node answers only while the edge gateway
+# is absent (transitional, same rule as the :2222 fallback).
+ENTRY_HTTP_PORT=80
+ENTRY_EDGE_HTTP="$GUEST_EDGE:80"
+ENTRY_CORE_HTTP="$GUEST_CORE:80"
 SSH_PASSWORD=${WETWARE_SSH_PASSWORD:-}
 
 # ---------------------------------------------------------------------------
@@ -255,7 +271,10 @@ IF_EDGE=ve-edge-gw
 IF_CORE=ve-prod-cortex
 IF_HIVE=ve-hive*
 STORY_NETS="10.66.0.0/24 10.66.6.0/24"
-UPLINK=eth0
+# egress interface: the one that carries the default route at boot time
+UPLINK=${WETWARE_UPLINK:-$(ip -4 route show default 2>/dev/null |
+  awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')}
+UPLINK=${UPLINK:-eth0}
 
 # nft helpers.  PHRASE is matched as a fixed string: the hive rule contains a
 # wildcard, and an unescaped "*" in a grep pattern is what made earlier runs
@@ -302,12 +321,24 @@ nft list chain inet filter forward >/dev/null 2>&1 || \
 nft list chain inet filter output >/dev/null 2>&1 || \
   nft add chain inet filter output '{ type filter hook output priority filter; policy accept; }'
 
-# 2b. host-local operator entry ports (input chain of the distro ruleset only
-#     knows :22/:2222/:80; the baseline-acceptance port needs the same hole)
-for PORT in 2222 2223; do
+# 2b. public operator entry port (the distro ruleset's input chain already knows
+#     :22/:80; :2222 is the only extra hole the campaign needs).  :2223 binds the
+#     loopback only, so it needs no input hole; dropping any stale one keeps the
+#     baseline port off the LAN.
+for PORT in 2222; do
   nft list chain inet filter input 2>/dev/null | grep -qF "tcp dport $PORT accept" || \
     nft add rule inet filter input tcp dport "$PORT" accept
   dedupe_rules "inet filter input" "tcp dport $PORT accept"
+done
+# :2223 is loopback-only; drop any stale LAN hole an older guard may have left.
+# Hardcode the port and use no log(): this runs inside the `set -u` guard body
+# where the outer script's $ENTRY_BASE_PORT and log() do not exist (the rest of
+# this body is hardcoded for the same reason).
+while nft -a list chain inet filter input 2>/dev/null | grep -qE 'tcp dport 2223 accept'; do
+  handle=$(nft -a list chain inet filter input 2>/dev/null | \
+    awk '/tcp dport 2223 accept/ {print $NF; exit}')
+  [ -n "$handle" ] || break
+  nft delete rule inet filter input handle "$handle" 2>/dev/null || break
 done
 
 # 3. forward between the campaign veths (each pair runs in both directions).
@@ -364,6 +395,16 @@ HANDLES=$(nft -a list chain ip nat post 2>/dev/null | awk '
 if [ -n "${HANDLES:-}" ]; then
   for H in $HANDLES; do nft delete rule ip nat post handle "$H" 2>/dev/null || true; done
 fi
+# masquerade rules left behind for another uplink (the old hardcoded eth0)
+for NET in $STORY_NETS; do
+  for H in $(nft -a list chain ip nat post 2>/dev/null | awk \
+      -v p="ip saddr $NET oifname " -v keep="oifname \"$UPLINK\" masquerade" '
+      index($0, p) > 0 && index($0, keep) == 0 {
+        for (i = 1; i <= NF; i++) if ($i == "handle") { print $(i + 1); break }
+      }'); do
+    nft delete rule ip nat post handle "$H" 2>/dev/null || true
+  done
+done
 for NET in $STORY_NETS; do
   nft list chain ip nat post 2>/dev/null | grep -qF "ip saddr $NET oifname \"$UPLINK\" masquerade" || \
     nft add rule ip nat post ip saddr "$NET" oifname "$UPLINK" masquerade
@@ -426,15 +467,34 @@ CFG
   cat <<CFG
 
 # Host-side baseline acceptance entry: direct to the existing node, so the base
-# line is testable without walking through the edge container.  This port is
-# host-only plumbing and is never visible from inside the story world.
+# line is testable without walking through the edge container.  Loopback-only so
+# it is host-local plumbing, never reachable from the LAN or the story world; a
+# baseline run reaches it over an ssh tunnel (see tests/accept_remote.py).
 frontend wetware_base
-  bind 0.0.0.0:$ENTRY_BASE_PORT
+  bind 127.0.0.1:$ENTRY_BASE_PORT
   default_backend host_core
 
 backend host_core
   server core $ENTRY_BASE check inter 1s fall 3 rise 2
+
+# Public HTTP: the edge gateway's nginx is the story's only web surface (it
+# serves the 502).  The host answers :80 only through this forward, never with
+# its own nginx.
+frontend wetware_http
+  bind 0.0.0.0:$ENTRY_HTTP_PORT
+  default_backend host_edge_http
+
+backend host_edge_http
+  server edge $ENTRY_EDGE_HTTP check inter 1s fall 2 rise 2
 CFG
+  if [ "$1" != "1" ]; then
+    cat <<CFG
+  # Transitional only: the base node answers :80 while the edge gateway does not
+  # exist yet, so the baseline HTTP surface is not a regression.  Dropped as soon
+  # as machine $EDGE_MACHINE is up.
+  server core $ENTRY_CORE_HTTP check inter 1s fall 3 rise 2 backup
+CFG
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -446,7 +506,14 @@ log "converging campaign network on $(hostname) ($(date -Is))"
 for tool in ip nft systemctl machinectl networkctl ss awk; do
   command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
 done
-command -v haproxy >/dev/null 2>&1 || die "haproxy is not installed"
+if ! command -v haproxy >/dev/null 2>&1; then
+  log "installing haproxy (operator entry frontend)"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -q haproxy >/dev/null 2>&1 || {
+    apt-get update -q >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -q haproxy >/dev/null 2>&1
+  } || die "haproxy is not installed and apt-get could not install it"
+fi
+log "egress uplink for container NAT: $UPLINK"
 
 log "kernel: ip_forward=1, loose rp_filter"
 sysctl_file | putfile /etc/sysctl.d/99-wetware-forward.conf 0644 ||
@@ -588,6 +655,35 @@ case ${WETWARE_ENTRY_STRICT:-auto} in
     ;;
 esac
 
+# ops/bootstrap-node.sh gives the host sshd a :2222 listener (any password,
+# real root shell) for the single-node layout.  In the campaign layout haproxy
+# owns :2222, and a host sshd still bound there would both block haproxy and
+# hand out a real host shell; drop that one port, :22 stays as it is.
+SSHD_PORTS=/etc/ssh/sshd_config.d/60-ports.conf
+if grep -qx "Port $ENTRY_PORT" "$SSHD_PORTS" 2>/dev/null; then
+  log "releasing :$ENTRY_PORT from the host sshd ($SSHD_PORTS)"
+  sed -i "/^Port $ENTRY_PORT\$/d" "$SSHD_PORTS"
+  sshd -t || die "sshd rejected $SSHD_PORTS after dropping :$ENTRY_PORT"
+  systemctl reload-or-restart ssh || die "ssh reload failed"
+  for _ in 1 2 3 4 5; do
+    ss -ltnp 2>/dev/null | grep ":$ENTRY_PORT " | grep -q sshd || break
+    sleep 1
+  done
+fi
+
+# ops/bootstrap-node.sh installs a host nginx on :80 for the single-node layout.
+# In the campaign layout the edge gateway's own nginx is the only HTTP surface
+# (it serves the story 502); a host nginx still bound to :80 would block the
+# haproxy :80 frontend below and answer the LAN with a 403 the story never shows.
+if systemctl is-active --quiet nginx 2>/dev/null || systemctl is-enabled --quiet nginx 2>/dev/null; then
+  log "releasing :$ENTRY_HTTP_PORT from the host nginx (edge gateway serves HTTP)"
+  systemctl disable --now nginx >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5; do
+    ss -ltn 2>/dev/null | grep -q ":$ENTRY_HTTP_PORT " || break
+    sleep 1
+  done
+fi
+
 log "operator entry :$ENTRY_PORT -> $ENTRY_PRIMARY"
 entry_tmp=$(mktemp)
 haproxy_config "$entry_strict" >"$entry_tmp"
@@ -608,7 +704,7 @@ if [ "$haproxy_changed" = 1 ] || ! systemctl is-active --quiet haproxy; then
   systemctl restart haproxy || die "haproxy restart failed"
   sleep 1
 fi
-for port in "$ENTRY_PORT" "$ENTRY_BASE_PORT"; do
+for port in "$ENTRY_PORT" "$ENTRY_BASE_PORT" "$ENTRY_HTTP_PORT"; do
   ss -ltn 2>/dev/null | grep -q ":$port " ||
     die "nothing is listening on :$port"
 done
@@ -619,7 +715,8 @@ elif machine_running "$EDGE_MACHINE"; then
 else
   log "entry :$ENTRY_PORT -> $ENTRY_PRIMARY (base node fallback while $EDGE_MACHINE is absent)"
 fi
-log "baseline entry :$ENTRY_BASE_PORT -> $ENTRY_BASE"
+log "baseline entry :$ENTRY_BASE_PORT -> $ENTRY_BASE (loopback only)"
+log "public http :$ENTRY_HTTP_PORT -> $ENTRY_EDGE_HTTP"
 log "haproxy frontends/backends:"
 sed -n 's/^\(frontend .*\|backend .*\|  server .*\)$/  \1/p' /etc/haproxy/haproxy.cfg
 
