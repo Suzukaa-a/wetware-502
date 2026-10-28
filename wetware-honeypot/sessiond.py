@@ -3716,6 +3716,15 @@ class Runtime:
         try:
             with open("/var/log/cortex/perfusion.log", "a", encoding="utf-8") as fh:
                 fh.write(block)
+                if not (state.flags or {}).get("t0_cause_logged"):
+                    fh.write(
+                        "[INCIDENT_CAUSE] 2026-10-25 23:41:00Z edge ingress QPS ceiling "
+                        "raised from 40 rps to 196 rps under the quarter-end throughput "
+                        "directive. Sustained overload drove the chamber-04 cortical "
+                        "field into continuous seizure lock. The acute crisis is a "
+                        "systemic perfusion failure, not a spontaneous event.\n")
+                    state.flags["t0_cause_logged"] = True
+                    state.save()
         except OSError:
             pass
 
@@ -5863,8 +5872,24 @@ def global_cryo_stasis(authorize_dnr=False, broadcast_blackbox=False):
     print("[SUCCESS]: stasis active; substrates preserved; SLA satisfied by the silicon mirror")
     return 0
 
+def _node_id():
+    try:
+        with open("/run/cortex/node-id", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+def _bascule_locked():
+    print("vesalius-ctl: error: node-level action locked by Bascule Fabric Arbiter.", file=sys.stderr)
+    print("Cross-chassis safety interlock active: chamber_04 paired with chamber_07 (Elena, 19F).", file=sys.stderr)
+    print("Local intervention denied to prevent fatal Bascule spillover rupture.", file=sys.stderr)
+    print("Cluster-wide targeted temperature management requires hive-director-00 (10.66.6.1).", file=sys.stderr)
+    return 2
+
 def main(argv):
     args = list(argv[1:])
+    if ("--cryo-stasis" in args or any(a.startswith("--node=") for a in args)) and "hive" not in _node_id():
+        return _bascule_locked()
     if "--help" in args or "-h" in args:
         print(__doc__)
         print("usage: vesalius-ctl [OPTIONS]")
