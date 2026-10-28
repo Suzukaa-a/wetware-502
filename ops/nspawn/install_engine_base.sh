@@ -545,6 +545,10 @@ LINK
 # index is the sort position in conf.d (core: 10, gateway: 12).
 wetware_install_nginx_frontend() {
   local R="$1" target="$2" idx="${3:-10}"
+  local pass="http://$target"
+  case "$target" in
+    unix:*) pass="http://$target:" ;;
+  esac
   local pkg="$R/usr/local/share/cortex/nginx"
   local conf="$pkg/$idx-cortex-node.conf" dst="$R/etc/nginx/conf.d/$idx-cortex-node.conf"
   mkdir -p "$pkg" "$R/etc/nginx/conf.d" "$R/usr/local/sbin"
@@ -561,7 +565,7 @@ server {
   error_log /var/log/nginx/error.log;
 
   location = /v1/inference {
-    proxy_pass http://$target;
+    proxy_pass $pass;
     proxy_http_version 1.1;
     proxy_set_header Connection "";
     proxy_connect_timeout 5s;
@@ -2551,10 +2555,9 @@ WantedBy=multi-user.target
 SEOF
 # Enable offline so the units survive the hygiene restart even if the live
 # bus is briefly unavailable (the exact clean-install failure).
-for _u in cortex-inquisitor cortex-agent84 cortex-api nginx; do
+for _u in wetware-upstream cortex-inquisitor cortex-agent84 cortex-api nginx; do
   chroot "$ROOT" systemctl --no-reload enable "$_u.service" >/dev/null 2>&1 || true
 done
-chroot "$ROOT" systemctl --no-reload disable wetware-upstream.service >/dev/null 2>&1 || true
 wait_machine || true
 systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
   "systemctl daemon-reload; systemctl enable cortex-api.service; systemctl restart cortex-api.service; sleep 0.3; systemctl show -p MainPID --value cortex-api.service" || true
