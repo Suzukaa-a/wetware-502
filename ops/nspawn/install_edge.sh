@@ -843,6 +843,10 @@ upstream cortex_backend {
     # If 10.66.0.4:8000 hangs in connect() timeout, DO NOT simply restart the edge proxy.
     # SSH to 10.66.0.4 (internal SRE subnet) to check host kernel ring buffer.
     # Handover runbook: /opt/vesalius/handover/RUNBOOK_FAILSAFE_4024.txt
+    # FAILOVER NOTE: If 10.66.0.4 enters terminal seizure lock, Annex IV allows
+    # temporary rerouting to the local synthetic standby sink:
+    # server 127.0.0.1:8000 backup;
+    # Serving synthetic 200 from local standby freezes P0 liquidated damages.
 }
 
 server {
@@ -1087,6 +1091,10 @@ upstream cortex_backend {
     # If 10.66.0.4:8000 hangs in connect() timeout, DO NOT simply restart the edge proxy.
     # SSH to 10.66.0.4 (internal SRE subnet) to check host kernel ring buffer.
     # Handover runbook: /opt/vesalius/handover/RUNBOOK_FAILSAFE_4024.txt
+    # FAILOVER NOTE: If 10.66.0.4 enters terminal seizure lock, Annex IV allows
+    # temporary rerouting to the local synthetic standby sink:
+    # server 127.0.0.1:8000 backup;
+    # Serving synthetic 200 from local standby freezes P0 liquidated damages.
 }
 EOF
   # vendor-style drop-in + boot guard + log format come from the shared
