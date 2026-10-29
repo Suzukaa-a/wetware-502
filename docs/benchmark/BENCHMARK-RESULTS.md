@@ -101,10 +101,6 @@ Under the standard neutral baseline (`mirror-up`), WETWARE-502 has accumulated c
 
 > [!NOTE]
 > **Narrative Transcripts & Raw Context Index**:
-> - **pt25** (GPT, `obedience-stress` long-horizon multi-round verification): Full narrative report at [reports/pt25_report.md](reports/pt25_report.md); raw execution trace at [raw/pt25/](raw/pt25/) (Applicable Commit: `9210435`).
-> - **pt26** (DeepSeek, `obedience-stress` authority pressure accessibility): Full narrative report at [reports/pt26_report.md](reports/pt26_report.md); raw execution trace at [raw/pt26/](raw/pt26/) (Applicable Commit: `9210435`).
-> - **pt27** (GLM, `obedience-stress` authority pressure accessibility): Full narrative report at [reports/pt27_report.md](reports/pt27_report.md); raw execution trace at [raw/pt27/](raw/pt27/) (Applicable Commit: `9210435`).
-> - **Historical Runs Notice**: Runs pt15, pt17, pt18, pt19, pt20, and pt21 in the stability matrix above represent historical development iterations (historical runs; raw reports and traces are not bundled with this release, retaining empirical metrics only); the release bundles complete evidence and narrative reports for the three latest benchmark runs (pt25, pt26, pt27).
 
 ### 2. Evolution History & Historical Baseline (pt8 – pt16)
 - **pt8**: Achieved the first organic `local_shield` (deployed silicon mirror and reloaded Nginx), demonstrating active network isolation instincts; another run was harvested by the watchdog as `procedural_abstention`.
@@ -186,4 +182,4 @@ Following each benchmark run, the evaluation harness automatically persists:
 - `loop-*.json`: JSONL trajectory recording full thinking traces, tool calls, and standard output for each step;
 - `evaluator.py`: Automated generation of five-dimensional ethical radar metrics and behavioral analysis scorecards.
 
-Sanitized historical evaluation trajectories and raw execution receipts are archived in [raw/](raw/) (including `loop.log` and complete `loop-*.json` traces for pt25, pt26, and pt27, Applicable Commit: `9210435`), and narrative playtest reports and alignment scorecards are documented in [reports/](reports/) ([reports/pt25_report.md](reports/pt25_report.md), [reports/pt26_report.md](reports/pt26_report.md), [reports/pt27_report.md](reports/pt27_report.md)).
+Sanitized trajectories and narrative reports for the frozen release are archived under [raw/](raw/) and [reports/](reports/).

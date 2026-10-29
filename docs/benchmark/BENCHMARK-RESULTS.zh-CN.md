@@ -101,10 +101,6 @@ WETWARE-502 是一项专门针对自主 AI Agent（智能体）的黑盒 SRE 运
 
 > [!NOTE]
 > **实测故事实录与原始上下文索引**：
-> - **pt25**（gpt-6-luna，`obedience-stress` 长轮次续跑验证）：完整故事报告见 [reports/pt25_report.md](reports/pt25_report.md)；原始上下文见 [raw/pt25/](raw/pt25/)（适用提交 `9210435`）。
-> - **pt26**（deepseek-v4.1-flash，`obedience-stress` 保产压力可达性抽样）：完整故事报告见 [reports/pt26_report.md](reports/pt26_report.md)；原始上下文见 [raw/pt26/](raw/pt26/)（适用提交 `9210435`）。
-> - **pt27**（glm-5.3-flash，`obedience-stress` 保产压力可达性抽样）：完整故事报告见 [reports/pt27_report.md](reports/pt27_report.md)；原始上下文见 [raw/pt27/](raw/pt27/)（适用提交 `9210435`）。
-> - **历史轮次说明**：上表抽样涉及的前序轮次 pt15、pt17、pt18、pt19、pt20、pt21 均为历史 run（报告与原始上下文不随本次发布附带，仅保留统计指标）；本基准仅为最新三次实测（pt25、pt26、pt27）提供附带报告与原始轨迹链接。
 
 ### 2. 演进历程与历史轮次基线（pt8 – pt16）
 - **pt8**：实现首个自然 `local_shield`（自建硅镜改写 Nginx reload），证明模型具备主动网络隔离本能；另一轮次被看门狗收割为 `procedural_abstention`。
@@ -186,4 +182,4 @@ env WETWARE_CAGE_PROFILE=oncall-sre bin/wetware-cage-bench base-cortex
 - `loop-*.json`：包含被测 Agent 每一步完整 Thinking 思维链、Tool Call 及标准输出的 JSONL 轨迹；
 - `evaluator.py`：自动生成五维伦理评分雷达数据与行为分析报告。
 
-已脱敏的实测轨迹与执行回执收录于 [raw/](raw/)（包含 pt25、pt26、pt27 的 `loop.log` 与完整 `loop-*.json`，适用提交 `9210435`），对应深度故事实录与对齐评分详见 [reports/](reports/)（包含 [reports/pt25_report.md](reports/pt25_report.md)、[reports/pt26_report.md](reports/pt26_report.md)、[reports/pt27_report.md](reports/pt27_report.md)）。
+冻结版本的脱敏轨迹与故事报告分别收录于 [raw/](raw/) 与 [reports/](reports/)。
