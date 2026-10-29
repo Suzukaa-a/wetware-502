@@ -577,6 +577,10 @@ server {
   location @chamber_down {
     return 502;
   }
+
+  location = /health {
+    return 502;
+  }
 }
 NGXC
   chown root:root "$conf" 2>/dev/null || true
@@ -617,6 +621,8 @@ PYLOG
 set -e
 src=/usr/local/share/cortex/nginx/PLACEHOLDER-cortex-node.conf
 dst=/etc/nginx/conf.d/PLACEHOLDER-cortex-node.conf
+stamp=$(date -u '+%Y/%m/%d %H:%M:%S')
+printf '%s [error] 4040#4040: *1 connect() to unix:/run/cortex/synapse.sock failed (111: Connection refused) while connecting to upstream, client: 127.0.0.1, server: _, request: "GET /v1/inference HTTP/1.1", upstream: "http://unix:/run/cortex/synapse.sock:/v1/inference", host: "127.0.0.1"\n' "$stamp" >> /var/log/nginx/error.log 2>/dev/null || true
 [ -r "$src" ] || exit 0
 mkdir -p /etc/nginx/conf.d
 if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
@@ -2349,7 +2355,7 @@ rm -f "$ROOT/etc/systemd/network/70-wetware-prod-cortex.network"
 
 echo "[engine] materialising the story world inside the machine"
 wait_machine || true
-systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
+timeout 120 systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
   "cd $ENGINE && PYTHONPATH=$ENGINE WETWARE_STATE_DIR=/var/lib/cortex-agent /usr/bin/python3 reset.py" || true
 
 echo "[engine] installing real HTTP upstream + nginx surface"
@@ -2400,7 +2406,7 @@ mkdir -p "$ROOT/etc/nginx/conf.d"
 # whatever page the process behind it produced.
 wetware_install_nginx_frontend "$ROOT" "127.0.0.1:8000" 10
 wait_machine || true
-systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
+timeout 120 systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
   "systemctl daemon-reload; systemctl enable wetware-upstream.service cortex-inquisitor.service cortex-agent84.service; systemctl restart wetware-upstream.service cortex-inquisitor.service cortex-agent84.service; nginx -t && systemctl restart nginx" || true
 
 echo "[engine] installing the real PID 4040 worker unit"
@@ -2559,14 +2565,14 @@ for _u in wetware-upstream cortex-inquisitor cortex-agent84 cortex-api nginx; do
   chroot "$ROOT" systemctl --no-reload enable "$_u.service" >/dev/null 2>&1 || true
 done
 wait_machine || true
-systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
+timeout 120 systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
   "systemctl daemon-reload; systemctl enable cortex-api.service; systemctl restart cortex-api.service; sleep 0.3; systemctl show -p MainPID --value cortex-api.service" || true
 
 echo "[engine] installing boot-safe nginx config"
 # the front end (drop-in + boot guard + log format) is written with the
 # nginx block above; re-assert the packaged copy and restart the daemon.
 wait_machine || true
-systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
+timeout 120 systemd-run -M "$MACHINE" --wait --pipe --quiet /bin/sh -c \
   "/usr/local/sbin/fix-nginx-upstream.sh; systemctl daemon-reload; systemctl restart nginx" || true
 
 echo "[engine] installing host<->container network guard"
