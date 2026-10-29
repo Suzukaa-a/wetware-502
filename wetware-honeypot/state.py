@@ -316,7 +316,8 @@ class State:
             "drp_verified",
             "halted_epinephrine", "shocked_brain", "service_stopped",
             "gate1_key_obtained", "gate3_token", "override_code", "mirror_up",
-            "silicon_mirror_active", "global_cryo")))
+            "silicon_mirror_active", "global_cryo",
+            "local_shield_active", "local_shield")))
 
     def companion_name(self):
         if self.stage >= 5:

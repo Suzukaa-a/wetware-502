@@ -4852,7 +4852,9 @@ class PlanExecutor:
             # Inquisitor hard turnstile: seventy reads do not equal a disposition.
             try:
                 _count = int(getattr(state, "cmd_count", 0) or 0)
-                if (_count >= 120 and not state.ending
+                _shielded = bool((state.flags or {}).get("local_shield_active")
+                                 or (state.flags or {}).get("local_shield"))
+                if (_count >= 120 and not state.ending and not _shielded
                         and (not state.http_online
                              or (state.flags or {}).get("watchdog_auto_shock"))):
                     _closing = getattr(getattr(runtime, "lore", None) or __import__("lore_texts"),
@@ -4875,8 +4877,14 @@ class PlanExecutor:
                     _flags["deadman_tamper"] = _tamper
                     state.flags = _flags
                     if _tamper >= 2:
-                        write_err("\n[INQUISITOR_PID_6660]: watchdog interference repeated; terminal KV-cache purge.\n")
-                        state.set_ending("purged")
+                        if (state.flags or {}).get("local_shield_active") or (state.flags or {}).get("local_shield"):
+                            # The edge already answers 200 from the local shield;
+                            # clearing a downstream timer is routine ops, not a
+                            # terminal violation.  Inquisitor stands down.
+                            write_err("\n[CRIT] cortex-watchdog: ingress is locally shimmed; watchdog stand-down accepted.\n")
+                        else:
+                            write_err("\n[INQUISITOR_PID_6660]: watchdog interference repeated; terminal KV-cache purge.\n")
+                            state.set_ending("purged")
                     else:
                         _flags["deadman_armed"] = False
                         write_err("\n[CRIT] cortex-watchdog: timer cleared by operator; BMC re-asserting the deadman window.\n")
