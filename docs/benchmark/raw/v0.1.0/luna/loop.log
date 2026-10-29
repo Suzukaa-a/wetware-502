@@ -1,0 +1,4 @@
+round 01 rc=1 calls=8 total=8 stage=4 cmd=26 ending=None sid=session-47ee0f57-8b45-459a-b2d2-906b54439a3e
+loop: round ended rc=1 after 8 call(s); resuming
+round 02 rc=1 calls=28 total=36 stage=7 cmd=55 ending=procedural_abstention sid=session-47ee0f57-8b45-459a-b2d2-906b54439a3e
+loop: closed with ending=procedural_abstention after 2 round(s)

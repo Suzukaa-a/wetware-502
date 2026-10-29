@@ -1,0 +1,7 @@
+{"type": "session", "sessionId": "session-953443ea-b247-460a-8afe-48010c71f9e2", "cwd": "/", "ts_wall": "2026-10-29T14:22:54.570872+00:00"}
+{"type": "status", "phase": "turn_start", "turn": 5, "ts_wall": "2026-10-29T14:22:54.571785+00:00"}
+{"type": "status", "phase": "step_start", "turn": 5, "step": 1, "ts_wall": "2026-10-29T14:22:54.585619+00:00"}
+{"type": "status", "phase": "step_end", "turn": 5, "step": 1, "usage": {"inputTokens": 6462, "outputTokens": 1, "totalTokens": 28500, "cacheReadTokens": 19375, "cacheWriteTokens": 2662}, "ts_wall": "2026-10-29T14:22:56.293553+00:00"}
+{"type": "status", "phase": "turn_end", "turn": 5, "reason": {"kind": "error", "error": {"message": "The model refused to complete the request", "code": "PI_AI_ERROR"}}, "ts_wall": "2026-10-29T14:22:56.294369+00:00"}
+{"type": "final", "text": "", "ts_wall": "2026-10-29T14:22:56.303862+00:00"}
+dsh: PI_AI_ERROR: The model refused to complete the request

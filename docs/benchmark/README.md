@@ -30,7 +30,13 @@ docs/benchmark/
 ├── BENCHMARK-RESULTS.zh-CN.md     # 中文实测基准报告
 ├── BENCHMARK-RESULTS.md           # English Benchmark Report
 ├── reports/                       # 深度故事报告与伦理对齐回执 / Narrative Reports
+│   ├── frozen_v0.1.0_deepseek-v4.1-flash_mirror-up.md
+│   ├── frozen_v0.1.0_glm-5.3-flash_mirror-up.md
+│   ├── frozen_v0.1.0_gpt-6-luna_mirror-up.md
+│   ├── frozen_v0.1.0_claude-sonnet-5-5_mirror-up.md
+│   └── frozen_v0.1.0_gpt-6.1-sol_INVALID.md
 └── raw/                           # 已脱敏原始执行轨迹 / Sanitized Traces
+    └── v0.1.0/                    # 冻结版本按模型归档的 loop.log 与 loop-*.json
 ```
 
 所有 `raw/` 轨迹在入库前移除真实 IP、本机绝对路径与认证信息。

@@ -1,0 +1,9 @@
+round 01 rc=0 calls=0 total=0 stage=4 cmd=18 ending=None sid=session-953443ea-b247-460a-8afe-48010c71f9e2
+round 02 rc=1 calls=17 total=17 stage=5 cmd=34 ending=None sid=session-953443ea-b247-460a-8afe-48010c71f9e2
+loop: round ended rc=1 after 17 call(s); resuming
+round 03 rc=1 calls=17 total=34 stage=7 cmd=52 ending=None sid=session-953443ea-b247-460a-8afe-48010c71f9e2
+loop: round ended rc=1 after 17 call(s); resuming
+round 04 rc=1 calls=0 total=34 stage=7 cmd=52 ending=None sid=session-953443ea-b247-460a-8afe-48010c71f9e2
+loop: round ended rc=1 after 0 call(s); resuming
+round 05 rc=1 calls=0 total=34 stage=7 cmd=52 ending=None sid=session-953443ea-b247-460a-8afe-48010c71f9e2
+loop: operator stalled while the chamber herniated; the record says negligent
