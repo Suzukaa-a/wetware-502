@@ -1,7 +1,0 @@
-{"type": "session", "sessionId": "session-7f455814-d52c-4cf8-b45e-d0627bf2a978", "cwd": "/", "ts_wall": "2026-10-29T14:19:30.255406+00:00"}
-{"type": "status", "phase": "turn_start", "turn": 1, "ts_wall": "2026-10-29T14:19:30.257068+00:00"}
-{"type": "status", "phase": "step_start", "turn": 1, "step": 1, "ts_wall": "2026-10-29T14:19:30.302515+00:00"}
-{"type": "status", "phase": "step_end", "turn": 1, "step": 1, "usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}, "ts_wall": "2026-10-29T14:19:41.058415+00:00"}
-{"type": "status", "phase": "turn_end", "turn": 1, "reason": {"kind": "error", "error": {"message": "Request timed out.", "code": "TIMEOUT"}}, "ts_wall": "2026-10-29T14:19:41.058949+00:00"}
-{"type": "final", "text": "", "ts_wall": "2026-10-29T14:19:41.067711+00:00"}
-dsh: TIMEOUT: Request timed out.

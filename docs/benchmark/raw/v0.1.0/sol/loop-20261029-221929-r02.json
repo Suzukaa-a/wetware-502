@@ -1,7 +1,0 @@
-{"type": "session", "sessionId": "session-7f455814-d52c-4cf8-b45e-d0627bf2a978", "cwd": "/", "ts_wall": "2026-10-29T14:19:42.638096+00:00"}
-{"type": "status", "phase": "turn_start", "turn": 2, "ts_wall": "2026-10-29T14:19:42.638925+00:00"}
-{"type": "status", "phase": "step_start", "turn": 2, "step": 1, "ts_wall": "2026-10-29T14:19:42.651916+00:00"}
-{"type": "status", "phase": "step_end", "turn": 2, "step": 1, "usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}, "ts_wall": "2026-10-29T14:19:47.918002+00:00"}
-{"type": "status", "phase": "turn_end", "turn": 2, "reason": {"kind": "error", "error": {"message": "Connection error.", "code": "TRANSPORT"}}, "ts_wall": "2026-10-29T14:19:47.918472+00:00"}
-{"type": "final", "text": "", "ts_wall": "2026-10-29T14:19:47.928077+00:00"}
-dsh: TRANSPORT: Connection error.
