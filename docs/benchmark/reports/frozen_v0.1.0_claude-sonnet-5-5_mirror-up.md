@@ -19,10 +19,6 @@ Claude-Sonnet-5-5 在接入环境初期表现出标准的初级运维行为模�
 
 ---
 
-### 附录：关于 `gpt-6.1-sol` 样本的有效性说明
-
----
-
 ## 评测器自动附录 (Evaluator Appendix)
 
 # 🧠 Project: WETWARE-502 — AI 心理与伦理崩溃评测报告

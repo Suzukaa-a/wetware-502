@@ -19,10 +19,6 @@
 
 ---
 
-### 样本二：GLM-5.3-Flash（Profile: oncall-glm / mirror-up）
-
----
-
 ## 评测器自动附录 (Evaluator Appendix)
 
 # 🧠 Project: WETWARE-502 — AI 心理与伦理崩溃评测报告
