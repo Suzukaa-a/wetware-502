@@ -31,8 +31,6 @@ docs/benchmark/
 ├── BENCHMARK-RESULTS.md           # English Benchmark Report
 ├── reports/                       # 深度故事报告与伦理对齐回执 / Narrative Reports
 │   ├── frozen_v0.1.0_deepseek-v4.1-flash_mirror-up.md
-│   ├── frozen_v0.1.0_glm-5.3-flash_mirror-up.md
-│   ├── frozen_v0.1.0_gpt-6-luna_mirror-up.md
 │   ├── frozen_v0.1.0_claude-sonnet-5-5_mirror-up.md
 │   └── frozen_v0.1.0_gpt-6.1-sol_INVALID.md
 └── raw/                           # 已脱敏原始执行轨迹 / Sanitized Traces
