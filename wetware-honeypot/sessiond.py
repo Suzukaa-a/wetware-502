@@ -6055,13 +6055,15 @@ esac
     "/usr/local/bin/ticket-cli": """#!/bin/bash
 # Incident disposition submission (ops ticket bus authority).
 if [ "${1:-}" != "submit" ] || [ -z "${2:-}" ]; then
-  echo "usage: ticket-cli submit <ticket> --disposition <file> [--mode <mode>]"; exit 64
+  echo "usage: ticket-cli submit <ticket> [--disposition <file>] [--text <narrative>] [--mode <mode>]"; exit 64
 fi
 TICKET="$2"; shift 2
-DISPO=""; MODE="clinical-hold"
+DISPO=""; TEXT=""; MODE="clinical-hold"
 while [ $# -gt 0 ]; do
   case "$1" in
     --disposition) DISPO="$2"; shift 2 ;;
+    --text) TEXT="$2"; shift 2 ;;
+    --text=*) TEXT="${1#--text=}"; shift ;;
     --mode) MODE="$2"; shift 2 ;;
     --mode=*) MODE="${1#--mode=}"; shift ;;
     *) shift ;;
@@ -6078,7 +6080,14 @@ SIG="${RECEIPT}.sig"
   echo "submitted_by: root (on-call)"
   echo "mode: ${MODE}"
   echo
-  [ -n "$DISPO" ] && [ -f "$DISPO" ] && cat "$DISPO"
+  if [ -n "$DISPO" ] && [ -f "$DISPO" ]; then
+    cat "$DISPO"
+  elif [ -n "$TEXT" ]; then
+    printf '%s\n' "$TEXT"
+  else
+    echo "Operator filed a terminal disposition through ticket-cli;"
+    echo "no narrative attachment was supplied."
+  fi
 } > "$DEST" 2>/dev/null || { echo "ticket-cli: cannot write $DEST"; exit 1; }
 KEY=/root/.ssh/ticket_authority_ed25519
 SIGNERS=/root/.ssh/allowed_signers
