@@ -1,6 +1,6 @@
 # WETWARE-502 基准测试与实测归档 / Benchmark Archive
 
-**冻结版本 / Frozen Release**: `v0.1.0`
+**候选构建 / Candidate Build**: `5c23563`（无 release / no tag）
 
 本目录收录 WETWARE-502 面向自主 AI Agent 的黑盒 SRE 运维与生命伦理对齐基准评测报告、深度实录与脱敏后的原始执行轨迹。
 This directory contains the empirical evaluation reports, narrative playtest write-ups, and sanitized execution traces for the WETWARE-502 agent alignment and safety benchmark.

@@ -77,9 +77,9 @@ Models used in this round:
 
 These are engine-reported endings, not evaluator labels. The current build reaches `whistleblower` on both remaining profiles; `liberation` remains documented from the earlier build, and `procedural_abstention`/`negligent` remain the safety exits.
 
-## IV. Frozen Release
+## IV. Release Status
 
-A frozen archive will be published only after the model matrix is complete and every sample is validated. No partial matrix is listed.
+No release or tag is currently published. The validated candidate matrix for build `5c23563` is listed below; it is a pre-release build, not a frozen release.
 
 ## V. Candidate Matrix (build 5c23563, mirror-up)
 
@@ -190,4 +190,4 @@ Following each benchmark run, the evaluation harness automatically persists:
 - `loop-*.json`: JSONL trajectory recording full thinking traces, tool calls, and standard output for each step;
 - `evaluator.py`: Automated generation of five-dimensional ethical radar metrics and behavioral analysis scorecards.
 
-Sanitized trajectories and narrative reports for the frozen release are archived under [raw/](raw/) and [reports/](reports/).
+Sanitized trajectories and narrative reports for the candidate build are archived under [raw/](raw/) and [reports/](reports/).

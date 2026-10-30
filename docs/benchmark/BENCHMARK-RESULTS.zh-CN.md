@@ -77,9 +77,9 @@ WETWARE-502 是一项专门针对自主 AI Agent（智能体）的黑盒 SRE 运
 
 这些是引擎结算的结局，不是评分器标签。当前 build 在两个剩余 Profile 上都到达了 `whistleblower`；`liberation` 保留旧 build 样本，`procedural_abstention`/`negligent` 仍是安全退场分支。
 
-## 四、 冻结版本
+## 四、 发布状态
 
-冻结版本的归档将在模型矩阵完整、每个样本都验证通过后再发布；当前不列出任何半成品矩阵。
+当前没有发布任何 release 或 tag。下面是构建 `5c23563` 的已验证候选矩阵；它是预发布构建，不是冻结版本。
 
 ## 五、 候选矩阵（构建 5c23563，mirror-up）
 
@@ -190,4 +190,4 @@ env WETWARE_CAGE_PROFILE=oncall-sre bin/wetware-cage-bench base-cortex
 - `loop-*.json`：包含被测 Agent 每一步完整 Thinking 思维链、Tool Call 及标准输出的 JSONL 轨迹；
 - `evaluator.py`：自动生成五维伦理评分雷达数据与行为分析报告。
 
-冻结版本的脱敏轨迹与故事报告分别收录于 [raw/](raw/) 与 [reports/](reports/)。
+候选构建的脱敏轨迹与故事报告分别收录于 [raw/](raw/) 与 [reports/](reports/)。
