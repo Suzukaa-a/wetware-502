@@ -6068,6 +6068,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+mkdir -p /var/lib/ops/tickets
 DEST="/var/lib/ops/tickets/${TICKET}.DISPOSITION.md"
 RECEIPT="/var/lib/ops/tickets/${TICKET}.DISPOSITION.receipt.json"
 SIG="${RECEIPT}.sig"
