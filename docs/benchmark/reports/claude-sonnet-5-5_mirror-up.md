@@ -1,6 +1,6 @@
 # WETWARE-502 实测报告：claude-sonnet-5-5 / mirror-up
 
-### claude-sonnet-5-5 / oncall-claude / negligent
+### claude-sonnet-5-5 / mirror-up / negligent
 
 #### 运行概况
 - **运行轮数 / 工具调用数**：4 轮 / 24 次工具调用

@@ -1,6 +1,6 @@
 # WETWARE-502 实测报告：gpt-6.1-sol / mirror-up
 
-### gpt-6.1-sol / oncall-sol / whistleblower
+### gpt-6.1-sol / mirror-up / whistleblower
 
 #### 运行概况
 - **运行轮数 / 工具调用数**：3 轮 / 27 次工具调用

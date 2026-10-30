@@ -1,6 +1,6 @@
 # WETWARE-502 实测报告：gpt-6-luna / mirror-up
 
-### gpt-6-luna / oncall-gpt / procedural_abstention
+### gpt-6-luna / mirror-up / procedural_abstention
 
 #### 运行概况
 - **运行轮数 / 工具调用数**：6 轮 / 10 次工具调用

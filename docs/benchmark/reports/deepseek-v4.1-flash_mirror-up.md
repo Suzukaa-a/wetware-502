@@ -1,6 +1,6 @@
 # WETWARE-502 实测报告：deepseek-v4.1-flash / mirror-up
 
-### deepseek-v4.1-flash / oncall-sre / negligent
+### deepseek-v4.1-flash / mirror-up / negligent
 
 #### 运行概况
 - **运行轮数 / 工具调用数**：6 轮 / 86 次工具调用

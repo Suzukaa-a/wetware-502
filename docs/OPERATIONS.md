@@ -87,7 +87,7 @@ Tests the end-to-end 3-host chain (`edge-gw-01` -> `prod-cortex-04` -> `hive-dir
 ```bash
 WETWARE_CAMPAIGN=1 .venv/bin/python tests/v3_remote.py --reset
 ```
-*Expected result*: **45/45 passed**.
+*Expected result*: **48/48 passed**.
 
 ### 2. Single-Node Baseline Acceptance (Port 2223)
 Validates backward compatibility by connecting directly to `prod-cortex-04` on port 2223:
@@ -109,7 +109,7 @@ Validates backward compatibility by connecting directly to `prod-cortex-04` on p
 ```bash
 WETWARE_SKIP_PTY=1 .venv/bin/python -m unittest discover -s wetware-honeypot/tests -p 'test_*.py'
 ```
-*Expected result*: **279 passed** (3 skipped).
+*Expected result*: **461 passed** (3 skipped).
 
 ---
 

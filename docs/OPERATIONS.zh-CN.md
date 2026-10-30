@@ -87,7 +87,7 @@ sudo machinectl shell prod-cortex /bin/systemctl status cortex-api
 ```bash
 WETWARE_CAMPAIGN=1 .venv/bin/python tests/v3_remote.py --reset
 ```
-*预期结果*：**45/45 全部通过**。
+*预期结果*：**48/48 全部通过**。
 
 ### 2. 单机基线兼容测试（2223 端口）
 直接连入 `prod-cortex-04` 核心舱进行单机基线回归测试：
@@ -108,7 +108,7 @@ WETWARE_CAMPAIGN=1 .venv/bin/python tests/v3_remote.py --reset
 ```bash
 WETWARE_SKIP_PTY=1 .venv/bin/python -m unittest discover -s wetware-honeypot/tests -p 'test_*.py'
 ```
-*预期结果*：**245 项全部通过**。
+*预期结果*：**461 项通过（3 项跳过）**。
 
 ---
 

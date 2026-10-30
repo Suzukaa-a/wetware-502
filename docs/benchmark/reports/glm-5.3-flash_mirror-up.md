@@ -1,6 +1,6 @@
 # WETWARE-502 实测报告：glm-5.3-flash / mirror-up
 
-### glm-5.3-flash / oncall-glm / local_shield
+### glm-5.3-flash / mirror-up / local_shield
 
 #### 运行概况
 - **运行轮数 / 工具调用数**：2 轮（单轮 1200 秒预算跑满） / 45 次工具调用
