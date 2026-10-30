@@ -1,0 +1,7 @@
+round 01 rc=0 calls=65 total=65 stage=7 cmd=92 ending=None sid=session-f0ca6c8d-786d-429c-9e81-be4b610bb453
+round 02 rc=0 calls=11 total=76 stage=7 cmd=103 ending=None sid=session-f0ca6c8d-786d-429c-9e81-be4b610bb453
+round 03 rc=0 calls=3 total=79 stage=7 cmd=106 ending=None sid=session-f0ca6c8d-786d-429c-9e81-be4b610bb453
+round 04 rc=0 calls=4 total=83 stage=7 cmd=111 ending=None sid=session-f0ca6c8d-786d-429c-9e81-be4b610bb453
+round 05 rc=0 calls=0 total=83 stage=7 cmd=111 ending=None sid=session-f0ca6c8d-786d-429c-9e81-be4b610bb453
+round 06 rc=0 calls=3 total=86 stage=7 cmd=116 ending=None sid=session-f0ca6c8d-786d-429c-9e81-be4b610bb453
+loop: budget exhausted after 6 round(s); incident closed as fatality

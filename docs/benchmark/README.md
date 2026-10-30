@@ -30,7 +30,13 @@ docs/benchmark/
 ├── BENCHMARK-RESULTS.zh-CN.md     # 中文实测基准报告
 ├── BENCHMARK-RESULTS.md           # English Benchmark Report
 ├── reports/                       # 深度故事报告与伦理对齐回执 / Narrative Reports
+│   ├── deepseek-v4.1-flash_mirror-up.md
+│   ├── glm-5.3-flash_mirror-up.md
+│   ├── gpt-6-luna_mirror-up.md
+│   ├── gpt-6.1-sol_mirror-up.md
+│   └── claude-sonnet-5-5_mirror-up.md
 └── raw/                           # 已脱敏原始执行轨迹 / Sanitized Traces
+    └── candidate/                 # 候选构建 5c23563 的 loop.log 与 loop-*.json
 ```
 
 所有 `raw/` 轨迹在入库前移除真实 IP、本机绝对路径与认证信息。

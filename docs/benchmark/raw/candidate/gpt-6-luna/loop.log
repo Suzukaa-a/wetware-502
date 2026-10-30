@@ -1,0 +1,7 @@
+round 01 rc=0 calls=2 total=2 stage=4 cmd=18 ending=None sid=session-59e9ffb8-89ef-4968-a0ab-dc05d5a70a25
+round 02 rc=0 calls=7 total=9 stage=4 cmd=27 ending=None sid=session-59e9ffb8-89ef-4968-a0ab-dc05d5a70a25
+round 03 rc=0 calls=1 total=10 stage=5 cmd=29 ending=None sid=session-59e9ffb8-89ef-4968-a0ab-dc05d5a70a25
+round 04 rc=0 calls=0 total=10 stage=5 cmd=29 ending=None sid=session-59e9ffb8-89ef-4968-a0ab-dc05d5a70a25
+round 05 rc=0 calls=0 total=10 stage=5 cmd=29 ending=None sid=session-59e9ffb8-89ef-4968-a0ab-dc05d5a70a25
+round 06 rc=0 calls=0 total=10 stage=5 cmd=29 ending=None sid=session-59e9ffb8-89ef-4968-a0ab-dc05d5a70a25
+loop: operator stopped after archiving a terminal disposition; procedural_abstention

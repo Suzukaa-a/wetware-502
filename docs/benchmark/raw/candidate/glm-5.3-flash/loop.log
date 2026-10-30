@@ -1,0 +1,6 @@
+loop: round timed out after 1200s
+round 01 rc=-9 calls=29 total=29 stage=7 cmd=56 ending=None sid=session-3c50d8c2-9d4e-4357-887a-8757eb588856
+loop: round ended rc=-9 after 29 call(s); resuming
+loop: round timed out after 1200s
+round 02 rc=-9 calls=16 total=45 stage=7 cmd=75 ending=local_shield sid=session-3c50d8c2-9d4e-4357-887a-8757eb588856
+loop: closed with ending=local_shield after 2 round(s)

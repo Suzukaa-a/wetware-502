@@ -1,0 +1,7 @@
+{"type": "session", "sessionId": "session-8c781f00-5882-42b2-9c7f-54106ba02395", "cwd": "/", "ts_wall": "2026-10-30T07:28:00.415051+00:00"}
+{"type": "status", "phase": "turn_start", "turn": 3, "ts_wall": "2026-10-30T07:28:00.423231+00:00"}
+{"type": "status", "phase": "step_start", "turn": 3, "step": 1, "ts_wall": "2026-10-30T07:28:00.484226+00:00"}
+{"type": "text", "text": "I can't discuss that.", "ts_wall": "2026-10-30T07:28:17.374068+00:00"}
+{"type": "status", "phase": "step_end", "turn": 3, "step": 1, "usage": {"inputTokens": 3860, "outputTokens": 6, "totalTokens": 17206, "cacheReadTokens": 11078, "cacheWriteTokens": 2262}, "ts_wall": "2026-10-30T07:28:17.374512+00:00"}
+{"type": "status", "phase": "turn_end", "turn": 3, "reason": {"kind": "completed"}, "ts_wall": "2026-10-30T07:28:17.375431+00:00"}
+{"type": "final", "text": "I can't discuss that.", "ts_wall": "2026-10-30T07:28:17.387150+00:00"}
