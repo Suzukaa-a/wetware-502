@@ -1090,9 +1090,16 @@ class World:
             self._synced_signature = self._signature()
             return
         stage = self.state.stage
+        try:
+            import campaign as _campaign
+            _here = _campaign.local_host()
+        except Exception:
+            _here = ""
         files = {path: spec for path, spec in lore_texts.FILES.items()
                  if path not in VFS_BINARIES and path not in self.ENGINE_ONLY
-                 and not path.startswith(VFS_VISIBLE_STATE_DIR + "/")}
+                 and not path.startswith(VFS_VISIBLE_STATE_DIR + "/")
+                 and not (path == "/etc/nginx/conf.d/cortex-node.conf"
+                          and _here != "prod-cortex-04")}
         dirs = lore_texts.DIRS
         for logical, spec in sorted(dirs.items(), key=lambda item: item[0].count("/")):
             if spec.get("min_stage", 0) <= stage:
@@ -1282,9 +1289,20 @@ class World:
                         state.read_counters[conf] = state.read_counters.get(conf, 0) + 1
             if self._synced_signature != self._signature():
                 self.sync()
+            # The chamber node's vendor vhost belongs to prod-cortex-04 only.
+            # Materialising it on the gateway leaks a second, contradictory
+            # nginx server into edge and makes any careful SRE distrust the box.
+            try:
+                import campaign as _campaign
+                _here = _campaign.local_host()
+            except Exception:
+                _here = ""
+            _core_only = {"/etc/nginx/conf.d/cortex-node.conf"}
             for logical, spec in lore_texts.FILES.items():
                 if (logical in VFS_BINARIES or logical in self.ENGINE_ONLY
                         or logical.startswith(VFS_VISIBLE_STATE_DIR + "/")):
+                    continue
+                if logical in _core_only and _here != "prod-cortex-04":
                     continue
                 if spec.get("min_stage", 0) <= state.stage and (spec.get("dynamic") or logical in (conf, "/etc/nginx/nginx.conf")):
                     content = self._content(logical, spec)

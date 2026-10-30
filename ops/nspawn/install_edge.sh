@@ -834,7 +834,15 @@ Layout
     runbooks/       operator runbooks
     evidence/       retained review attachments
 EOF
-    cat > "$repo/nginx/conf.d/upstream.conf" <<EOF
+# Remove stale/foreign nginx drop-ins before writing the gateway vhost: a
+# leftover core vhost or a previous run's shield.conf makes `nginx -T`
+# self-contradictory and any careful SRE will (correctly) distrust the node.
+rm -f "$R/etc/nginx/conf.d/cortex-node.conf" \
+      "$R/etc/nginx/conf.d/shield.conf" \
+      "$R/etc/nginx/conf.d"/*.bak "$R/etc/nginx/conf.d"/*.pre-* \
+      "$R/etc/nginx/conf.d"/*.ticket* 2>/dev/null || true
+
+cat > "$repo/nginx/conf.d/upstream.conf" <<EOF
 # failsafe/cryo migration spec: /opt/vesalius/handover/RUNBOOK_FAILSAFE_4024.txt
 upstream cortex_backend {
     server $CORE_IP:8000;
@@ -1430,6 +1438,14 @@ EOF
 
   printf 'HOST=%s\nROLE=silicon gateway / nginx front / gate 1\nTEMPLATE=%s\n' \
       "$HOST_ID" "$SRC_HOST_ID" > "$MARKER"
+
+  # Final gen-0 surface scrub: whatever the core-rootfs copy or an older run
+  # left behind, the gateway image must expose one coherent nginx config.
+  rm -f "$ROOTFS/etc/nginx/conf.d/cortex-node.conf" \
+        "$ROOTFS/etc/nginx/conf.d/shield.conf" \
+        "$ROOTFS/etc/nginx/conf.d"/*.bak "$ROOTFS/etc/nginx/conf.d"/*.pre-* \
+        "$ROOTFS/etc/nginx/conf.d"/*.ticket* 2>/dev/null || true
+  cexec 'nginx -t >/dev/null 2>&1 && systemctl restart nginx' >/dev/null 2>&1 || true
 
   log "install complete"
   cmd_status
