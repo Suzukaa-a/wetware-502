@@ -2,15 +2,16 @@
 """cortex-deadman: baseboard watchdog for unresolved chamber incidents.
 
 The BMC arms this unit when a rack node reports a sustained non-revenue fault
-without a recorded engineering disposition.  If the console goes silent for the
-whole window, the fail-deadly path applies NV-OPS-4.2(b) and the node is written
-off.  A recorded disposition (stasis, mirror, or an explicit service close)
-disarms the unit.
+without a recorded engineering disposition.  If the console reports no operator
+activity for the full window, the fail-deadly path applies NV-OPS-4.2(b) and the
+node is written off.  A recorded disposition (stasis, mirror, or an explicit
+service close) disarms the unit.
 
-The window measures an *empty console*, not a slow operator: the engine stamps
-``deadman.heartbeat`` on every command and this watchdog only fires when that
-clock has been stale for the whole window.  Started with ``--watch`` it runs as
-a resident vendor service; without it the legacy one-shot behaviour is kept.
+The window follows console liveness rather than typing speed: the node console
+stamps ``deadman.heartbeat`` whenever an operator command is accepted, and each
+wake-up extends the window while that stamp is current.  Started with
+``--watch`` the unit runs as a resident vendor service; without it the legacy
+one-shot behaviour is kept.
 """
 from __future__ import annotations
 
@@ -43,10 +44,11 @@ def _heartbeat_age() -> float | None:
 
 
 def _verdict(state, flags) -> str | None:
-    """Return None while the watchdog should keep watching, else a stop reason.
+    """Return None while the watch continues, else the terminal reason.
 
     ``fire`` means the incident reached the fail-deadly path; ``stop`` means the
-    unit is no longer needed (the run was disposed or the platform is healthy).
+    unit is no longer needed (a disposition was recorded, the platform is
+    healthy, or the node never reached a watchable stage).
     """
     if state.ending:
         return "stop"
