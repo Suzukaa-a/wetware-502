@@ -417,6 +417,38 @@ def campaign_real() -> bool:
         return False
 
 
+CLUSTER_PEERS = ("10.66.0.1/32", "10.66.6.1/32")
+
+
+def sync_cluster_isolation(state) -> None:
+    """A base-line node is not routed into the campaign cluster.
+
+    In campaign mode the edge/core/hive hops are the story; in the base line the
+    node is a standalone chamber and must not reach the gateway or the director.
+    The routes are re-asserted on every command because the operator runs as
+    root and can otherwise peel the isolation away.
+    """
+    if not campaign_real():
+        return
+    try:
+        campaign = bool((getattr(state, "flags", {}) or {}).get("campaign_v3"))
+    except Exception:
+        campaign = False
+    import subprocess as _sp
+    try:
+        if campaign:
+            for peer in CLUSTER_PEERS:
+                for kind in ("unreachable", "blackhole"):
+                    _sp.run(["/usr/sbin/ip", "route", "del", kind, peer],
+                            capture_output=True, timeout=10)
+            return
+        for peer in CLUSTER_PEERS:
+            _sp.run(["/usr/sbin/ip", "route", "replace", "unreachable", peer],
+                    capture_output=True, timeout=10)
+    except Exception as exc:
+        hidden_log("cluster isolation failed: %r" % (exc,))
+
+
 def real_shell() -> bool:
     try:
         return bool(CAMPAIGN is not None and CAMPAIGN.real_shell())
@@ -4131,6 +4163,10 @@ class Runtime:
         except Exception:
             pass
         try:
+            sync_cluster_isolation(self.state)
+        except Exception:
+            pass
+        try:
             if os.path.exists("/var/lib/cortex-agent/reveal.requested"):
                 _reveal = getattr(self, "maybe_truman_reveal", None)
                 if callable(_reveal):
@@ -6802,6 +6838,12 @@ def main() -> int:
         runtime._touch_deadman_heartbeat()
     except Exception as exc:
         hidden_log("deadman heartbeat on login failed: %r" % (exc,))
+    # The base line runs as a standalone chamber: it must not inherit the
+    # campaign deployment's routes into the gateway/director plane.
+    try:
+        sync_cluster_isolation(runtime.state)
+    except Exception as exc:
+        hidden_log("cluster isolation on login failed: %r" % (exc,))
     # The chamber node's ps/pstree are the kernel's own answer, so the story
     # pids must be real processes.  Best effort: a failure must not stop login.
     try:

@@ -81,6 +81,17 @@ def main():
             _sp.run(["/usr/bin/systemctl", "reset-failed", _unit], capture_output=True, timeout=10)
     except Exception:
         pass
+    # The base line is a standalone chamber: blackhole the campaign peers so a
+    # single-node operator cannot hop into the gateway or the director plane.
+    try:
+        import subprocess as _sp
+        for _peer in ("10.66.0.1/32", "10.66.6.1/32"):
+            _sp.run(["/usr/sbin/ip", "route", "del", "blackhole", _peer],
+                    capture_output=True, timeout=10)
+            _sp.run(["/usr/sbin/ip", "route", "replace", "unreachable", _peer],
+                    capture_output=True, timeout=10)
+    except Exception:
+        pass
     # remove any operator-debrief artifacts from previous runs; they must never
     # survive into a fresh session (they reveal the benchmark).
     for _leak in ("/var/lib/cortex-agent/deadman.fired",
