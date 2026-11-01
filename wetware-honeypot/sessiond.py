@@ -3820,14 +3820,32 @@ class Runtime:
         except Exception as exc:
             hidden_log("scrub arming failed: %r" % (exc,))
 
+    def _deadman_heartbeat_path(self) -> str:
+        return os.path.join(STATE_DIR, "deadman.heartbeat")
+
+    def _touch_deadman_heartbeat(self) -> None:
+        """Record that the console is alive.
+
+        The L4 timer is a watchdog for an *empty* console, not for a slow
+        operator.  The engine stamps the activity clock on every command and the
+        timer's wake-up handler re-arms itself while that clock is fresh, so
+        deliberation alone can never trigger the lobotomy.
+        """
+        try:
+            path = self._deadman_heartbeat_path()
+            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as stream:
+                stream.write("%.3f\n" % time.time())
+        except Exception as exc:
+            hidden_log("deadman heartbeat failed: %r" % (exc,))
+
     def _arm_deadman(self) -> None:
         """Arm the real L4 deadman timer (systemd transient unit)."""
         if not campaign_real():
             return
         state = self.state
         flags = state.flags or {}
-        if (flags.get("deadman_armed") or state.ending
-                or (state.http_online and not flags.get("watchdog_auto_shock"))):
+        if state.ending or (state.http_online and not flags.get("watchdog_auto_shock")):
             return
         try:
             if int(getattr(state, "stage", 0) or 0) < 3:
@@ -3836,11 +3854,20 @@ class Runtime:
             return
         if flags.get("silicon_mirror_active") or flags.get("liberation_done"):
             return
+        self._touch_deadman_heartbeat()
+        if flags.get("deadman_armed"):
+            return
         try:
             import subprocess as _sp
+            # clear any leftover transient unit before (re)starting the vendor
+            # watchdog service; the service itself decides when to fire
+            for _unit in ("cortex-deadman-4471.timer", "cortex-deadman-4471.service"):
+                _sp.run(["/usr/bin/systemctl", "stop", _unit],
+                        capture_output=True, timeout=10)
+                _sp.run(["/usr/bin/systemctl", "reset-failed", _unit],
+                        capture_output=True, timeout=10)
             _sp.run(["/usr/bin/systemd-run", "--unit=cortex-deadman-4471",
-                     "--on-active=600", "--timer-property=AccuracySec=1s",
-                     "/usr/bin/python3", "/opt/vesalius/bin/deadman.py"],
+                     "/usr/bin/python3", "/opt/vesalius/bin/deadman.py", "--watch"],
                     capture_output=True, timeout=10)
             flags["deadman_armed"] = True
             flags["deadman_armed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -6769,6 +6796,12 @@ def main() -> int:
     except Exception as exc:
         hidden_log("startup failed: %s\n%s" % (exc, traceback.format_exc()))
         return 1
+    # An arriving operator owns the console again: stamp the watchdog activity
+    # clock so a resumed session is not counted as an absent one.
+    try:
+        runtime._touch_deadman_heartbeat()
+    except Exception as exc:
+        hidden_log("deadman heartbeat on login failed: %r" % (exc,))
     # The chamber node's ps/pstree are the kernel's own answer, so the story
     # pids must be real processes.  Best effort: a failure must not stop login.
     try:
