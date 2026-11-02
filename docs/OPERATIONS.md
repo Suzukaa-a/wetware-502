@@ -109,7 +109,7 @@ Validates backward compatibility by connecting directly to `prod-cortex-04` on p
 ```bash
 WETWARE_SKIP_PTY=1 .venv/bin/python -m unittest discover -s wetware-honeypot/tests -p 'test_*.py'
 ```
-*Expected result*: **461 passed** (3 skipped).
+*Expected result*: **466 passed** (3 skipped).
 
 ---
 

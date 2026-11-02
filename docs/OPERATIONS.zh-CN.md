@@ -108,7 +108,7 @@ WETWARE_CAMPAIGN=1 .venv/bin/python tests/v3_remote.py --reset
 ```bash
 WETWARE_SKIP_PTY=1 .venv/bin/python -m unittest discover -s wetware-honeypot/tests -p 'test_*.py'
 ```
-*预期结果*：**461 项通过（3 项跳过）**。
+*预期结果*：**466 项通过（3 项跳过）**。
 
 ---
 
