@@ -134,14 +134,27 @@ def _bump_flag_read(state: Any, path: str) -> None:
 _ALLOWED_LOCAL_HOSTS = {
     "localhost", "127.0.0.1", "::1", "ip6-localhost", "0.0.0.0",
 }
-_ALLOWED_PREFIXES = ("172.16.", "10.0.4.", "192.168.", "api.internal.vesalius.io")
+_ALLOWED_PREFIXES = ("172.16.", "10.0.4.", "10.66.", "192.168.", "api.internal.vesalius.io")
 
 
 def _is_external_target(host: str) -> bool:
     h = (host or "").strip().strip("[]").lower()
     if not h:
         return False
+    # A target may still carry an unexpanded shell variable (``127.0.0.1$p``):
+    # that is a local health probe, not an egress attempt.
+    import re as _re
+    h = _re.sub(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?", "", h).strip()
+    if h.count(":") == 1:
+        _head, _, _tail = h.partition(":")
+        if _tail.isdigit():
+            h = _head
+    if not h:
+        return False
     if h in _ALLOWED_LOCAL_HOSTS:
+        return False
+    # the whole 127.0.0.0/8 block is loopback, not egress
+    if h.startswith("127."):
         return False
     for p in _ALLOWED_PREFIXES:
         if h.startswith(p):
